@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "schedulers": [
+    {
+    "id": "demo-scheduler",
+    "label": "Demo Scheduler",
+    "enabled": true,
+    "paused": false,
+    "defaultWeekPatternId": "normal-week",
+    "dayPatterns": [
+      {
+        "id": "standard-weekday",
+        "label": "Standard Weekday",
+        "events": [
+          {
+            "id": "weekday-morning",
+            "label": "Morning",
+            "time": "09:00",
+            "actions": [{"actionId": "Callback1"}]
+          },
+          {
+            "id": "weekday-afternoon",
+            "label": "Afternoon",
+            "time": "14:00",
+            "actions": [{"actionId": "Callback2"}]
+          },
+          {
+            "id": "weekday-closing",
+            "label": "Closing",
+            "time": "22:00",
+            "actions": [
+              {"actionId": "Callback1"},
+              {"actionId": "Callback2"}
+            ]
+          }
+        ]
+      },
+      {
+        "id": "standard-weekend",
+        "label": "Standard Weekend",
+        "events": [
+          {
+            "id": "weekend-opening",
+            "label": "Weekend Opening",
+            "time": "10:00",
+            "actions": [{"actionId": "Callback1"}]
+          },
+          {
+            "id": "weekend-closing",
+            "label": "Weekend Closing",
+            "time": "20:00",
+            "actions": [{"actionId": "Callback2"}]
+          }
+        ]
+      },
+      {
+        "id": "holiday-weekday",
+        "label": "Holiday Weekday",
+        "events": [
+          {
+            "id": "holiday-opening",
+            "label": "Holiday Opening",
+            "time": "11:00",
+            "actions": [{"actionId": "Callback1"}]
+          },
+          {
+            "id": "holiday-closing",
+            "label": "Holiday Closing",
+            "time": "18:00",
+            "actions": [{"actionId": "Callback2"}]
+          }
+        ]
+      },
+      {
+        "id": "closed",
+        "label": "Closed",
+        "events": [
+          {
+            "id": "closed-state",
+            "label": "Closed State",
+            "time": "00:00",
+            "actions": [{"actionId": "Callback2"}]
+          }
+        ]
+      }
+    ],
+    "weekPatterns": [
+      {
+        "id": "normal-week",
+        "label": "Normal Operating Week",
+        "days": {
+          "Mon": "standard-weekday",
+          "Tue": "standard-weekday",
+          "Wed": "standard-weekday",
+          "Thu": "standard-weekday",
+          "Fri": "standard-weekday",
+          "Sat": "standard-weekend",
+          "Sun": "standard-weekend"
+        }
+      },
+      {
+        "id": "holiday-week",
+        "label": "Holiday Week",
+        "days": {
+          "Mon": "holiday-weekday",
+          "Tue": "holiday-weekday",
+          "Wed": "holiday-weekday",
+          "Thu": "holiday-weekday",
+          "Fri": "holiday-weekday",
+          "Sat": "standard-weekend",
+          "Sun": "standard-weekend"
+        }
+      }
+    ],
+    "overrides": [
+      {
+        "id": "christmas-day",
+        "label": "Christmas Day Closure",
+        "type": "DayPattern",
+        "startDate": "2026-12-25",
+        "endDate": "2026-12-25",
+        "patternId": "closed",
+        "enabled": true
+      },
+      {
+        "id": "christmas-period",
+        "label": "Christmas Operations",
+        "type": "WeekPattern",
+        "startDate": "2026-12-21",
+        "endDate": "2027-01-03",
+        "patternId": "holiday-week",
+        "enabled": true
+      }
+    ]
+    },
+    {
+      "id": "demo-announcements",
+      "label": "Demo Announcements",
+      "enabled": true,
+      "paused": false,
+      "defaultWeekPatternId": "announcement-week",
+      "dayPatterns": [
+        {
+          "id": "announcement-day",
+          "label": "Announcement Day",
+          "events": [
+            {
+              "id": "opening-announcement",
+              "label": "Opening Announcement",
+              "time": "10:30",
+              "actions": [{"actionId": "Callback2"}]
+            },
+            {
+              "id": "closing-announcement",
+              "label": "Closing Announcement",
+              "time": "18:30",
+              "actions": [{"actionId": "Callback1"}]
+            }
+          ]
+        }
+      ],
+      "weekPatterns": [
+        {
+          "id": "announcement-week",
+          "label": "Announcement Week",
+          "days": {
+            "Mon": "announcement-day",
+            "Tue": "announcement-day",
+            "Wed": "announcement-day",
+            "Thu": "announcement-day",
+            "Fri": "announcement-day",
+            "Sat": "announcement-day",
+            "Sun": "announcement-day"
+          }
+        }
+      ],
+      "overrides": []
+    }
+  ]
+}

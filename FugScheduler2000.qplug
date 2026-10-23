@@ -1,0 +1,4217 @@
+--[[
+  FugScheduler 2000
+  Template/compiler workflow source shell.
+
+  Edit files under src/ and compile them into ../FugScheduler2000.qplug.
+  The current runtime validates trusted external Actions, persists a versioned
+  multi-Scheduler model, and publishes read-only resolution status.
+]]
+
+-- Information block for the plugin.
+PluginInfo = {
+  Name = "AndyFug~FugScheduler 2000",
+  Version = "0.4.0",
+  BuildVersion = "0.4.0.0",
+  Id = "1da6035f-30fd-41ca-8cff-828ea21c1dee",
+  Author = "FugScheduler 2000 Contributors",
+  Description = "UI-driven Q-SYS scheduler with actions loaded from trusted Lua source."
+}
+
+-- Constants, theme overrides, and property/page helpers.
+-- Keep weekday keys, labels, and assignment control names consistent across design and runtime code.
+FugSchedulerWeekdays = {
+  {key = "Mon", label = "Monday", controlName = "WeekPatternMon"},
+  {key = "Tue", label = "Tuesday", controlName = "WeekPatternTue"},
+  {key = "Wed", label = "Wednesday", controlName = "WeekPatternWed"},
+  {key = "Thu", label = "Thursday", controlName = "WeekPatternThu"},
+  {key = "Fri", label = "Friday", controlName = "WeekPatternFri"},
+  {key = "Sat", label = "Saturday", controlName = "WeekPatternSat"},
+  {key = "Sun", label = "Sunday", controlName = "WeekPatternSun"}
+}
+
+FugSchedulerTheme = {
+  pageW = 900,
+  pageH = 520,
+  colors = {
+    accent = {42, 150, 135},
+    schedule = {75, 155, 230},
+    action = {235, 165, 55},
+    statusBackground = {190, 195, 200},
+    statusText = {20, 22, 24}
+  }
+}
+
+-- Return a property value by name, or a fallback when unavailable.
+function propValue(props, name, fallback)
+  if props == nil then return fallback end
+  if props[name] and props[name].Value ~= nil then return props[name].Value end
+  for _, prop in ipairs(props) do
+    if prop.Name == name then return prop.Value end
+  end
+  return fallback
+end
+
+-- Return the page names implied by the current design-time properties.
+function pageNames(props)
+  local names = {"Overview", "Schedules", "Day Patterns", "Week Patterns", "Actions"}
+  if propValue(props, "Show Diagnostics Page", true) then
+    table.insert(names, "Diagnostics")
+  end
+  return names
+end
+
+-- Return the active page selected by Q-SYS Designer.
+function currentPageName(props)
+  local names = pageNames(props)
+  local index = propValue(props, "page_index", 1)
+  return names[index] or names[1]
+end
+
+-- Vendored shared FugUi framework.
+-- -----------------------------------------------------------------------------
+-- FugUi: shared Q-SYS plugin UI helper layer
+-- -----------------------------------------------------------------------------
+-- Include-friendly Lua helper table for building Q-SYS plugin layout/graphics
+-- tables. Projects should pass their own theme to FugUi.new(theme) and can add
+-- project-specific helpers on top of this foundation.
+
+FugUi = FugUi or {}
+FugUi.Builder = FugUi.Builder or {}
+FugUi.Builder.__index = FugUi.Builder
+
+-- Default theme used by all plugins unless a project overrides individual keys.
+FugUi.DefaultTheme = FugUi.DefaultTheme or {
+  pageW = 900,
+  pageH = 520,
+  gap = 8,
+  pad = 10,
+  rowH = 22,
+  buttonH = 24,
+  labelH = 18,
+  headerH = 28,
+  meterW = 18,
+  colors = {
+    background = {22, 24, 28},
+    panel = {32, 35, 40},
+    panelAlt = {38, 42, 48},
+    stroke = {70, 75, 82},
+    text = {230, 235, 240},
+    mutedText = {160, 168, 176},
+    controlText = {230, 235, 240},
+    accent = {30, 135, 220},
+    cue = {240, 185, 40},
+    test = {170, 90, 245},
+    danger = {210, 65, 65},
+    ok = {60, 190, 120},
+    warning = {235, 150, 45},
+    transparent = {0, 0, 0, 0}
+  }
+}
+
+-- Return true for plain map-like tables; color arrays are treated as leaf values.
+function FugUi.isMapTable(value)
+  return type(value) == "table" and #value == 0
+end
+
+-- Deep-copy a value so per-plugin theme changes never mutate DefaultTheme.
+function FugUi.copy(value)
+  if type(value) ~= "table" then return value end
+  local out = {}
+  for k, v in pairs(value) do
+    out[k] = FugUi.copy(v)
+  end
+  return out
+end
+
+-- Merge an override table into a base table by key, preserving unspecified keys.
+function FugUi.merge(base, override)
+  local out = FugUi.copy(base or {})
+  for k, v in pairs(override or {}) do
+    if FugUi.isMapTable(v) and FugUi.isMapTable(out[k]) then
+      out[k] = FugUi.merge(out[k], v)
+    else
+      out[k] = FugUi.copy(v)
+    end
+  end
+  return out
+end
+
+-- Return the effective theme after applying optional project-specific overrides.
+function FugUi.theme(overrides)
+  return FugUi.merge(FugUi.DefaultTheme, overrides or {})
+end
+
+-- Create the layout/graphics accumulator passed through page drawing helpers.
+function FugUi.new(themeOverrides)
+  return setmetatable({
+    layout = {},
+    graphics = {},
+    theme = FugUi.theme(themeOverrides),
+    pageRoots = {},
+    contentRight = 0,
+    contentBottom = 0,
+    backgroundGraphics = {},
+    bottomAnchors = {}
+  }, FugUi.Builder)
+end
+
+-- Store rectangle geometry with named fields for easier layout calculations.
+function FugUi.rect(x, y, w, h)
+  return {x = x, y = y, w = w, h = h}
+end
+
+-- Convert a helper rectangle into Q-SYS Position array format.
+function FugUi.pos(rect)
+  return {rect.x, rect.y}
+end
+
+-- Convert a helper rectangle into Q-SYS Size array format.
+function FugUi.size(rect)
+  return {rect.w, rect.h}
+end
+
+-- Return a rectangle reduced by an equal padding on all sides.
+function FugUi.inset(rect, pad)
+  return FugUi.rect(rect.x + pad, rect.y + pad, rect.w - (pad * 2), rect.h - (pad * 2))
+end
+
+-- Return a rectangle moved by dx/dy without changing size.
+function FugUi.offset(rect, dx, dy)
+  return FugUi.rect(rect.x + dx, rect.y + dy, rect.w, rect.h)
+end
+
+-- Return a rectangle with the same origin but a different size.
+function FugUi.resize(rect, w, h)
+  return FugUi.rect(rect.x, rect.y, w, h)
+end
+
+-- Return a rectangle centered inside a parent rectangle.
+function FugUi.center(parent, w, h)
+  return FugUi.rect(
+    parent.x + math.floor((parent.w - w) / 2),
+    parent.y + math.floor((parent.h - h) / 2),
+    w,
+    h
+  )
+end
+
+-- Return a rectangle horizontally centered inside a parent, preserving y/h.
+function FugUi.centerX(parent, w, y, h)
+  return FugUi.rect(parent.x + math.floor((parent.w - w) / 2), y or parent.y, w, h or parent.h)
+end
+
+-- Return a rectangle vertically centered inside a parent, preserving x/w.
+function FugUi.centerY(parent, h, x, w)
+  return FugUi.rect(x or parent.x, parent.y + math.floor((parent.h - h) / 2), w or parent.w, h)
+end
+
+-- Align a child rectangle within a parent using Left/Center/Right and Top/Center/Bottom.
+function FugUi.align(parent, w, h, hAlign, vAlign)
+  local x = parent.x
+  local y = parent.y
+  local horizontal = hAlign or "Left"
+  local vertical = vAlign or "Top"
+
+  if horizontal == "Center" or horizontal == "center" then
+    x = parent.x + math.floor((parent.w - w) / 2)
+  elseif horizontal == "Right" or horizontal == "right" then
+    x = parent.x + parent.w - w
+  end
+
+  if vertical == "Center" or vertical == "center" then
+    y = parent.y + math.floor((parent.h - h) / 2)
+  elseif vertical == "Bottom" or vertical == "bottom" then
+    y = parent.y + parent.h - h
+  end
+
+  return FugUi.rect(x, y, w, h)
+end
+
+-- Return a rectangle docked to one edge of a parent rectangle.
+function FugUi.dock(parent, edge, size)
+  if edge == "top" or edge == "Top" then
+    return FugUi.rect(parent.x, parent.y, parent.w, size)
+  elseif edge == "bottom" or edge == "Bottom" then
+    return FugUi.rect(parent.x, parent.y + parent.h - size, parent.w, size)
+  elseif edge == "left" or edge == "Left" then
+    return FugUi.rect(parent.x, parent.y, size, parent.h)
+  elseif edge == "right" or edge == "Right" then
+    return FugUi.rect(parent.x + parent.w - size, parent.y, size, parent.h)
+  end
+  return FugUi.copy(parent)
+end
+
+-- Split a parent rectangle into evenly-sized row rectangles.
+function FugUi.rows(parent, count, gap)
+  local rects = {}
+  local spacing = gap or 0
+  local rowH = math.floor((parent.h - ((count - 1) * spacing)) / count)
+  for i = 1, count do
+    table.insert(rects, FugUi.rect(parent.x, parent.y + ((i - 1) * (rowH + spacing)), parent.w, rowH))
+  end
+  return rects
+end
+
+-- Split a parent rectangle into evenly-sized column rectangles.
+function FugUi.cols(parent, count, gap)
+  local rects = {}
+  local spacing = gap or 0
+  local colW = math.floor((parent.w - ((count - 1) * spacing)) / count)
+  for i = 1, count do
+    table.insert(rects, FugUi.rect(parent.x + ((i - 1) * (colW + spacing)), parent.y, colW, parent.h))
+  end
+  return rects
+end
+
+-- Split a parent rectangle into a row-major grid of rectangles.
+function FugUi.grid(parent, rowCount, colCount, gapX, gapY)
+  local cells = {}
+  local xGap = gapX or 0
+  local yGap = gapY or xGap
+  local cellW = math.floor((parent.w - ((colCount - 1) * xGap)) / colCount)
+  local cellH = math.floor((parent.h - ((rowCount - 1) * yGap)) / rowCount)
+
+  for row = 1, rowCount do
+    for col = 1, colCount do
+      table.insert(cells, FugUi.rect(
+        parent.x + ((col - 1) * (cellW + xGap)),
+        parent.y + ((row - 1) * (cellH + yGap)),
+        cellW,
+        cellH
+      ))
+    end
+  end
+
+  return cells
+end
+
+-- Resolve a counted control name to Q-SYS's `Name N` convention.
+function FugUi.controlName(base, count, index)
+  if count and count > 1 then
+    return base .. " " .. index
+  end
+  return base
+end
+
+-- Return a theme color with a fallback.
+function FugUi.color(ui, name, fallback)
+  local theme = ui.theme or {}
+  local colors = theme.colors or {}
+  return colors[name] or fallback or {255, 255, 255}
+end
+
+-- Expand the builder's measured content bounds to include a rendered rectangle.
+function FugUi.trackBounds(ui, rect)
+  ui.contentRight = math.max(ui.contentRight or 0, rect.x + rect.w)
+  ui.contentBottom = math.max(ui.contentBottom or 0, rect.y + rect.h)
+end
+
+-- Add a control layout entry that binds a GetControls control to a UI widget.
+function FugUi.control(ui, name, style, rect, opts)
+  local item = opts or {}
+  item.Style = style
+  item.Position = FugUi.pos(rect)
+  item.Size = FugUi.size(rect)
+  ui.layout[name] = item
+  FugUi.trackBounds(ui, rect)
+end
+
+-- Add a hidden layout entry for controls that need pins/runtime access but no UI.
+function FugUi.hiddenControl(ui, name)
+  ui.layout[name] = {
+    Style = "None",
+    Position = {0, 0},
+    Size = {0, 0}
+  }
+end
+
+-- Add static text graphics; labels do not create runtime controls or pins.
+function FugUi.label(ui, text, rect, opts)
+  local item = opts or {}
+  item.Type = "Label"
+  item.Text = text
+  item.Position = FugUi.pos(rect)
+  item.Size = FugUi.size(rect)
+  item.Color = item.Color or FugUi.color(ui, "text")
+  item.Fill = item.Fill or {0, 0, 0, 0}
+  item.FontSize = item.FontSize or 10
+  item.HTextAlign = item.HTextAlign or "Left"
+  item.VTextAlign = item.VTextAlign or "Center"
+  table.insert(ui.graphics, item)
+  FugUi.trackBounds(ui, rect)
+end
+
+-- Add a panel/group graphic used to visually organize related controls.
+function FugUi.group(ui, text, rect, opts)
+  local item = opts or {}
+  item.Type = "GroupBox"
+  item.Text = text or ""
+  item.Position = FugUi.pos(rect)
+  item.Size = FugUi.size(rect)
+  item.Fill = item.Fill or FugUi.color(ui, "panel", {40, 40, 40})
+  item.StrokeColor = item.StrokeColor or FugUi.color(ui, "stroke", {80, 80, 80})
+  item.StrokeWidth = item.StrokeWidth or 1
+  item.CornerRadius = item.CornerRadius or 6
+  item.Color = item.Color or FugUi.color(ui, "text")
+  item.FontSize = item.FontSize or 11
+  item.HTextAlign = item.HTextAlign or "Left"
+  table.insert(ui.graphics, item)
+  FugUi.trackBounds(ui, rect)
+end
+
+-- Paint the full plugin canvas before page-specific graphics are added.
+function FugUi.background(ui)
+  local theme = ui.theme or {}
+  FugUi.group(ui, "", FugUi.rect(0, 0, theme.pageW or 760, theme.pageH or 520), {
+    Fill = FugUi.color(ui, "background", {32, 34, 38}),
+    StrokeColor = FugUi.color(ui, "background", {32, 34, 38}),
+    CornerRadius = 0,
+    StrokeWidth = 0
+  })
+  table.insert(ui.backgroundGraphics, ui.graphics[#ui.graphics])
+end
+
+-- Draw a common page title and optional right-aligned subtitle.
+function FugUi.header(ui, title, subtitle)
+  local theme = ui.theme or {}
+  local pageW = theme.pageW or 760
+  FugUi.label(ui, title, FugUi.rect(10, 6, math.floor(pageW * 0.45), 24), {
+    FontSize = 16,
+    IsBold = true,
+    Color = FugUi.color(ui, "text")
+  })
+  if subtitle then
+    FugUi.label(ui, subtitle, FugUi.rect(math.floor(pageW * 0.45), 8, pageW - math.floor(pageW * 0.45) - 10, 20), {
+      FontSize = 10,
+      Color = FugUi.color(ui, "mutedText", {170, 170, 170}),
+      HTextAlign = "Right"
+    })
+  end
+end
+
+-- Place a shared status text control at the bottom of a page.
+function FugUi.statusBar(ui, controlName)
+  local theme = ui.theme or {}
+  local pageW = theme.pageW or 760
+  local pageH = theme.pageH or 520
+  local name = controlName or "Status"
+  FugUi.control(ui, name, "Text", FugUi.rect(10, pageH - 30, pageW - 20, 22), {
+    PrettyName = "Status",
+    TextBoxStyle = "NoBackground",
+    IsReadOnly = true,
+    FontSize = 10,
+    TextColor = FugUi.color(ui, "text"),
+    HTextAlign = "Left"
+  })
+  table.insert(ui.bottomAnchors, {name = name, bottom = 8, left = 10, right = 10, height = 22})
+end
+
+-- Convenience wrapper for a button control.
+function FugUi.button(ui, name, rect, opts)
+  FugUi.control(ui, name, "Button", rect, opts or {})
+end
+
+-- Convenience wrapper for a text control.
+function FugUi.textControl(ui, name, rect, opts)
+  FugUi.control(ui, name, "Text", rect, opts or {})
+end
+
+-- Convenience wrapper for a knob control.
+function FugUi.knob(ui, name, rect, opts)
+  FugUi.control(ui, name, "Knob", rect, opts or {})
+end
+
+-- Convenience wrapper for a meter control.
+function FugUi.meter(ui, name, rect, opts)
+  local item = opts or {}
+  item.MeterStyle = item.MeterStyle or "Level"
+  item.ShowTextbox = item.ShowTextbox or false
+  FugUi.control(ui, name, "Meter", rect, item)
+end
+
+-- Draw simple column labels for table-like plugin pages.
+function FugUi.tableHeader(ui, columns, x, y, h)
+  local cursor = x
+  for _, col in ipairs(columns) do
+    FugUi.label(ui, col.text or "", FugUi.rect(cursor, y, col.w, h or 18), {
+      FontSize = col.fontSize or 10,
+      HTextAlign = col.align or "Center",
+      Color = col.color or FugUi.color(ui, "mutedText", {170, 170, 170})
+    })
+    cursor = cursor + col.w + (col.gap or 0)
+  end
+end
+
+-- Draw a compact horizontal meter bank with numeric captions.
+function FugUi.meterBank(ui, baseName, count, rect, opts)
+  local item = opts or {}
+  local gap = item.gap or 4
+  local inner = FugUi.inset(rect, item.pad or 12)
+  local meterW = math.max(8, math.floor((inner.w - ((count - 1) * gap)) / count))
+
+  if item.group ~= false then
+    FugUi.group(ui, item.title or "Meter Bank", rect)
+  end
+
+  for i = 1, count do
+    local x = inner.x + ((i - 1) * (meterW + gap))
+    FugUi.meter(ui, FugUi.controlName(baseName, count, i), FugUi.rect(x, inner.y + 18, meterW, inner.h - 40), item.meterOptions or {})
+    FugUi.label(ui, tostring(i), FugUi.rect(x, inner.y + inner.h - 18, meterW, 14), {
+      FontSize = 8,
+      HTextAlign = "Center",
+      Color = FugUi.color(ui, "mutedText", {170, 170, 170})
+    })
+  end
+end
+
+
+-- -----------------------------------------------------------------------------
+-- Box layout API
+-- -----------------------------------------------------------------------------
+-- Boxes compute absolute Q-SYS rectangles from a parent/content model. They do
+-- not create runtime containers; they provide a div-like layout layer before the
+-- final absolute layout/graphics tables are emitted.
+
+FugUi.Box = FugUi.Box or {}
+FugUi.Box.__index = FugUi.Box
+
+-- Normalize numeric or per-edge spacing into a full edge table.
+function FugUi.spacing(value)
+  if type(value) == "number" then
+    return {top = value, right = value, bottom = value, left = value}
+  end
+  local item = value or {}
+  return {
+    top = item.top or item.y or item.vertical or 0,
+    right = item.right or item.x or item.horizontal or 0,
+    bottom = item.bottom or item.y or item.vertical or 0,
+    left = item.left or item.x or item.horizontal or 0
+  }
+end
+
+-- Create a layout box around an absolute rectangle with optional padding/title.
+function FugUi.box(ui, rect, opts, parent)
+  local item = opts or {}
+  return setmetatable({
+    ui = ui,
+    rect = rect and FugUi.copy(rect) or nil,
+    parent = parent,
+    children = {},
+    items = {},
+    opts = item,
+    direction = item.direction or item.layout,
+    padding = FugUi.spacing(item.padding or 0),
+    margin = FugUi.spacing(item.margin or 0),
+    title = item.title,
+    groupOptions = item.groupOptions,
+    drawGroup = item.group == true or item.title ~= nil,
+    retained = item.retained == true or (parent and parent.retained) or false
+  }, FugUi.Box)
+end
+
+-- Return the root page box, normally used as the layout parent for a page.
+function FugUi.page(ui, opts)
+  local item = opts or {}
+  local theme = ui.theme or {}
+  local margin = FugUi.spacing(item.margin or 0)
+  local retained = item.retained == true or item.height == "auto" or item.width == "auto" or item.direction ~= nil or item.layout ~= nil
+  item.retained = retained
+
+  local rect = FugUi.rect(
+    margin.left,
+    margin.top,
+    (theme.pageW or 900) - margin.left - margin.right,
+    (theme.pageH or 520) - margin.top - margin.bottom
+  )
+  local page = FugUi.box(ui, rect, item)
+  page.pageMargin = margin
+  if retained then
+    table.insert(ui.pageRoots, page)
+  end
+  return page
+end
+
+-- Return the inner content rectangle after padding has been applied.
+function FugUi.Box:contentRect()
+  return FugUi.rect(
+    self.rect.x + self.padding.left,
+    self.rect.y + self.padding.top,
+    self.rect.w - self.padding.left - self.padding.right,
+    self.rect.h - self.padding.top - self.padding.bottom
+  )
+end
+
+-- Return a child box covering this box's content rectangle.
+function FugUi.Box:content(opts)
+  return FugUi.box(self.ui, self:contentRect(), opts or {})
+end
+
+-- Convert a rectangle relative to this box's content area into an absolute rect.
+function FugUi.Box:relative(x, y, w, h)
+  local content = self:contentRect()
+  return FugUi.rect(content.x + x, content.y + y, w, h)
+end
+
+-- Return this box's content rectangle for controls that should fill the box.
+function FugUi.Box:fill()
+  return self:contentRect()
+end
+
+-- Draw this box as a titled or untitled group graphic.
+function FugUi.Box:group(title, opts)
+  FugUi.group(self.ui, title or self.title or "", self.rect, opts or self.groupOptions or {})
+  return self
+end
+
+-- Draw this box's configured group if requested by its spec.
+function FugUi.Box:draw()
+  if self.drawGroup then
+    self:group(self.title, self.groupOptions)
+  end
+  return self
+end
+
+-- Split this box's content rectangle into horizontal children.
+function FugUi.Box:splitRow(specs, opts)
+  return FugUi.splitBoxes(self, "row", specs, opts)
+end
+
+-- Split this box's content rectangle into vertical children.
+function FugUi.Box:splitColumn(specs, opts)
+  return FugUi.splitBoxes(self, "column", specs, opts)
+end
+
+-- HTML-ish aliases for horizontal rows and vertical columns.
+function FugUi.Box:row(specs, opts)
+  if specs and specs[1] then
+    return self:splitRow(specs, opts)
+  end
+  return self:flowRow(specs or {})
+end
+
+function FugUi.Box:column(specs, opts)
+  if specs and specs[1] then
+    return self:splitColumn(specs, opts)
+  end
+  return self:flowColumn(specs or {})
+end
+
+-- Allocate a fixed-height box from the top of this box's content area.
+function FugUi.Box:takeTop(height, gap, opts)
+  local content = self:contentRect()
+  return FugUi.box(self.ui, FugUi.rect(content.x, content.y, content.w, height), opts or {})
+end
+
+-- Return the remaining content after a fixed top region is reserved.
+function FugUi.Box:below(topHeight, gap, opts)
+  local content = self:contentRect()
+  local spacing = gap or 0
+  local y = content.y + topHeight + spacing
+  return FugUi.box(self.ui, FugUi.rect(content.x, y, content.w, content.h - topHeight - spacing), opts or {})
+end
+
+-- Allocate a fixed-height box from the bottom of this box's content area.
+function FugUi.Box:takeBottom(height, gap, opts)
+  local content = self:contentRect()
+  return FugUi.box(self.ui, FugUi.rect(content.x, content.y + content.h - height, content.w, height), opts or {})
+end
+
+-- Return the remaining content after a fixed bottom region is reserved.
+function FugUi.Box:above(bottomHeight, gap, opts)
+  local content = self:contentRect()
+  local spacing = gap or 0
+  return FugUi.box(self.ui, FugUi.rect(content.x, content.y, content.w, content.h - bottomHeight - spacing), opts or {})
+end
+
+-- Allocate a fixed-width box from the left of this box's content area.
+function FugUi.Box:takeLeft(width, gap, opts)
+  local content = self:contentRect()
+  return FugUi.box(self.ui, FugUi.rect(content.x, content.y, width, content.h), opts or {})
+end
+
+-- Return the remaining content after a fixed left region is reserved.
+function FugUi.Box:rightOf(leftWidth, gap, opts)
+  local content = self:contentRect()
+  local spacing = gap or 0
+  local x = content.x + leftWidth + spacing
+  return FugUi.box(self.ui, FugUi.rect(x, content.y, content.w - leftWidth - spacing, content.h), opts or {})
+end
+
+-- Allocate a fixed-width box from the right of this box's content area.
+function FugUi.Box:takeRight(width, gap, opts)
+  local content = self:contentRect()
+  return FugUi.box(self.ui, FugUi.rect(content.x + content.w - width, content.y, width, content.h), opts or {})
+end
+
+-- Return the remaining content after a fixed right region is reserved.
+function FugUi.Box:leftOf(rightWidth, gap, opts)
+  local content = self:contentRect()
+  local spacing = gap or 0
+  return FugUi.box(self.ui, FugUi.rect(content.x, content.y, content.w - rightWidth - spacing, content.h), opts or {})
+end
+
+-- Compute fixed/percentage/grow child boxes in a row or column.
+function FugUi.splitBoxes(parent, direction, specs, opts)
+  local item = opts or {}
+  local gap = item.gap or 0
+  local content = parent:contentRect()
+  local horizontal = direction == "row"
+  local mainSize = horizontal and content.w or content.h
+  local crossSize = horizontal and content.h or content.w
+  local gapTotal = math.max(0, #specs - 1) * gap
+  local available = mainSize - gapTotal
+  local fixed = 0
+  local grow = 0
+  local sizes = {}
+  local growIndexes = {}
+
+  for index, spec in ipairs(specs) do
+    local size = horizontal and spec.width or spec.height
+    if size then
+      sizes[index] = size
+      fixed = fixed + size
+    elseif spec.percent then
+      sizes[index] = math.floor(available * (spec.percent / 100))
+      fixed = fixed + sizes[index]
+    else
+      local weight = spec.grow or 1
+      grow = grow + weight
+      table.insert(growIndexes, index)
+    end
+  end
+
+  local remaining = math.max(0, available - fixed)
+  local growAllocated = 0
+  for _, index in ipairs(growIndexes) do
+    local spec = specs[index]
+    local size = math.floor(remaining * ((spec.grow or 1) / grow))
+    sizes[index] = size
+    growAllocated = growAllocated + size
+  end
+  if #growIndexes > 0 then
+    local lastGrow = growIndexes[#growIndexes]
+    sizes[lastGrow] = sizes[lastGrow] + (remaining - growAllocated)
+  end
+
+  local totalChildren = 0
+  for _, size in ipairs(sizes) do
+    totalChildren = totalChildren + size
+  end
+
+  local slack = math.max(0, mainSize - totalChildren - gapTotal)
+  local justify = item.justify or "left"
+  local cursor = horizontal and content.x or content.y
+  local effectiveGap = gap
+  if justify == "right" or justify == "Right" or justify == "bottom" or justify == "Bottom" then
+    cursor = cursor + slack
+  elseif justify == "center" or justify == "Center" then
+    cursor = cursor + math.floor(slack / 2)
+  elseif justify == "space-between" and #specs > 1 then
+    effectiveGap = gap + math.floor(slack / (#specs - 1))
+  end
+
+  local boxes = {}
+  for index, spec in ipairs(specs) do
+    local main = sizes[index] or 0
+    local cross = horizontal and (spec.height or crossSize) or (spec.width or crossSize)
+    local x = horizontal and cursor or content.x
+    local y = horizontal and content.y or cursor
+    local w = horizontal and main or cross
+    local h = horizontal and cross or main
+
+    local align = spec.align or item.align
+    if horizontal and cross < crossSize then
+      if align == "center" or align == "Center" then
+        y = content.y + math.floor((crossSize - cross) / 2)
+      elseif align == "bottom" or align == "Bottom" then
+        y = content.y + crossSize - cross
+      end
+    elseif (not horizontal) and cross < crossSize then
+      if align == "center" or align == "Center" then
+        x = content.x + math.floor((crossSize - cross) / 2)
+      elseif align == "right" or align == "Right" then
+        x = content.x + crossSize - cross
+      end
+    end
+
+    local margin = FugUi.spacing(spec.margin or 0)
+    x = x + margin.left
+    y = y + margin.top
+    w = w - margin.left - margin.right
+    h = h - margin.top - margin.bottom
+
+    local child = FugUi.box(parent.ui, FugUi.rect(x, y, w, h), spec)
+    child:draw()
+    table.insert(boxes, child)
+    cursor = cursor + main + effectiveGap
+  end
+
+  local unpackFn = table.unpack or unpack
+  return unpackFn(boxes)
+end
+
+-- Return a numeric dimension from fixed, percentage, fill, or auto sizing rules.
+function FugUi.resolveDimension(value, available, fallback)
+  if type(value) == "number" then return value end
+  if type(value) == "string" then
+    local percent = string.match(value, "^(%-?[%d%.]+)%%$")
+    if percent and available then
+      return math.floor(available * (tonumber(percent) / 100))
+    elseif value == "fill" then
+      return available
+    elseif value == "auto" then
+      return nil
+    end
+  end
+  return fallback
+end
+
+-- Return the local rectangle stored on a retained control/graphic item.
+function FugUi.itemRect(geometry)
+  if geometry.rect then return FugUi.copy(geometry.rect) end
+  return FugUi.rect(
+    geometry.x or 0,
+    geometry.y or 0,
+    geometry.width or geometry.w or 0,
+    geometry.height or geometry.h or 0
+  )
+end
+
+-- Add a retained control or graphic to a box using coordinates local to its content.
+function FugUi.Box:addItem(kind, name, geometry, opts)
+  local item = {
+    kind = kind,
+    name = name,
+    rect = FugUi.itemRect(geometry or {}),
+    opts = opts or {}
+  }
+  table.insert(self.items, item)
+  return item
+end
+
+-- Add a retained label to this box.
+function FugUi.Box:label(text, geometry, opts)
+  return self:addItem("label", text, geometry, opts)
+end
+
+-- Add a retained generic control to this box.
+function FugUi.Box:control(name, style, geometry, opts)
+  local item = self:addItem("control", name, geometry, opts)
+  item.style = style
+  return item
+end
+
+-- Add retained convenience controls to this box.
+function FugUi.Box:button(name, geometry, opts)
+  return self:addItem("button", name, geometry, opts)
+end
+
+function FugUi.Box:textControl(name, geometry, opts)
+  return self:addItem("text", name, geometry, opts)
+end
+
+function FugUi.Box:knob(name, geometry, opts)
+  return self:addItem("knob", name, geometry, opts)
+end
+
+function FugUi.Box:meter(name, geometry, opts)
+  return self:addItem("meter", name, geometry, opts)
+end
+
+-- Add a retained child container; its final rectangle is calculated at result().
+function FugUi.Box:div(opts)
+  local child = FugUi.box(self.ui, nil, opts or {}, self)
+  child.retained = true
+  table.insert(self.children, child)
+  return child
+end
+
+-- Create a retained horizontal flow container.
+function FugUi.Box:flowRow(opts)
+  local item = FugUi.copy(opts or {})
+  item.direction = "row"
+  return self:div(item)
+end
+
+-- Create a retained vertical flow container.
+function FugUi.Box:flowColumn(opts)
+  local item = FugUi.copy(opts or {})
+  item.direction = "column"
+  return self:div(item)
+end
+
+-- Measure content that has an intrinsic size before percentage/grow allocation.
+function FugUi.intrinsicSize(box)
+  local padding = box.padding
+  local itemRight = 0
+  local itemBottom = 0
+  for _, item in ipairs(box.items) do
+    local itemW = type(item.rect.w) == "number" and item.rect.w or 0
+    local itemH = type(item.rect.h) == "number" and item.rect.h or 0
+    itemRight = math.max(itemRight, item.rect.x + itemW)
+    itemBottom = math.max(itemBottom, item.rect.y + itemH)
+  end
+
+  local childW = 0
+  local childH = 0
+  local gap = box.opts.gap or 0
+  for index, child in ipairs(box.children) do
+    local w, h = FugUi.intrinsicSize(child)
+    w = FugUi.resolveDimension(child.opts.width, nil, w) or w
+    h = FugUi.resolveDimension(child.opts.height, nil, h) or h
+    local margin = child.margin
+    w = w + margin.left + margin.right
+    h = h + margin.top + margin.bottom
+    if box.direction == "row" then
+      childW = childW + w + (index > 1 and gap or 0)
+      childH = math.max(childH, h)
+    else
+      childW = math.max(childW, w)
+      childH = childH + h + (index > 1 and gap or 0)
+    end
+  end
+
+  local contentW = math.max(itemRight, childW)
+  local contentH = math.max(itemBottom, childH)
+  local width = contentW + padding.left + padding.right
+  local height = contentH + padding.top + padding.bottom
+  width = math.max(box.opts.minWidth or 0, width)
+  height = math.max(box.opts.minHeight or 0, height)
+  if box.opts.maxWidth then width = math.min(width, box.opts.maxWidth) end
+  if box.opts.maxHeight then height = math.min(height, box.opts.maxHeight) end
+  return width, height
+end
+
+-- Allocate one flow axis across fixed, percentage, auto, and grow children.
+function FugUi.allocateAxis(children, direction, available, gap)
+  local sizes = {}
+  local fixed = 0
+  local growTotal = 0
+  local growIndexes = {}
+  local usable = math.max(0, available - math.max(0, #children - 1) * gap)
+
+  for index, child in ipairs(children) do
+    local value = direction == "row" and child.opts.width or child.opts.height
+    local intrinsicW, intrinsicH = FugUi.intrinsicSize(child)
+    local intrinsic = direction == "row" and intrinsicW or intrinsicH
+    local size = value == "fill" and nil or FugUi.resolveDimension(value, usable, nil)
+    local marginSize = direction == "row" and child.margin.left + child.margin.right or child.margin.top + child.margin.bottom
+    if size then
+      sizes[index] = size + marginSize
+      fixed = fixed + sizes[index]
+    elseif value == "auto" then
+      sizes[index] = intrinsic + marginSize
+      fixed = fixed + sizes[index]
+    else
+      local grow = child.opts.grow or 1
+      growTotal = growTotal + grow
+      table.insert(growIndexes, index)
+    end
+  end
+
+  local remaining = math.max(0, usable - fixed)
+  local allocated = 0
+  for _, index in ipairs(growIndexes) do
+    local size = math.floor(remaining * ((children[index].opts.grow or 1) / growTotal))
+    sizes[index] = size
+    allocated = allocated + size
+  end
+  if #growIndexes > 0 then
+    sizes[growIndexes[#growIndexes]] = sizes[growIndexes[#growIndexes]] + (remaining - allocated)
+  end
+  return sizes
+end
+
+-- Calculate retained box rectangles recursively from the root down.
+function FugUi.layoutRetainedBox(box, x, y, availableW, availableH, forcedW, forcedH)
+  local intrinsicW, intrinsicH = FugUi.intrinsicSize(box)
+  local width = forcedW or FugUi.resolveDimension(box.opts.width, availableW, nil)
+  local height = forcedH or FugUi.resolveDimension(box.opts.height, availableH, nil)
+  if not width then width = box.opts.width == "auto" and intrinsicW or availableW or intrinsicW end
+  if box.opts.minWidth then width = math.max(width, box.opts.minWidth) end
+  if box.opts.maxWidth then width = math.min(width, box.opts.maxWidth) end
+
+  local padding = box.padding
+  local innerW = math.max(0, width - padding.left - padding.right)
+  local innerH = height and math.max(0, height - padding.top - padding.bottom) or nil
+  local gap = box.opts.gap or 0
+  local direction = box.direction or "column"
+  local mainAvailable = direction == "row" and innerW or (innerH or math.max(0, intrinsicH - padding.top - padding.bottom))
+  local axisSizes = FugUi.allocateAxis(box.children, direction, mainAvailable, gap)
+  local totalAxis = math.max(0, #box.children - 1) * gap
+  for _, size in ipairs(axisSizes) do totalAxis = totalAxis + size end
+  local slack = math.max(0, mainAvailable - totalAxis)
+  local justify = box.opts.justify or "left"
+  local effectiveGap = gap
+  local cursor = 0
+  if justify == "right" or justify == "bottom" then
+    cursor = slack
+  elseif justify == "center" then
+    cursor = math.floor(slack / 2)
+  elseif justify == "space-between" and #box.children > 1 then
+    effectiveGap = gap + math.floor(slack / (#box.children - 1))
+  end
+  local childrenRight = 0
+  local childrenBottom = 0
+
+  for index, child in ipairs(box.children) do
+    local margin = child.margin
+    local childX = padding.left
+    local childY = padding.top
+    local childW
+    local childH
+
+    if direction == "row" then
+      childX = childX + cursor + margin.left
+      childY = childY + margin.top
+      childW = math.max(0, axisSizes[index] - margin.left - margin.right)
+      childH = FugUi.resolveDimension(child.opts.height, innerH, nil)
+    else
+      childX = childX + margin.left
+      childY = childY + cursor + margin.top
+      childW = FugUi.resolveDimension(child.opts.width, innerW, nil)
+      if not childW then
+        childW = child.opts.width == "auto" and select(1, FugUi.intrinsicSize(child)) or innerW - margin.left - margin.right
+      end
+      childH = math.max(0, axisSizes[index] - margin.top - margin.bottom)
+    end
+
+    FugUi.layoutRetainedBox(child, x + childX, y + childY, childW or innerW, innerH, childW, childH)
+    local align = child.opts.align or box.opts.align
+    if direction == "row" and innerH and child.rect.h + margin.top + margin.bottom < innerH then
+      if align == "center" then
+        child.rect.y = y + padding.top + math.floor((innerH - child.rect.h) / 2)
+      elseif align == "bottom" then
+        child.rect.y = y + padding.top + innerH - child.rect.h - margin.bottom
+      end
+    elseif direction == "column" and child.rect.w + margin.left + margin.right < innerW then
+      if align == "center" then
+        child.rect.x = x + padding.left + math.floor((innerW - child.rect.w) / 2)
+      elseif align == "right" then
+        child.rect.x = x + padding.left + innerW - child.rect.w - margin.right
+      end
+    end
+
+    local outerW = child.rect.w + margin.left + margin.right
+    local outerH = child.rect.h + margin.top + margin.bottom
+    cursor = cursor + (direction == "row" and outerW or outerH) + effectiveGap
+    childrenRight = math.max(childrenRight, childX + child.rect.w + margin.right)
+    childrenBottom = math.max(childrenBottom, childY + child.rect.h + margin.bottom)
+  end
+
+  local itemRight = 0
+  local itemBottom = 0
+  for _, item in ipairs(box.items) do
+    local itemW = FugUi.resolveDimension(item.rect.w, innerW, 0) or 0
+    local itemH = FugUi.resolveDimension(item.rect.h, innerH, 0) or 0
+    itemRight = math.max(itemRight, padding.left + item.rect.x + itemW)
+    itemBottom = math.max(itemBottom, padding.top + item.rect.y + itemH)
+  end
+
+  if not height then
+    height = math.max(intrinsicH, childrenBottom + padding.bottom, itemBottom + padding.bottom)
+  end
+  if box.opts.minHeight then height = math.max(height, box.opts.minHeight) end
+  if box.opts.maxHeight then height = math.min(height, box.opts.maxHeight) end
+  box.rect = FugUi.rect(x, y, width, height)
+end
+
+-- Render retained containers and their local controls after final geometry exists.
+function FugUi.renderRetainedBox(box)
+  if box.drawGroup then box:group(box.title, box.groupOptions) end
+  local content = box:contentRect()
+
+  for _, item in ipairs(box.items) do
+    local itemW = FugUi.resolveDimension(item.rect.w, content.w, 0) or 0
+    local itemH = FugUi.resolveDimension(item.rect.h, content.h, 0) or 0
+    local rect = FugUi.rect(content.x + item.rect.x, content.y + item.rect.y, itemW, itemH)
+    if item.kind == "label" then
+      FugUi.label(box.ui, item.name, rect, item.opts)
+    elseif item.kind == "button" then
+      FugUi.button(box.ui, item.name, rect, item.opts)
+    elseif item.kind == "text" then
+      FugUi.textControl(box.ui, item.name, rect, item.opts)
+    elseif item.kind == "knob" then
+      FugUi.knob(box.ui, item.name, rect, item.opts)
+    elseif item.kind == "meter" then
+      FugUi.meter(box.ui, item.name, rect, item.opts)
+    else
+      FugUi.control(box.ui, item.name, item.style, rect, item.opts)
+    end
+  end
+
+  for _, child in ipairs(box.children) do
+    FugUi.renderRetainedBox(child)
+  end
+end
+
+-- Lay out and render all retained pages, returning their furthest extents.
+function FugUi.renderRetainedPages(ui)
+  local maxRight = 0
+  local maxBottom = 0
+  for _, page in ipairs(ui.pageRoots) do
+    local margin = page.pageMargin or FugUi.spacing(0)
+    local availableW = (ui.theme.pageW or 900) - margin.left - margin.right
+    local availableH = (ui.theme.pageH or 520) - margin.top - margin.bottom
+    local pageW = FugUi.resolveDimension(page.opts.width, availableW, availableW)
+    local pageH = FugUi.resolveDimension(page.opts.height, availableH, nil)
+    FugUi.layoutRetainedBox(page, margin.left, margin.top, availableW, availableH, pageW, pageH)
+    FugUi.renderRetainedBox(page)
+    maxRight = math.max(maxRight, page.rect.x + page.rect.w + margin.right)
+    maxBottom = math.max(maxBottom, page.rect.y + page.rect.h + margin.bottom)
+  end
+  return maxRight, maxBottom
+end
+
+-- -----------------------------------------------------------------------------
+-- Builder method API
+-- -----------------------------------------------------------------------------
+-- These methods keep the procedural helpers available while allowing page code to
+-- use a lighter object-style syntax: `local ui = FugUi.new(theme); ui:header(...)`.
+
+function FugUi.Builder:rect(x, y, w, h)
+  return FugUi.rect(x, y, w, h)
+end
+
+function FugUi.Builder:pos(rect)
+  return FugUi.pos(rect)
+end
+
+function FugUi.Builder:size(rect)
+  return FugUi.size(rect)
+end
+
+function FugUi.Builder:inset(rect, pad)
+  return FugUi.inset(rect, pad)
+end
+
+function FugUi.Builder:offset(rect, dx, dy)
+  return FugUi.offset(rect, dx, dy)
+end
+
+function FugUi.Builder:resize(rect, w, h)
+  return FugUi.resize(rect, w, h)
+end
+
+function FugUi.Builder:center(parent, w, h)
+  return FugUi.center(parent, w, h)
+end
+
+function FugUi.Builder:centerX(parent, w, y, h)
+  return FugUi.centerX(parent, w, y, h)
+end
+
+function FugUi.Builder:centerY(parent, h, x, w)
+  return FugUi.centerY(parent, h, x, w)
+end
+
+function FugUi.Builder:align(parent, w, h, hAlign, vAlign)
+  return FugUi.align(parent, w, h, hAlign, vAlign)
+end
+
+function FugUi.Builder:dock(parent, edge, size)
+  return FugUi.dock(parent, edge, size)
+end
+
+function FugUi.Builder:rows(parent, count, gap)
+  return FugUi.rows(parent, count, gap)
+end
+
+function FugUi.Builder:cols(parent, count, gap)
+  return FugUi.cols(parent, count, gap)
+end
+
+function FugUi.Builder:grid(parent, rowCount, colCount, gapX, gapY)
+  return FugUi.grid(parent, rowCount, colCount, gapX, gapY)
+end
+
+function FugUi.Builder:controlName(base, count, index)
+  return FugUi.controlName(base, count, index)
+end
+
+function FugUi.Builder:color(name, fallback)
+  return FugUi.color(self, name, fallback)
+end
+
+function FugUi.Builder:control(name, style, rect, opts)
+  return FugUi.control(self, name, style, rect, opts)
+end
+
+function FugUi.Builder:hiddenControl(name)
+  return FugUi.hiddenControl(self, name)
+end
+
+function FugUi.Builder:label(text, rect, opts)
+  return FugUi.label(self, text, rect, opts)
+end
+
+function FugUi.Builder:group(text, rect, opts)
+  return FugUi.group(self, text, rect, opts)
+end
+
+function FugUi.Builder:background()
+  return FugUi.background(self)
+end
+
+function FugUi.Builder:header(title, subtitle)
+  return FugUi.header(self, title, subtitle)
+end
+
+function FugUi.Builder:statusBar(controlName)
+  return FugUi.statusBar(self, controlName)
+end
+
+function FugUi.Builder:button(name, rect, opts)
+  return FugUi.button(self, name, rect, opts)
+end
+
+function FugUi.Builder:textControl(name, rect, opts)
+  return FugUi.textControl(self, name, rect, opts)
+end
+
+function FugUi.Builder:knob(name, rect, opts)
+  return FugUi.knob(self, name, rect, opts)
+end
+
+function FugUi.Builder:meter(name, rect, opts)
+  return FugUi.meter(self, name, rect, opts)
+end
+
+function FugUi.Builder:tableHeader(columns, x, y, h)
+  return FugUi.tableHeader(self, columns, x, y, h)
+end
+
+function FugUi.Builder:meterBank(baseName, count, rect, opts)
+  return FugUi.meterBank(self, baseName, count, rect, opts)
+end
+
+function FugUi.Builder:page(opts)
+  return FugUi.page(self, opts)
+end
+
+function FugUi.Builder:box(rect, opts)
+  return FugUi.box(self, rect, opts)
+end
+
+function FugUi.Builder:result()
+  if not self.finalized then
+    local retainedRight, retainedBottom = FugUi.renderRetainedPages(self)
+    local pageW = math.max(self.theme.pageW or 0, self.contentRight or 0, retainedRight or 0)
+    local pageH = math.max(self.theme.pageH or 0, self.contentBottom or 0, retainedBottom or 0)
+
+    for _, graphic in ipairs(self.backgroundGraphics) do
+      graphic.Size = {pageW, pageH}
+    end
+
+    for _, anchor in ipairs(self.bottomAnchors) do
+      local item = self.layout[anchor.name]
+      if item then
+        item.Position = {anchor.left, pageH - anchor.bottom - anchor.height}
+        item.Size = {pageW - anchor.left - anchor.right, anchor.height}
+      end
+    end
+
+    self.pageW = pageW
+    self.pageH = pageH
+    self.finalized = true
+  end
+  return self.layout, self.graphics
+end
+
+-- Merge project theme overrides with FugUi's common visual baseline.
+FugSchedulerTheme = FugUi.theme(FugSchedulerTheme)
+
+-- Scheduler-specific UI helpers.
+FugSchedulerUi = FugSchedulerUi or {}
+
+-- Draw a label and read-only Text control as one status row.
+function FugSchedulerUi.statusField(ui, label, controlName, rect)
+  local labelWidth = 150
+  ui:label(label, ui:rect(rect.x, rect.y, labelWidth, rect.h), {
+    Color = ui:color("mutedText")
+  })
+  ui:textControl(controlName, ui:rect(rect.x + labelWidth, rect.y, rect.w - labelWidth, rect.h), {
+    IsReadOnly = true,
+    TextBoxStyle = "NoBackground",
+    TextColor = ui:color("controlText"),
+    HTextAlign = "Left",
+    PrettyName = "Status~" .. label
+  })
+end
+
+-- Draw a centered read-only editor message with a shared high-contrast status style.
+function FugSchedulerUi.editorStatus(ui, controlName, rect, prettyName)
+  ui:textControl(controlName, rect, {
+    IsReadOnly = true,
+    TextBoxStyle = "Normal",
+    Color = ui:color("statusBackground"),
+    TextColor = ui:color("statusText"),
+    HTextAlign = "Center",
+    VTextAlign = "Center",
+    WordWrap = true,
+    FontSize = 10,
+    PrettyName = prettyName
+  })
+end
+
+-- Draw a scrollable JSON or log viewer as a monospaced ListBox of source lines.
+function FugSchedulerUi.dataViewer(ui, controlName, rect, prettyName, _isReadOnly)
+  ui:control(controlName, "ListBox", rect, {
+    Color = ui:color("statusBackground"),
+    TextColor = ui:color("statusText"),
+    HTextAlign = "Left",
+    Font = "Roboto Mono",
+    FontSize = 9,
+    PrettyName = prettyName
+  })
+end
+
+-- Draw one Week Pattern weekday label and structured Day Pattern selector row.
+function FugSchedulerUi.weekdayAssignment(ui, weekday, y)
+  ui:label(weekday.label, ui:rect(340, y + 2, 112, 22), {Color = ui:color("mutedText")})
+  ui:control(weekday.controlName, "ComboBox", ui:rect(456, y, 414, 26), {
+    PrettyName = "Week Patterns~" .. weekday.label .. " Day Pattern"
+  })
+end
+
+-- Draw a standard explanatory panel for unfinished editor pages.
+function FugSchedulerUi.placeholderPanel(ui, title, body)
+  ui:group(title, ui:rect(10, 44, 880, 400))
+  ui:label(body, ui:rect(28, 82, 844, 100), {
+    FontSize = 12,
+    VTextAlign = "Top",
+    WordWrap = true,
+    Color = ui:color("mutedText")
+  })
+end
+
+-- Return the plugin block color shown in Q-SYS Designer.
+function GetColor(_props)
+  return FugSchedulerTheme.colors.accent
+end
+
+-- Return the initial plugin name shown when dragged into a design.
+function GetPrettyName(_props)
+  return "FugScheduler 2000 v" .. PluginInfo.Version
+end
+
+-- Define the plugin pages.
+-- Q-SYS calls this to define page objects for the plugin control panel.
+function GetPages(props)
+  local pages = {}
+  for _, name in ipairs(pageNames(props)) do
+    table.insert(pages, {name = name})
+  end
+  return pages
+end
+
+-- Define user-editable design-time properties.
+-- Q-SYS calls this before runtime to define editable plugin properties.
+function GetProperties()
+  local props = {}
+
+  table.insert(props, {
+    Name = "Show Diagnostics Page",
+    Type = "boolean",
+    Value = true,
+    Header = "User Interface",
+    Comment = "Show the runtime diagnostics and logging page."
+  })
+  table.insert(props, {
+    Name = "Layout Debug",
+    Type = "boolean",
+    Value = false,
+    Comment = "Show page and canvas diagnostics in the plugin UI."
+  })
+
+  return props
+end
+
+-- Rectify dependent properties after design-time edits.
+-- Q-SYS calls this after property edits; no dependent values exist yet.
+function RectifyProperties(props)
+  return props
+end
+
+-- Define non-control pins.
+-- Q-SYS calls this to define non-control pins; the boilerplate needs none.
+function GetPins(_props)
+  return {}
+end
+
+-- Define hidden embedded components.
+-- Q-SYS calls this to define embedded components; scheduling is Lua-only initially.
+function GetComponents(_props)
+  return {}
+end
+
+-- Define wiring between pins and embedded components.
+-- Q-SYS calls this to define embedded wiring; the boilerplate has no components.
+function GetWiring(_props)
+  return {}
+end
+
+-- Define persistent controls and control pins.
+-- Q-SYS calls this to define persistent controls, UI bindings, and control pins.
+function GetControls(_props)
+  local ctrls = {}
+
+  -- Allow a Control Script to supply the complete runtime during live debugging.
+  -- When connected, Q-SYS uses this reserved control instead of the bundled runtime.
+  table.insert(ctrls, {
+    Name = "code",
+    ControlType = "Text",
+    UserPin = true,
+    PinStyle = "Input",
+    Count = 1
+  })
+
+  -- Receive trusted Lua source that defines the agreed action-provider function.
+  -- Unlike `code`, this is an ordinary Text input interpreted by the active runtime.
+  table.insert(ctrls, {
+    Name = "ActionSource",
+    ControlType = "Text",
+    UserPin = true,
+    PinStyle = "Input",
+    Count = 1
+  })
+
+  -- Select which Scheduler the banked human-readable status controls and editor display.
+  table.insert(ctrls, {Name = "SchedulerSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerEnabled", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Output", Count = 1})
+
+  -- Edit the selected Scheduler through the runtime's validated transaction layer.
+  table.insert(ctrls, {Name = "SchedulerLabel", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerEditorEnabled", ControlType = "Button", ButtonType = "Toggle", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerPaused", ControlType = "Button", ButtonType = "Toggle", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerDefaultWeekPattern", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "AddScheduler", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DuplicateScheduler", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DeleteScheduler", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerEditorStatus", ControlType = "Text", Count = 1})
+
+  -- Build Day Patterns by selecting nested Events and attaching registered Actions.
+  table.insert(ctrls, {Name = "DayPatternSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "DayPatternLabel", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "DayPatternSummary", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "DayPatternReferences", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "AddDayPattern", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DuplicateDayPattern", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DeleteDayPattern", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "EventSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "EventLabel", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "EventTime", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "EventSummary", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "AddEvent", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DuplicateEvent", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DeleteEvent", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "EventActionSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "EventActionPicker", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "AddEventAction", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DeleteEventAction", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "MoveEventActionUp", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "MoveEventActionDown", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DayPatternEditorStatus", ControlType = "Text", Count = 1})
+
+  -- Edit Week Patterns and their seven Day Pattern assignments in the selected Scheduler.
+  table.insert(ctrls, {Name = "WeekPatternSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "WeekPatternLabel", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "WeekPatternReferences", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "AddWeekPattern", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DuplicateWeekPattern", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DeleteWeekPattern", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  for _, weekday in ipairs(FugSchedulerWeekdays) do
+    table.insert(ctrls, {Name = weekday.controlName, ControlType = "Text", Count = 1})
+  end
+  table.insert(ctrls, {Name = "WeekPatternEditorStatus", ControlType = "Text", Count = 1})
+
+  table.insert(ctrls, {Name = "ReloadActions", ControlType = "Button", ButtonType = "Momentary", UserPin = true, PinStyle = "Input", Count = 1})
+  table.insert(ctrls, {Name = "ActionSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "TestAction", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+
+  -- Persist the canonical versioned multi-Scheduler configuration as JSON.
+  table.insert(ctrls, {Name = "ScheduleData", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "ScheduleDataViewer", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "ReloadSchedule", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "TestDateTime", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "ResolveTestTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+
+  table.insert(ctrls, {Name = "Status", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "RegistryStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "RegisteredActionCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "ScheduleStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "GlobalSchedulerStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "GlobalSchedulerStatusViewer", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "ResolutionSource", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "ResolvedDayPattern", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "PreviousEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "CurrentEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "CurrentEventActions", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "NextEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "NextEventTime", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "Countdown", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "DiagnosticLog", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "DiagnosticLogViewer", ControlType = "Text", Count = 1})
+
+  return ctrls
+end
+
+-- Define plugin UI layout and graphics.
+-- Q-SYS calls this to build the current page's layout and graphics tables.
+function GetControlLayout(props)
+  local ui = FugUi.new(FugSchedulerTheme)
+  local page = currentPageName(props)
+
+  ui:background()
+  ui:header(page, "FugScheduler 2000 resolution spike")
+  ui:hiddenControl("code")
+  ui:hiddenControl("ActionSource")
+  ui:statusBar("Status")
+
+  if page == "Overview" then
+    ui:group("Scheduler Resolution", ui:rect(10, 44, 570, 400))
+    ui:control("SchedulerSelect", "ComboBox", ui:rect(28, 70, 250, 26), {
+      PrettyName = "Schedules~Selected Scheduler"
+    })
+    ui:button("SchedulerEnabled", ui:rect(292, 70, 130, 26), {
+      ButtonStyle = "Toggle",
+      Legend = "Scheduler Enabled",
+      IsDisabled = true,
+      Color = ui:color("accent")
+    })
+    ui:button("ReloadSchedule", ui:rect(436, 70, 124, 26), {
+      ButtonStyle = "Momentary",
+      Legend = "Reload Schedule",
+      Color = ui:color("schedule")
+    })
+
+    FugSchedulerUi.statusField(ui, "Action registry", "RegistryStatus", ui:rect(28, 108, 532, 22))
+    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(28, 136, 532, 22))
+    FugSchedulerUi.statusField(ui, "Resolution source", "ResolutionSource", ui:rect(28, 164, 532, 22))
+    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(28, 192, 532, 22))
+    FugSchedulerUi.statusField(ui, "Previous Event", "PreviousEvent", ui:rect(28, 220, 532, 22))
+    FugSchedulerUi.statusField(ui, "Current Event", "CurrentEvent", ui:rect(28, 248, 532, 22))
+    FugSchedulerUi.statusField(ui, "Current Actions", "CurrentEventActions", ui:rect(28, 276, 532, 22))
+    FugSchedulerUi.statusField(ui, "Next Event", "NextEvent", ui:rect(28, 304, 532, 22))
+    FugSchedulerUi.statusField(ui, "Next Event Time", "NextEventTime", ui:rect(28, 332, 532, 22))
+    FugSchedulerUi.statusField(ui, "Countdown", "Countdown", ui:rect(28, 360, 532, 22))
+
+    ui:group("Vertical Slice", ui:rect(590, 44, 300, 400))
+    ui:label("Resolution only", ui:rect(610, 76, 260, 28), {
+      FontSize = 18,
+      IsBold = true,
+      Color = ui:color("accent")
+    })
+    ui:label("This phase validates JSON persistence, Day Pattern and Week Pattern resolution, Override precedence, and previous/current/next Events. Scheduled callbacks do not fire automatically yet.", ui:rect(610, 118, 258, 150), {
+      VTextAlign = "Top",
+      WordWrap = true,
+      Color = ui:color("mutedText")
+    })
+    FugSchedulerUi.statusField(ui, "Schedulers", "SchedulerCount", ui:rect(610, 292, 258, 22))
+    FugSchedulerUi.statusField(ui, "Actions", "RegisteredActionCount", ui:rect(610, 320, 258, 22))
+
+  elseif page == "Schedules" then
+    ui:group("Scheduler Editor", ui:rect(10, 44, 570, 400))
+    ui:label("Scheduler", ui:rect(28, 70, 140, 22), {Color = ui:color("mutedText")})
+    ui:control("SchedulerSelect", "ComboBox", ui:rect(174, 68, 368, 26), {
+      PrettyName = "Schedules~Selected Scheduler"
+    })
+
+    ui:label("Label", ui:rect(28, 108, 140, 22), {Color = ui:color("mutedText")})
+    ui:textControl("SchedulerLabel", ui:rect(174, 106, 368, 26), {
+      PrettyName = "Schedules~Label"
+    })
+    ui:label("Default Week Pattern", ui:rect(28, 146, 140, 22), {Color = ui:color("mutedText")})
+    ui:control("SchedulerDefaultWeekPattern", "ComboBox", ui:rect(174, 144, 368, 26), {
+      PrettyName = "Schedules~Default Week Pattern"
+    })
+
+    ui:button("SchedulerEditorEnabled", ui:rect(174, 184, 176, 28), {
+      ButtonStyle = "Toggle",
+      Legend = "Enabled",
+      Color = ui:color("accent")
+    })
+    ui:button("SchedulerPaused", ui:rect(366, 184, 176, 28), {
+      ButtonStyle = "Toggle",
+      Legend = "Paused",
+      Color = ui:color("warning")
+    })
+
+    ui:button("AddScheduler", ui:rect(28, 236, 154, 28), {
+      ButtonStyle = "Momentary",
+      Legend = "Add Scheduler",
+      Color = ui:color("schedule")
+    })
+    ui:button("DuplicateScheduler", ui:rect(198, 236, 164, 28), {
+      ButtonStyle = "Momentary",
+      Legend = "Duplicate",
+      Color = ui:color("accent")
+    })
+    ui:button("DeleteScheduler", ui:rect(378, 236, 164, 28), {
+      ButtonStyle = "Momentary",
+      Legend = "Delete",
+      Color = ui:color("danger")
+    })
+
+    ui:label("Validation / transaction status", ui:rect(28, 284, 514, 20), {Color = ui:color("mutedText")})
+    FugSchedulerUi.editorStatus(
+      ui,
+      "SchedulerEditorStatus",
+      ui:rect(28, 306, 514, 54),
+      "Schedules~Editor Status"
+    )
+
+    ui:group("Resolver / JSON", ui:rect(590, 44, 300, 400))
+    ui:label("Test date/time", ui:rect(610, 70, 260, 20), {Color = ui:color("mutedText")})
+    ui:textControl("TestDateTime", ui:rect(610, 92, 260, 26), {
+      PrettyName = "Schedule~Test Date Time"
+    })
+    ui:button("ResolveTestTime", ui:rect(610, 128, 124, 26), {
+      ButtonStyle = "Momentary",
+      Legend = "Resolve All",
+      Color = ui:color("accent")
+    })
+    ui:button("ReloadSchedule", ui:rect(746, 128, 124, 26), {
+      ButtonStyle = "Momentary",
+      Legend = "Validate JSON",
+      Color = ui:color("schedule")
+    })
+    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(610, 166, 260, 22))
+    FugSchedulerUi.statusField(ui, "Source", "ResolutionSource", ui:rect(610, 194, 260, 22))
+    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(610, 222, 260, 22))
+    ui:label("Canonical ScheduleData", ui:rect(610, 258, 260, 20), {Color = ui:color("mutedText")})
+    FugSchedulerUi.dataViewer(
+      ui,
+      "ScheduleDataViewer",
+      ui:rect(610, 280, 260, 134),
+      "Schedule~JSON Data",
+      false
+    )
+
+  elseif page == "Day Patterns" then
+    ui:label("Scheduler", ui:rect(18, 48, 92, 22), {Color = ui:color("mutedText")})
+    ui:control("SchedulerSelect", "ComboBox", ui:rect(112, 46, 420, 26), {
+      PrettyName = "Day Patterns~Selected Scheduler"
+    })
+
+    ui:group("Day Patterns", ui:rect(10, 82, 282, 356))
+    ui:control("DayPatternSelect", "ListBox", ui:rect(24, 110, 254, 142), {
+      PrettyName = "Day Patterns~Selected Day Pattern",
+      FontSize = 10
+    })
+    ui:label("Label", ui:rect(24, 260, 54, 22), {Color = ui:color("mutedText")})
+    ui:textControl("DayPatternLabel", ui:rect(80, 258, 198, 26), {
+      PrettyName = "Day Patterns~Label"
+    })
+    ui:textControl("DayPatternSummary", ui:rect(24, 292, 254, 22), {
+      IsReadOnly = true,
+      TextBoxStyle = "NoBackground",
+      HTextAlign = "Left",
+      TextColor = ui:color("controlText")
+    })
+    ui:textControl("DayPatternReferences", ui:rect(24, 316, 254, 38), {
+      IsReadOnly = true,
+      TextBoxStyle = "NoBackground",
+      HTextAlign = "Left",
+      VTextAlign = "Top",
+      WordWrap = true,
+      TextColor = ui:color("mutedText"),
+      FontSize = 9
+    })
+    ui:button("AddDayPattern", ui:rect(24, 366, 72, 28), {
+      ButtonStyle = "Momentary", Legend = "Add", Color = ui:color("schedule")
+    })
+    ui:button("DuplicateDayPattern", ui:rect(102, 366, 92, 28), {
+      ButtonStyle = "Momentary", Legend = "Duplicate", Color = ui:color("accent")
+    })
+    ui:button("DeleteDayPattern", ui:rect(200, 366, 78, 28), {
+      ButtonStyle = "Momentary", Legend = "Delete", Color = ui:color("danger")
+    })
+
+    ui:group("Events", ui:rect(302, 82, 282, 356))
+    ui:control("EventSelect", "ListBox", ui:rect(316, 110, 254, 142), {
+      PrettyName = "Day Patterns~Selected Event",
+      FontSize = 10
+    })
+    ui:label("Label", ui:rect(316, 260, 48, 22), {Color = ui:color("mutedText")})
+    ui:textControl("EventLabel", ui:rect(366, 258, 204, 26), {
+      PrettyName = "Day Patterns~Event Label"
+    })
+    ui:label("Time", ui:rect(316, 294, 48, 22), {Color = ui:color("mutedText")})
+    ui:textControl("EventTime", ui:rect(366, 292, 92, 26), {
+      PrettyName = "Day Patterns~Event Time",
+      HTextAlign = "Center"
+    })
+    ui:textControl("EventSummary", ui:rect(466, 292, 104, 26), {
+      IsReadOnly = true,
+      TextBoxStyle = "NoBackground",
+      HTextAlign = "Right",
+      TextColor = ui:color("mutedText"),
+      FontSize = 9
+    })
+    ui:button("AddEvent", ui:rect(316, 366, 72, 28), {
+      ButtonStyle = "Momentary", Legend = "Add", Color = ui:color("schedule")
+    })
+    ui:button("DuplicateEvent", ui:rect(394, 366, 92, 28), {
+      ButtonStyle = "Momentary", Legend = "Duplicate", Color = ui:color("accent")
+    })
+    ui:button("DeleteEvent", ui:rect(492, 366, 78, 28), {
+      ButtonStyle = "Momentary", Legend = "Delete", Color = ui:color("danger")
+    })
+
+    ui:group("Event Actions", ui:rect(594, 82, 296, 356))
+    ui:control("EventActionSelect", "ListBox", ui:rect(608, 110, 268, 142), {
+      PrettyName = "Day Patterns~Selected Event Action",
+      FontSize = 10
+    })
+    ui:label("Attach registered Action", ui:rect(608, 260, 268, 20), {Color = ui:color("mutedText")})
+    ui:control("EventActionPicker", "ComboBox", ui:rect(608, 282, 268, 26), {
+      PrettyName = "Day Patterns~Action to Attach"
+    })
+    ui:button("AddEventAction", ui:rect(608, 318, 128, 28), {
+      ButtonStyle = "Momentary", Legend = "Add Action", Color = ui:color("action", ui:color("warning"))
+    })
+    ui:button("DeleteEventAction", ui:rect(748, 318, 128, 28), {
+      ButtonStyle = "Momentary", Legend = "Delete", Color = ui:color("danger")
+    })
+    ui:button("MoveEventActionUp", ui:rect(608, 366, 128, 28), {
+      ButtonStyle = "Momentary", Legend = "Move Up", Color = ui:color("accent")
+    })
+    ui:button("MoveEventActionDown", ui:rect(748, 366, 128, 28), {
+      ButtonStyle = "Momentary", Legend = "Move Down", Color = ui:color("accent")
+    })
+
+    FugSchedulerUi.editorStatus(
+      ui,
+      "DayPatternEditorStatus",
+      ui:rect(10, 448, 880, 34),
+      "Day Patterns~Editor Status"
+    )
+
+  elseif page == "Week Patterns" then
+    ui:label("Scheduler", ui:rect(18, 48, 92, 22), {Color = ui:color("mutedText")})
+    ui:control("SchedulerSelect", "ComboBox", ui:rect(112, 46, 420, 26), {
+      PrettyName = "Week Patterns~Selected Scheduler"
+    })
+
+    ui:group("Week Patterns", ui:rect(10, 82, 300, 356))
+    ui:control("WeekPatternSelect", "ListBox", ui:rect(24, 110, 272, 142), {
+      PrettyName = "Week Patterns~Selected Week Pattern",
+      FontSize = 10
+    })
+    ui:label("Label", ui:rect(24, 262, 54, 22), {Color = ui:color("mutedText")})
+    ui:textControl("WeekPatternLabel", ui:rect(80, 260, 216, 26), {
+      PrettyName = "Week Patterns~Label"
+    })
+    ui:label("References", ui:rect(24, 296, 272, 18), {Color = ui:color("mutedText")})
+    ui:textControl("WeekPatternReferences", ui:rect(24, 316, 272, 38), {
+      IsReadOnly = true,
+      TextBoxStyle = "NoBackground",
+      HTextAlign = "Left",
+      VTextAlign = "Top",
+      WordWrap = true,
+      TextColor = ui:color("controlText"),
+      FontSize = 9
+    })
+    ui:button("AddWeekPattern", ui:rect(24, 366, 76, 28), {
+      ButtonStyle = "Momentary", Legend = "Add", Color = ui:color("schedule")
+    })
+    ui:button("DuplicateWeekPattern", ui:rect(106, 366, 104, 28), {
+      ButtonStyle = "Momentary", Legend = "Duplicate", Color = ui:color("accent")
+    })
+    ui:button("DeleteWeekPattern", ui:rect(216, 366, 80, 28), {
+      ButtonStyle = "Momentary", Legend = "Delete", Color = ui:color("danger")
+    })
+
+    ui:group("Weekday Assignments", ui:rect(320, 82, 570, 356))
+    for index, weekday in ipairs(FugSchedulerWeekdays) do
+      FugSchedulerUi.weekdayAssignment(ui, weekday, 110 + ((index - 1) * 36))
+    end
+    ui:label("Assignments store stable Day Pattern IDs; labels are display-only.", ui:rect(340, 370, 530, 30), {
+      Color = ui:color("mutedText"),
+      HTextAlign = "Center",
+      WordWrap = true,
+      FontSize = 9
+    })
+
+    FugSchedulerUi.editorStatus(
+      ui,
+      "WeekPatternEditorStatus",
+      ui:rect(10, 448, 880, 34),
+      "Week Patterns~Editor Status"
+    )
+
+  elseif page == "Actions" then
+    ui:group("External Action Registry", ui:rect(10, 44, 880, 400))
+    ui:label("Connect trusted Lua source to ActionSource. The source defines GetFugSchedulerActions(), which returns Action definitions used by Event Actions.", ui:rect(28, 78, 844, 62), {
+      VTextAlign = "Top",
+      WordWrap = true,
+      Color = ui:color("mutedText")
+    })
+    ui:button("ReloadActions", ui:rect(28, 132, 130, 26), {
+      ButtonStyle = "Momentary",
+      Legend = "Reload Actions",
+      Color = ui:color("action", ui:color("warning"))
+    })
+    ui:label("Registered Action", ui:rect(28, 176, 130, 24), {Color = ui:color("mutedText")})
+    ui:control("ActionSelect", "ComboBox", ui:rect(164, 176, 360, 26), {PrettyName = "Actions~Selected Action"})
+    ui:button("TestAction", ui:rect(540, 176, 120, 26), {
+      ButtonStyle = "Momentary",
+      Legend = "Test Action",
+      Color = ui:color("action", ui:color("warning"))
+    })
+    FugSchedulerUi.statusField(ui, "Registry status", "RegistryStatus", ui:rect(28, 224, 632, 24))
+    FugSchedulerUi.statusField(ui, "Action count", "RegisteredActionCount", ui:rect(28, 256, 632, 24))
+
+  elseif page == "Diagnostics" then
+    ui:group("Diagnostics", ui:rect(10, 44, 430, 400))
+    FugSchedulerUi.dataViewer(
+      ui,
+      "DiagnosticLogViewer",
+      ui:rect(28, 78, 394, 332),
+      "Diagnostics~Log",
+      true
+    )
+    ui:group("Global Scheduler Status JSON", ui:rect(450, 44, 440, 400))
+    FugSchedulerUi.dataViewer(
+      ui,
+      "GlobalSchedulerStatusViewer",
+      ui:rect(468, 78, 404, 332),
+      "Diagnostics~Global Scheduler Status",
+      true
+    )
+  end
+
+  if propValue(props, "Layout Debug", false) then
+    ui:label(page .. " | canvas " .. ui.theme.pageW .. "x" .. ui.theme.pageH, ui:rect(10, 470, 880, 16), {
+      FontSize = 9,
+      Color = ui:color("warning")
+    })
+  end
+
+  return ui:result()
+end
+
+-- Start event-based runtime logic when loaded on a Core or in emulation.
+if Controls then
+  -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
+  FugSchedulerWeekdays = FugSchedulerWeekdays or {
+    {key = "Mon", label = "Monday", controlName = "WeekPatternMon"},
+    {key = "Tue", label = "Tuesday", controlName = "WeekPatternTue"},
+    {key = "Wed", label = "Wednesday", controlName = "WeekPatternWed"},
+    {key = "Thu", label = "Thursday", controlName = "WeekPatternThu"},
+    {key = "Fri", label = "Friday", controlName = "WeekPatternFri"},
+    {key = "Sat", label = "Saturday", controlName = "WeekPatternSat"},
+    {key = "Sun", label = "Sunday", controlName = "WeekPatternSun"}
+  }
+
+  -- Hold the latest aggregate runtime snapshot for internal and debug-runtime consumers.
+  FugSchedulerStatus = nil
+
+  FugSchedulerRuntime = {
+    json = require("rapidjson"),
+    actionsById = {},
+    orderedActions = {},
+    providerEnvironment = nil,
+    activeSchedule = nil,
+    scheduleWarnings = {},
+    scheduleInitialized = false,
+    selectedSchedulerId = nil,
+    resolutionResultsById = {},
+    globalStatus = nil,
+    writingScheduleData = false,
+    updatingSchedulerEditor = false,
+    updatingDayPatternEditor = false,
+    updatingWeekPatternEditor = false,
+    selectedDayPatternIds = {},
+    selectedWeekPatternIds = {},
+    selectedEventIds = {},
+    selectedEventActionIndexes = {},
+    uuidCounter = 0,
+    uuidSeeded = false
+  }
+
+  -- Populate a scrollable ListBox mirror from the individual lines of a Text source.
+  function FugSchedulerRuntime.refreshLineViewer(viewerName, value)
+    local viewer = Controls[viewerName]
+    if not viewer then return end
+
+    local lines = {}
+    local source = tostring(value or "")
+    for line in string.gmatch(source .. "\n", "(.-)\n") do table.insert(lines, line) end
+    if #lines == 0 then table.insert(lines, "") end
+    viewer.Choices = lines
+
+    local current = viewer.String or ""
+    local currentExists = false
+    for _, line in ipairs(lines) do
+      if line == current then currentExists = true break end
+    end
+    if not currentExists then viewer.String = lines[1] end
+  end
+
+  -- Set a Text control safely and refresh its scrollable viewer when one is declared.
+  function FugSchedulerRuntime.setText(name, value)
+    local text = tostring(value)
+    if Controls[name] then Controls[name].String = text end
+    local viewers = {
+      ScheduleData = "ScheduleDataViewer",
+      GlobalSchedulerStatus = "GlobalSchedulerStatusViewer",
+      DiagnosticLog = "DiagnosticLogViewer"
+    }
+    if viewers[name] then FugSchedulerRuntime.refreshLineViewer(viewers[name], text) end
+  end
+
+  -- Append a bounded line to the diagnostic display.
+  function FugSchedulerRuntime.logLine(message)
+    local control = Controls.DiagnosticLog
+    if not control then return end
+
+    local existing = control.String or ""
+    if existing ~= "" then existing = existing .. "\n" end
+    existing = existing .. tostring(message)
+    if #existing > 12000 then existing = string.sub(existing, #existing - 11999) end
+    control.String = existing
+    FugSchedulerRuntime.refreshLineViewer("DiagnosticLogViewer", existing)
+  end
+
+  -- Return the sample multi-Scheduler configuration used when ScheduleData is initially empty.
+  function FugSchedulerRuntime.sampleSchedule()
+    return {
+      schemaVersion = 1,
+      revision = 1,
+      schedulers = {
+        {
+          id = "demo-scheduler",
+          label = "Demo Scheduler",
+          enabled = true,
+          paused = false,
+          defaultWeekPatternId = "normal-week",
+          dayPatterns = {
+            {
+              id = "standard-weekday",
+              label = "Standard Weekday",
+              events = {
+                {id = "weekday-morning", label = "Morning", time = "09:00", actions = {{actionId = "Callback1"}}},
+                {id = "weekday-afternoon", label = "Afternoon", time = "14:00", actions = {{actionId = "Callback2"}}},
+                {id = "weekday-closing", label = "Closing", time = "22:00", actions = {{actionId = "Callback1"}, {actionId = "Callback2"}}}
+              }
+            },
+            {
+              id = "standard-weekend",
+              label = "Standard Weekend",
+              events = {
+                {id = "weekend-opening", label = "Weekend Opening", time = "10:00", actions = {{actionId = "Callback1"}}},
+                {id = "weekend-closing", label = "Weekend Closing", time = "20:00", actions = {{actionId = "Callback2"}}}
+              }
+            },
+            {
+              id = "holiday-weekday",
+              label = "Holiday Weekday",
+              events = {
+                {id = "holiday-opening", label = "Holiday Opening", time = "11:00", actions = {{actionId = "Callback1"}}},
+                {id = "holiday-closing", label = "Holiday Closing", time = "18:00", actions = {{actionId = "Callback2"}}}
+              }
+            },
+            {
+              id = "closed",
+              label = "Closed",
+              events = {
+                {id = "closed-state", label = "Closed State", time = "00:00", actions = {{actionId = "Callback2"}}}
+              }
+            }
+          },
+          weekPatterns = {
+            {
+              id = "normal-week",
+              label = "Normal Operating Week",
+              days = {
+                Mon = "standard-weekday", Tue = "standard-weekday", Wed = "standard-weekday",
+                Thu = "standard-weekday", Fri = "standard-weekday",
+                Sat = "standard-weekend", Sun = "standard-weekend"
+              }
+            },
+            {
+              id = "holiday-week",
+              label = "Holiday Week",
+              days = {
+                Mon = "holiday-weekday", Tue = "holiday-weekday", Wed = "holiday-weekday",
+                Thu = "holiday-weekday", Fri = "holiday-weekday",
+                Sat = "standard-weekend", Sun = "standard-weekend"
+              }
+            }
+          },
+          overrides = {
+            {
+              id = "christmas-day",
+              label = "Christmas Day Closure",
+              type = "DayPattern",
+              startDate = "2026-12-25",
+              endDate = "2026-12-25",
+              patternId = "closed",
+              enabled = true
+            },
+            {
+              id = "christmas-period",
+              label = "Christmas Operations",
+              type = "WeekPattern",
+              startDate = "2026-12-21",
+              endDate = "2027-01-03",
+              patternId = "holiday-week",
+              enabled = true
+            }
+          }
+        },
+        {
+          id = "demo-announcements",
+          label = "Demo Announcements",
+          enabled = true,
+          paused = false,
+          defaultWeekPatternId = "announcement-week",
+          dayPatterns = {
+            {
+              id = "announcement-day",
+              label = "Announcement Day",
+              events = {
+                {id = "opening-announcement", label = "Opening Announcement", time = "10:30", actions = {{actionId = "Callback2"}}},
+                {id = "closing-announcement", label = "Closing Announcement", time = "18:30", actions = {{actionId = "Callback1"}}}
+              }
+            }
+          },
+          weekPatterns = {
+            {
+              id = "announcement-week",
+              label = "Announcement Week",
+              days = {
+                Mon = "announcement-day", Tue = "announcement-day", Wed = "announcement-day",
+                Thu = "announcement-day", Fri = "announcement-day",
+                Sat = "announcement-day", Sun = "announcement-day"
+              }
+            }
+          },
+          overrides = {}
+        }
+      }
+    }
+  end
+
+  -- Encode a Lua table as readable JSON, falling back to compact JSON if needed.
+  function FugSchedulerRuntime.encodeJson(value)
+    local prettyOk, prettyValue = pcall(FugSchedulerRuntime.json.encode, value, {pretty = true})
+    if prettyOk and prettyValue then return prettyValue end
+
+    local compactOk, compactValue = pcall(FugSchedulerRuntime.json.encode, value)
+    if compactOk and compactValue then return compactValue end
+    return ""
+  end
+
+  -- Deep-copy persisted configuration while omitting runtime-only keys prefixed with an underscore.
+  function FugSchedulerRuntime.copyPersisted(value)
+    if type(value) ~= "table" then return value end
+
+    local copy = {}
+    local sourceMetatable = getmetatable(value)
+    if type(sourceMetatable) == "table" then setmetatable(copy, sourceMetatable) end
+    for key, item in pairs(value) do
+      if type(key) ~= "string" or string.sub(key, 1, 1) ~= "_" then
+        copy[FugSchedulerRuntime.copyPersisted(key)] = FugSchedulerRuntime.copyPersisted(item)
+      end
+    end
+    return copy
+  end
+
+  -- Mark an empty Lua table with RapidJSON's array metatable.
+  function FugSchedulerRuntime.markJsonArray(value)
+    if type(value) ~= "table" or next(value) ~= nil then return value end
+    local decodeOk, emptyArray = pcall(FugSchedulerRuntime.json.decode, "[]")
+    if decodeOk and type(emptyArray) == "table" then
+      local arrayMetatable = getmetatable(emptyArray)
+      if type(arrayMetatable) == "table" then setmetatable(value, arrayMetatable) end
+    end
+    return value
+  end
+
+  -- Mark schema collection fields so RapidJSON emits empty collections as [] rather than {}.
+  function FugSchedulerRuntime.normalizeScheduleArrays(root)
+    FugSchedulerRuntime.markJsonArray(root.schedulers)
+    for _, scheduler in ipairs(root.schedulers or {}) do
+      FugSchedulerRuntime.markJsonArray(scheduler.dayPatterns)
+      FugSchedulerRuntime.markJsonArray(scheduler.weekPatterns)
+      FugSchedulerRuntime.markJsonArray(scheduler.overrides)
+      for _, dayPattern in ipairs(scheduler.dayPatterns or {}) do
+        FugSchedulerRuntime.markJsonArray(dayPattern.events)
+        for _, event in ipairs(dayPattern.events or {}) do
+          FugSchedulerRuntime.markJsonArray(event.actions)
+        end
+      end
+    end
+    return root
+  end
+
+  -- Encode one structured ComboBox choice containing a display label and stable ID.
+  function FugSchedulerRuntime.encodeChoice(text, id)
+    local encodeOk, encoded = pcall(FugSchedulerRuntime.json.encode, {Text = text, Id = id})
+    if encodeOk and encoded then return encoded end
+    return tostring(id or "")
+  end
+
+  -- Decode a structured ComboBox selection, accepting legacy plain-ID strings as a fallback.
+  function FugSchedulerRuntime.choiceId(value)
+    if type(value) ~= "string" or value == "" then return nil end
+    local decodeOk, decoded = pcall(FugSchedulerRuntime.json.decode, value)
+    if decodeOk and type(decoded) == "table" and type(decoded.Id) == "string" then
+      return decoded.Id
+    end
+    return value
+  end
+
+  -- Generate a UUID-v4-shaped stable ID and retry if it already exists in the model.
+  function FugSchedulerRuntime.generateUuid(existing)
+    if not FugSchedulerRuntime.uuidSeeded then
+      local addressHex = string.match(tostring({}), "0x(%x+)")
+      local addressValue = addressHex and tonumber(addressHex, 16) or 0
+      math.randomseed((os.time() + addressValue) % 2147483647)
+      math.random()
+      math.random()
+      FugSchedulerRuntime.uuidSeeded = true
+    end
+
+    while true do
+      FugSchedulerRuntime.uuidCounter = FugSchedulerRuntime.uuidCounter + 1
+      local uuid = string.gsub("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx", "[xy]", function(character)
+        local value = math.random(0, 15)
+        if character == "y" then value = (value % 4) + 8 end
+        return string.format("%x", value)
+      end)
+      if not existing[uuid] then return uuid end
+    end
+  end
+
+  -- Return a new, immediately valid disabled Scheduler with one empty Day and Week Pattern.
+  function FugSchedulerRuntime.newScheduler(id, label)
+    local dayPatternId = "default-day"
+    local weekPatternId = "default-week"
+    return {
+      id = id,
+      label = label or "New Scheduler",
+      enabled = false,
+      paused = false,
+      defaultWeekPatternId = weekPatternId,
+      dayPatterns = {
+        {id = dayPatternId, label = "Default Day", events = {}}
+      },
+      weekPatterns = {
+        {
+          id = weekPatternId,
+          label = "Default Week",
+          days = {
+            Mon = dayPatternId, Tue = dayPatternId, Wed = dayPatternId,
+            Thu = dayPatternId, Fri = dayPatternId, Sat = dayPatternId, Sun = dayPatternId
+          }
+        }
+      },
+      overrides = {}
+    }
+  end
+
+  -- Compile trusted Action Provider source in its own globals table with Q-SYS globals available by fallback.
+  function FugSchedulerRuntime.compileSource(source)
+    local environment = {}
+    environment._G = environment
+    setmetatable(environment, {__index = _G})
+
+    local chunk = nil
+    local compileError = nil
+
+    if type(load) == "function" then
+      local callOk, compiled, loadError = pcall(load, source, "FugScheduler ActionSource", "t", environment)
+      if not callOk then return nil, "load() failed: " .. tostring(compiled) end
+      chunk = compiled
+      compileError = loadError
+    elseif type(loadstring) == "function" then
+      local callOk, compiled, loadError = pcall(loadstring, source, "FugScheduler ActionSource")
+      if not callOk then return nil, "loadstring() failed: " .. tostring(compiled) end
+      chunk = compiled
+      compileError = loadError
+      if chunk and type(setfenv) == "function" then
+        setfenv(chunk, environment)
+      elseif chunk then
+        return nil, "loadstring() is available, but setfenv() is unavailable"
+      end
+    else
+      return nil, "Q-SYS runtime provides neither load() nor loadstring()"
+    end
+
+    if not chunk then return nil, "Compile error: " .. tostring(compileError) end
+
+    local executed, runtimeError = pcall(chunk)
+    if not executed then return nil, "Source error: " .. tostring(runtimeError) end
+
+    return environment, nil
+  end
+
+  -- Validate the provider result and build an atomic Action Registry.
+  function FugSchedulerRuntime.buildRegistry(actionDefinitions)
+    if type(actionDefinitions) ~= "table" then
+      return nil, nil, "GetFugSchedulerActions() must return a table"
+    end
+
+    local actionsById = {}
+    local orderedActions = {}
+
+    for index, definition in ipairs(actionDefinitions) do
+      if type(definition) ~= "table" then
+        return nil, nil, "Action " .. index .. " must be a table"
+      end
+
+      local id = definition.id
+      if type(id) ~= "string" or id == "" then
+        return nil, nil, "Action " .. index .. " requires a non-empty string id"
+      end
+      if actionsById[id] then return nil, nil, "Duplicate Action ID: " .. id end
+      if type(definition.callback) ~= "function" then
+        return nil, nil, "Action " .. id .. " requires a callback function"
+      end
+      if definition.label ~= nil and type(definition.label) ~= "string" then
+        return nil, nil, "Action " .. id .. " label must be a string"
+      end
+
+      local action = {
+        id = id,
+        label = definition.label or id,
+        description = definition.description,
+        callback = definition.callback
+      }
+      actionsById[id] = action
+      table.insert(orderedActions, action)
+    end
+
+    if #orderedActions == 0 then return nil, nil, "GetFugSchedulerActions() returned no Actions" end
+    return actionsById, orderedActions, nil
+  end
+
+  -- Update the Action selector after a valid registry has been installed.
+  function FugSchedulerRuntime.refreshActionChoices()
+    if not Controls.ActionSelect then return end
+
+    local choices = {}
+    local structuredChoices = {}
+    for _, action in ipairs(FugSchedulerRuntime.orderedActions) do
+      table.insert(choices, action.id)
+      table.insert(structuredChoices, {Text = action.label, Id = action.id})
+    end
+
+    local previous = Controls.ActionSelect.String or ""
+    Controls.ActionSelect.Choices = choices
+    Controls.ActionSelect.String = FugSchedulerRuntime.actionsById[previous] and previous or (choices[1] or "")
+
+    if Controls.EventActionPicker then
+      local previousId = FugSchedulerRuntime.choiceId(Controls.EventActionPicker.String)
+      Controls.EventActionPicker.Choices = structuredChoices
+      if not FugSchedulerRuntime.actionsById[previousId] then
+        previousId = FugSchedulerRuntime.orderedActions[1] and FugSchedulerRuntime.orderedActions[1].id or nil
+      end
+      if previousId then
+        local action = FugSchedulerRuntime.actionsById[previousId]
+        Controls.EventActionPicker.String = FugSchedulerRuntime.encodeChoice(action.label, action.id)
+      else
+        Controls.EventActionPicker.String = ""
+      end
+    end
+  end
+
+  -- Compile ActionSource and replace the Action Registry only after complete validation succeeds.
+  function FugSchedulerRuntime.reloadActions()
+    local source = Controls.ActionSource and Controls.ActionSource.String or ""
+    if source == "" then
+      FugSchedulerRuntime.setText("RegistryStatus", "Waiting for ActionSource text")
+      FugSchedulerRuntime.setText("RegisteredActionCount", tostring(#FugSchedulerRuntime.orderedActions))
+      return false
+    end
+
+    local environment, compileError = FugSchedulerRuntime.compileSource(source)
+    if not environment then
+      FugSchedulerRuntime.setText("RegistryStatus", compileError)
+      FugSchedulerRuntime.logLine(compileError)
+      return false
+    end
+
+    local provider = environment.GetFugSchedulerActions
+    if type(provider) ~= "function" then
+      local message = "ActionSource must define GetFugSchedulerActions()"
+      FugSchedulerRuntime.setText("RegistryStatus", message)
+      FugSchedulerRuntime.logLine(message)
+      return false
+    end
+
+    local providerOk, actionDefinitions = pcall(provider)
+    if not providerOk then
+      local message = "Provider error: " .. tostring(actionDefinitions)
+      FugSchedulerRuntime.setText("RegistryStatus", message)
+      FugSchedulerRuntime.logLine(message)
+      return false
+    end
+
+    local actionsById, orderedActions, validationError = FugSchedulerRuntime.buildRegistry(actionDefinitions)
+    if not actionsById then
+      FugSchedulerRuntime.setText("RegistryStatus", validationError)
+      FugSchedulerRuntime.logLine(validationError)
+      return false
+    end
+
+    FugSchedulerRuntime.actionsById = actionsById
+    FugSchedulerRuntime.orderedActions = orderedActions
+    FugSchedulerRuntime.providerEnvironment = environment
+    FugSchedulerRuntime.refreshActionChoices()
+    FugSchedulerRuntime.setText("RegistryStatus", "Loaded " .. #orderedActions .. " Actions")
+    FugSchedulerRuntime.setText("RegisteredActionCount", tostring(#orderedActions))
+    FugSchedulerRuntime.logLine("Loaded Action Registry with " .. #orderedActions .. " Actions.")
+
+    if FugSchedulerRuntime.scheduleInitialized and Controls.ScheduleData and Controls.ScheduleData.String ~= "" then
+      FugSchedulerRuntime.reloadSchedule()
+    end
+    return true
+  end
+
+  -- Invoke the selected Action without allowing callback failure to stop the plugin.
+  function FugSchedulerRuntime.testSelectedAction()
+    local id = Controls.ActionSelect and Controls.ActionSelect.String or ""
+    local action = FugSchedulerRuntime.actionsById[id]
+    if not action then
+      local message = "No registered Action selected"
+      FugSchedulerRuntime.setText("RegistryStatus", message)
+      FugSchedulerRuntime.logLine(message)
+      return
+    end
+
+    local callbackOk, callbackError = pcall(action.callback)
+    if callbackOk then
+      local message = "Test succeeded: " .. action.label .. " [" .. action.id .. "]"
+      FugSchedulerRuntime.setText("RegistryStatus", message)
+      FugSchedulerRuntime.logLine(message)
+    else
+      local message = "Callback error for " .. action.id .. ": " .. tostring(callbackError)
+      FugSchedulerRuntime.setText("RegistryStatus", message)
+      FugSchedulerRuntime.logLine(message)
+    end
+  end
+
+  -- Parse and validate a YYYY-MM-DD date using Core-local calendar rules.
+  function FugSchedulerRuntime.parseDate(dateText)
+    if type(dateText) ~= "string" then return nil, "date must be a string" end
+    local year, month, day = string.match(dateText, "^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if not year then return nil, "expected YYYY-MM-DD" end
+
+    year, month, day = tonumber(year), tonumber(month), tonumber(day)
+    local timestamp = os.time({year = year, month = month, day = day, hour = 12, min = 0, sec = 0})
+    if not timestamp or os.date("%Y-%m-%d", timestamp) ~= dateText then return nil, "invalid calendar date" end
+    return timestamp, nil
+  end
+
+  -- Parse and validate an HH:MM Event time and return hour, minute, and normalized minutes.
+  function FugSchedulerRuntime.parseEventTime(timeText)
+    if type(timeText) ~= "string" then return nil, nil, nil, "time must be a string" end
+    local hour, minute = string.match(timeText, "^(%d%d):(%d%d)$")
+    if not hour then return nil, nil, nil, "expected HH:MM" end
+
+    hour, minute = tonumber(hour), tonumber(minute)
+    if hour > 23 or minute > 59 then return nil, nil, nil, "time is outside 00:00-23:59" end
+    return hour, minute, (hour * 60) + minute, nil
+  end
+
+  -- Parse a test timestamp in YYYY-MM-DD HH:MM form, or return the current time when blank.
+  function FugSchedulerRuntime.parseDateTime(dateTimeText)
+    if dateTimeText == nil or dateTimeText == "" then return os.time(), nil end
+    if type(dateTimeText) ~= "string" then return nil, "date/time must be a string" end
+
+    local dateText, timeText = string.match(dateTimeText, "^(%d%d%d%d%-%d%d%-%d%d) (%d%d:%d%d)$")
+    if not dateText then return nil, "expected YYYY-MM-DD HH:MM" end
+
+    local dateTimestamp, dateError = FugSchedulerRuntime.parseDate(dateText)
+    if not dateTimestamp then return nil, dateError end
+    local hour, minute, _, timeError = FugSchedulerRuntime.parseEventTime(timeText)
+    if timeError then return nil, timeError end
+
+    local parts = os.date("*t", dateTimestamp)
+    return os.time({year = parts.year, month = parts.month, day = parts.day, hour = hour, min = minute, sec = 0}), nil
+  end
+
+  -- Shift a YYYY-MM-DD calendar date by whole local days.
+  function FugSchedulerRuntime.shiftDate(dateText, dayOffset)
+    local timestamp = FugSchedulerRuntime.parseDate(dateText)
+    if not timestamp then return nil end
+    local parts = os.date("*t", timestamp)
+    parts.day = parts.day + dayOffset
+    parts.hour, parts.min, parts.sec = 12, 0, 0
+    return os.date("%Y-%m-%d", os.time(parts))
+  end
+
+  -- Return true when two inclusive date ranges overlap.
+  function FugSchedulerRuntime.dateRangesOverlap(first, second)
+    return first.startDate <= second.endDate and second.startDate <= first.endDate
+  end
+
+  -- Validate one Scheduler and build its private lookup indexes used by the resolver.
+  function FugSchedulerRuntime.validateScheduler(scheduler, schedulerIndex)
+    local prefix = "Scheduler " .. schedulerIndex
+    local warnings = {}
+    local dayPatternsById = {}
+    local weekPatternsById = {}
+    local eventIds = {}
+    local dayPatternLabels = {}
+    local weekPatternLabels = {}
+
+    if type(scheduler) ~= "table" then return nil, nil, prefix .. " must be an object" end
+    if type(scheduler.id) ~= "string" or scheduler.id == "" then return nil, nil, prefix .. " requires a non-empty ID" end
+    prefix = "Scheduler " .. scheduler.id
+    if type(scheduler.dayPatterns) ~= "table" then return nil, nil, prefix .. " requires dayPatterns" end
+    if type(scheduler.weekPatterns) ~= "table" then return nil, nil, prefix .. " requires weekPatterns" end
+    if type(scheduler.overrides) ~= "table" then scheduler.overrides = {} end
+
+    if type(scheduler.label) ~= "string" or scheduler.label == "" then
+      return nil, nil, prefix .. " requires a non-empty label"
+    end
+    scheduler.enabled = scheduler.enabled ~= false
+    scheduler.paused = scheduler.paused == true
+
+    for dayIndex, dayPattern in ipairs(scheduler.dayPatterns) do
+      if type(dayPattern) ~= "table" then return nil, nil, prefix .. " Day Pattern " .. dayIndex .. " must be an object" end
+      if type(dayPattern.id) ~= "string" or dayPattern.id == "" then return nil, nil, prefix .. " Day Pattern " .. dayIndex .. " requires an ID" end
+      if dayPatternsById[dayPattern.id] then return nil, nil, prefix .. " has duplicate Day Pattern ID: " .. dayPattern.id end
+      if type(dayPattern.events) ~= "table" then return nil, nil, prefix .. " Day Pattern " .. dayPattern.id .. " requires Events" end
+      if dayPattern.label == nil then dayPattern.label = dayPattern.id end
+      if type(dayPattern.label) ~= "string" or dayPattern.label == "" then
+        return nil, nil, prefix .. " Day Pattern " .. dayPattern.id .. " requires a non-empty label"
+      end
+
+      dayPatternLabels[dayPattern.label] = (dayPatternLabels[dayPattern.label] or 0) + 1
+      if dayPatternLabels[dayPattern.label] == 2 then
+        table.insert(warnings, prefix .. " has duplicate Day Pattern label: " .. dayPattern.label)
+      end
+      dayPattern._eventIds = {}
+      dayPattern._eventsById = {}
+      dayPatternsById[dayPattern.id] = dayPattern
+
+      local times = {}
+      for eventIndex, event in ipairs(dayPattern.events) do
+        if type(event) ~= "table" then return nil, nil, prefix .. " Event " .. eventIndex .. " in " .. dayPattern.id .. " must be an object" end
+        if type(event.id) ~= "string" or event.id == "" then return nil, nil, prefix .. " Event " .. eventIndex .. " in " .. dayPattern.id .. " requires an ID" end
+        if eventIds[event.id] then return nil, nil, prefix .. " has duplicate Event ID: " .. event.id end
+        eventIds[event.id] = true
+        dayPattern._eventIds[event.id] = true
+        dayPattern._eventsById[event.id] = event
+
+        local _, _, minutes, timeError = FugSchedulerRuntime.parseEventTime(event.time)
+        if timeError then return nil, nil, prefix .. " Event " .. event.id .. " has invalid time: " .. timeError end
+        event._minutes = minutes
+        event._order = eventIndex
+        if event.label == nil then event.label = event.id end
+        if type(event.label) ~= "string" or event.label == "" then
+          return nil, nil, prefix .. " Event " .. event.id .. " requires a non-empty label"
+        end
+        if times[event.time] then table.insert(warnings, prefix .. " has duplicate Event time " .. event.time .. " in " .. dayPattern.id) end
+        times[event.time] = true
+
+        if type(event.actions) ~= "table" then event.actions = {} end
+        if #event.actions == 0 then
+          table.insert(warnings, prefix .. " Event " .. event.id .. " contains no Event Actions")
+        else
+          local assignedActionIds = {}
+          for actionIndex, eventAction in ipairs(event.actions) do
+            if type(eventAction) ~= "table" or type(eventAction.actionId) ~= "string" or eventAction.actionId == "" then
+              return nil, nil, prefix .. " Event Action " .. actionIndex .. " in Event " .. event.id .. " requires an actionId"
+            end
+            if assignedActionIds[eventAction.actionId] then
+              table.insert(warnings, prefix .. " Event " .. event.id .. " assigns Action " .. eventAction.actionId .. " more than once")
+            end
+            assignedActionIds[eventAction.actionId] = true
+            if not FugSchedulerRuntime.actionsById[eventAction.actionId] then
+              table.insert(warnings, prefix .. " Event " .. event.id .. " references unavailable Action " .. eventAction.actionId)
+            end
+          end
+        end
+      end
+    end
+
+    if next(dayPatternsById) == nil then return nil, nil, prefix .. " requires at least one Day Pattern" end
+
+    for weekIndex, weekPattern in ipairs(scheduler.weekPatterns) do
+      if type(weekPattern) ~= "table" then return nil, nil, prefix .. " Week Pattern " .. weekIndex .. " must be an object" end
+      if type(weekPattern.id) ~= "string" or weekPattern.id == "" then return nil, nil, prefix .. " Week Pattern " .. weekIndex .. " requires an ID" end
+      if weekPatternsById[weekPattern.id] then return nil, nil, prefix .. " has duplicate Week Pattern ID: " .. weekPattern.id end
+      if type(weekPattern.days) ~= "table" then return nil, nil, prefix .. " Week Pattern " .. weekPattern.id .. " requires day assignments" end
+
+      weekPattern.label = weekPattern.label or weekPattern.id
+      if type(weekPattern.label) ~= "string" or weekPattern.label == "" then
+        return nil, nil, prefix .. " Week Pattern " .. weekPattern.id .. " requires a non-empty label"
+      end
+      weekPatternLabels[weekPattern.label] = (weekPatternLabels[weekPattern.label] or 0) + 1
+      if weekPatternLabels[weekPattern.label] == 2 then
+        table.insert(warnings, prefix .. " has duplicate Week Pattern label: " .. weekPattern.label)
+      end
+      weekPatternsById[weekPattern.id] = weekPattern
+      for _, weekday in ipairs(FugSchedulerWeekdays) do
+        local dayPatternId = weekPattern.days[weekday.key]
+        if type(dayPatternId) ~= "string" or not dayPatternsById[dayPatternId] then
+          return nil, nil, prefix .. " Week Pattern " .. weekPattern.id .. " has invalid " .. weekday.key .. " Day Pattern"
+        end
+      end
+    end
+
+    if not weekPatternsById[scheduler.defaultWeekPatternId] then
+      return nil, nil, prefix .. " Default Week Pattern does not exist: " .. tostring(scheduler.defaultWeekPatternId)
+    end
+
+    local overrideIds = {}
+    for overrideIndex, override in ipairs(scheduler.overrides) do
+      if type(override) ~= "table" then return nil, nil, prefix .. " Override " .. overrideIndex .. " must be an object" end
+      if type(override.id) ~= "string" or override.id == "" then return nil, nil, prefix .. " Override " .. overrideIndex .. " requires an ID" end
+      if overrideIds[override.id] then return nil, nil, prefix .. " has duplicate Override ID: " .. override.id end
+      overrideIds[override.id] = true
+      override.label = override.label or override.id
+
+      local _, startError = FugSchedulerRuntime.parseDate(override.startDate)
+      if startError then return nil, nil, prefix .. " Override " .. override.id .. " start date: " .. startError end
+      local _, endError = FugSchedulerRuntime.parseDate(override.endDate)
+      if endError then return nil, nil, prefix .. " Override " .. override.id .. " end date: " .. endError end
+      if override.startDate > override.endDate then return nil, nil, prefix .. " Override " .. override.id .. " starts after it ends" end
+
+      if override.type == "DayPattern" then
+        if not dayPatternsById[override.patternId] then return nil, nil, prefix .. " Override " .. override.id .. " references a missing Day Pattern" end
+      elseif override.type == "WeekPattern" then
+        if not weekPatternsById[override.patternId] then return nil, nil, prefix .. " Override " .. override.id .. " references a missing Week Pattern" end
+      else
+        return nil, nil, prefix .. " Override " .. override.id .. " type must be DayPattern or WeekPattern"
+      end
+    end
+
+    for firstIndex = 1, #scheduler.overrides do
+      local first = scheduler.overrides[firstIndex]
+      if first.enabled ~= false then
+        for secondIndex = firstIndex + 1, #scheduler.overrides do
+          local second = scheduler.overrides[secondIndex]
+          if second.enabled ~= false and first.type == second.type and FugSchedulerRuntime.dateRangesOverlap(first, second) then
+            table.insert(warnings, prefix .. " has overlapping " .. first.type .. " Overrides: " .. first.id .. " and " .. second.id)
+          end
+        end
+      end
+    end
+
+    scheduler._dayPatternsById = dayPatternsById
+    scheduler._weekPatternsById = weekPatternsById
+    return scheduler, warnings, nil
+  end
+
+  -- Validate the multi-Scheduler root and build stable ID lookup indexes for runtime use.
+  function FugSchedulerRuntime.validateSchedule(root)
+    if type(root) ~= "table" then return nil, nil, "ScheduleData must decode to an object" end
+    if root.schemaVersion ~= 1 then return nil, nil, "ScheduleData schemaVersion must be 1" end
+    if type(root.schedulers) ~= "table" or #root.schedulers == 0 then return nil, nil, "ScheduleData requires at least one Scheduler" end
+
+    local warnings = {}
+    local schedulersById = {}
+    for schedulerIndex, scheduler in ipairs(root.schedulers) do
+      local validatedScheduler, schedulerWarnings, schedulerError = FugSchedulerRuntime.validateScheduler(scheduler, schedulerIndex)
+      if not validatedScheduler then return nil, nil, schedulerError end
+      if schedulersById[validatedScheduler.id] then return nil, nil, "Duplicate Scheduler ID: " .. validatedScheduler.id end
+      schedulersById[validatedScheduler.id] = validatedScheduler
+      for _, warning in ipairs(schedulerWarnings) do table.insert(warnings, warning) end
+    end
+
+    root.revision = tonumber(root.revision) or 1
+    root._schedulersById = schedulersById
+    return root, warnings, nil
+  end
+
+  -- Resolve the Day Pattern and resolution source for one calendar date.
+  function FugSchedulerRuntime.resolveDayPattern(scheduler, dateText)
+    local dateTimestamp = FugSchedulerRuntime.parseDate(dateText)
+    local weekday = os.date("%a", dateTimestamp)
+
+    for _, override in ipairs(scheduler.overrides) do
+      if override.enabled ~= false and override.type == "DayPattern" and dateText >= override.startDate and dateText <= override.endDate then
+        return scheduler._dayPatternsById[override.patternId], "Day Override: " .. override.label, {
+          type = "DayPatternOverride", id = override.id, label = override.label
+        }
+      end
+    end
+
+    for _, override in ipairs(scheduler.overrides) do
+      if override.enabled ~= false and override.type == "WeekPattern" and dateText >= override.startDate and dateText <= override.endDate then
+        local weekPattern = scheduler._weekPatternsById[override.patternId]
+        return scheduler._dayPatternsById[weekPattern.days[weekday]], "Week Override: " .. override.label, {
+          type = "WeekPatternOverride", id = override.id, label = override.label, weekPatternId = weekPattern.id
+        }
+      end
+    end
+
+    local weekPattern = scheduler._weekPatternsById[scheduler.defaultWeekPatternId]
+    return scheduler._dayPatternsById[weekPattern.days[weekday]], "Default Week Pattern: " .. weekPattern.label, {
+      type = "DefaultWeekPattern", id = weekPattern.id, label = weekPattern.label
+    }
+  end
+
+  -- Build an absolute Core-local timestamp for one Event on one date.
+  function FugSchedulerRuntime.eventTimestamp(dateText, timeText)
+    local dateTimestamp = FugSchedulerRuntime.parseDate(dateText)
+    local dateParts = os.date("*t", dateTimestamp)
+    local hour, minute = FugSchedulerRuntime.parseEventTime(timeText)
+    return os.time({year = dateParts.year, month = dateParts.month, day = dateParts.day, hour = hour, min = minute, sec = 0})
+  end
+
+  -- Collect and sort resolved Events around a target date for cross-midnight lookup.
+  function FugSchedulerRuntime.collectTimeline(scheduler, targetDate, radiusDays)
+    local timeline = {}
+    local sequence = 0
+
+    for offset = -radiusDays, radiusDays do
+      local dateText = FugSchedulerRuntime.shiftDate(targetDate, offset)
+      local dayPattern = FugSchedulerRuntime.resolveDayPattern(scheduler, dateText)
+      for _, event in ipairs(dayPattern.events) do
+        sequence = sequence + 1
+        table.insert(timeline, {
+          timestamp = FugSchedulerRuntime.eventTimestamp(dateText, event.time),
+          date = dateText,
+          time = event.time,
+          event = event,
+          dayPattern = dayPattern,
+          sequence = sequence
+        })
+      end
+    end
+
+    table.sort(timeline, function(first, second)
+      if first.timestamp == second.timestamp then return first.sequence < second.sequence end
+      return first.timestamp < second.timestamp
+    end)
+    return timeline
+  end
+
+  -- Resolve previous, current, and next Events for an explicit timestamp without executing Actions.
+  function FugSchedulerRuntime.resolveAt(scheduler, timestamp)
+    local targetDate = os.date("%Y-%m-%d", timestamp)
+    local resolvedDayPattern, resolutionSource, resolutionRule = FugSchedulerRuntime.resolveDayPattern(scheduler, targetDate)
+    local timeline = FugSchedulerRuntime.collectTimeline(scheduler, targetDate, 31)
+    local currentIndex = nil
+
+    for index, item in ipairs(timeline) do
+      if item.timestamp <= timestamp then currentIndex = index else break end
+    end
+
+    local previous = currentIndex and timeline[currentIndex - 1] or nil
+    local current = currentIndex and timeline[currentIndex] or nil
+    local nextEvent = currentIndex and timeline[currentIndex + 1] or timeline[1]
+
+    return {
+      timestamp = timestamp,
+      targetDate = targetDate,
+      resolvedDayPattern = resolvedDayPattern,
+      resolutionSource = resolutionSource,
+      resolutionRule = resolutionRule,
+      previous = previous,
+      current = current,
+      next = nextEvent
+    }
+  end
+
+  -- Format an Event occurrence for compact status display.
+  function FugSchedulerRuntime.formatEvent(item)
+    if not item then return "None" end
+    return item.event.label .. " [" .. item.date .. " " .. item.time .. "]"
+  end
+
+  -- Format the ordered Action IDs attached to an Event occurrence.
+  function FugSchedulerRuntime.formatEventActions(item)
+    if not item or type(item.event.actions) ~= "table" or #item.event.actions == 0 then return "None" end
+    local labels = {}
+    for _, eventAction in ipairs(item.event.actions) do
+      local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
+      table.insert(labels, action and action.label or (eventAction.actionId .. " (unavailable)"))
+    end
+    return table.concat(labels, " -> ")
+  end
+
+  -- Format a non-negative countdown from the resolved timestamp to the next Event.
+  function FugSchedulerRuntime.formatCountdown(fromTimestamp, nextTimestamp)
+    if not nextTimestamp then return "N/A" end
+    local seconds = math.max(0, math.floor(nextTimestamp - fromTimestamp))
+    local days = math.floor(seconds / 86400)
+    local hours = math.floor((seconds % 86400) / 3600)
+    local minutes = math.floor((seconds % 3600) / 60)
+    local remainingSeconds = seconds % 60
+    if days > 0 then return string.format("%d days %02d:%02d:%02d", days, hours, minutes, remainingSeconds) end
+    return string.format("%02d:%02d:%02d", hours, minutes, remainingSeconds)
+  end
+
+  -- Return the currently selected Scheduler, falling back to the first configured Scheduler.
+  function FugSchedulerRuntime.selectedScheduler()
+    if not FugSchedulerRuntime.activeSchedule then return nil end
+    local selectedId = FugSchedulerRuntime.selectedSchedulerId
+    if not selectedId and Controls.SchedulerSelect then
+      selectedId = FugSchedulerRuntime.choiceId(Controls.SchedulerSelect.String)
+    end
+    local scheduler = FugSchedulerRuntime.activeSchedule._schedulersById[selectedId]
+    if scheduler then return scheduler end
+    return FugSchedulerRuntime.activeSchedule.schedulers[1]
+  end
+
+  -- Populate the Scheduler selector from the persisted array while preserving stable ID selection.
+  function FugSchedulerRuntime.refreshSchedulerChoices()
+    if not Controls.SchedulerSelect or not FugSchedulerRuntime.activeSchedule then return end
+
+    local choices = {}
+    for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
+      table.insert(choices, {Text = scheduler.label, Id = scheduler.id})
+    end
+    Controls.SchedulerSelect.Choices = choices
+
+    local selectedId = FugSchedulerRuntime.selectedSchedulerId
+    if not selectedId then selectedId = FugSchedulerRuntime.choiceId(Controls.SchedulerSelect.String) end
+    if not FugSchedulerRuntime.activeSchedule._schedulersById[selectedId] then
+      selectedId = FugSchedulerRuntime.activeSchedule.schedulers[1].id
+    end
+    FugSchedulerRuntime.selectedSchedulerId = selectedId
+    local selected = FugSchedulerRuntime.activeSchedule._schedulersById[selectedId]
+    Controls.SchedulerSelect.String = FugSchedulerRuntime.encodeChoice(selected.label, selected.id)
+  end
+
+  -- Refresh all controls in the visual Scheduler editor from the selected valid model.
+  function FugSchedulerRuntime.refreshSchedulerEditor(message)
+    if not FugSchedulerRuntime.activeSchedule then return end
+    local scheduler = FugSchedulerRuntime.selectedScheduler()
+    if not scheduler then return end
+
+    FugSchedulerRuntime.updatingSchedulerEditor = true
+    if Controls.SchedulerLabel then Controls.SchedulerLabel.String = scheduler.label end
+    if Controls.SchedulerEditorEnabled then Controls.SchedulerEditorEnabled.Boolean = scheduler.enabled end
+    if Controls.SchedulerPaused then Controls.SchedulerPaused.Boolean = scheduler.paused end
+
+    if Controls.SchedulerDefaultWeekPattern then
+      local choices = {}
+      for _, weekPattern in ipairs(scheduler.weekPatterns) do
+        table.insert(choices, {Text = weekPattern.label, Id = weekPattern.id})
+      end
+      Controls.SchedulerDefaultWeekPattern.Choices = choices
+      local selected = scheduler._weekPatternsById[scheduler.defaultWeekPatternId]
+      Controls.SchedulerDefaultWeekPattern.String = FugSchedulerRuntime.encodeChoice(selected.label, selected.id)
+    end
+    if Controls.DeleteScheduler then Controls.DeleteScheduler.IsDisabled = #FugSchedulerRuntime.activeSchedule.schedulers <= 1 end
+    FugSchedulerRuntime.updatingSchedulerEditor = false
+
+    if message then FugSchedulerRuntime.setText("SchedulerEditorStatus", message) end
+  end
+
+  -- Return aggregate counts used by load and commit status messages.
+  function FugSchedulerRuntime.scheduleSummary(schedule, warningCount)
+    local dayPatternCount, weekPatternCount, overrideCount = 0, 0, 0
+    for _, scheduler in ipairs(schedule.schedulers) do
+      dayPatternCount = dayPatternCount + #scheduler.dayPatterns
+      weekPatternCount = weekPatternCount + #scheduler.weekPatterns
+      overrideCount = overrideCount + #scheduler.overrides
+    end
+    return string.format(
+      "%d Schedulers, %d Day Patterns, %d Week Patterns, %d Overrides; %d warnings",
+      #schedule.schedulers,
+      dayPatternCount,
+      weekPatternCount,
+      overrideCount,
+      warningCount
+    )
+  end
+
+  -- Atomically install a completely validated model and rebuild every derived view.
+  function FugSchedulerRuntime.installValidatedSchedule(validated, warnings, selectedId, statusPrefix)
+    FugSchedulerRuntime.activeSchedule = validated
+    FugSchedulerRuntime.scheduleWarnings = warnings or {}
+    FugSchedulerRuntime.selectedSchedulerId = selectedId
+    FugSchedulerRuntime.refreshSchedulerChoices()
+
+    local summary = (statusPrefix or "Loaded") .. " " .. FugSchedulerRuntime.scheduleSummary(validated, #FugSchedulerRuntime.scheduleWarnings)
+    FugSchedulerRuntime.setText("ScheduleStatus", summary)
+    FugSchedulerRuntime.logLine(summary)
+    for _, warning in ipairs(FugSchedulerRuntime.scheduleWarnings) do
+      FugSchedulerRuntime.logLine("Schedule warning: " .. warning)
+    end
+
+    FugSchedulerRuntime.resolveSelectedTime()
+    FugSchedulerRuntime.refreshSchedulerEditor(summary)
+    FugSchedulerRuntime.refreshDayPatternEditor(summary)
+    FugSchedulerRuntime.refreshWeekPatternEditor(summary)
+    FugSchedulerRuntime.refreshStatus()
+  end
+
+  -- Apply one editor mutation to a clean candidate, then validate, serialize, persist, and install it.
+  function FugSchedulerRuntime.commitScheduleEdit(description, editFunction, selectedId, feedbackControl)
+    feedbackControl = feedbackControl or "SchedulerEditorStatus"
+    if not FugSchedulerRuntime.activeSchedule then
+      FugSchedulerRuntime.setText(feedbackControl, "Edit rejected: no valid Schedule is loaded")
+      return false
+    end
+
+    -- Restore every editor before publishing a transaction failure message.
+    local function reject(message)
+      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.refreshSchedulerEditor()
+      FugSchedulerRuntime.refreshDayPatternEditor()
+      FugSchedulerRuntime.refreshWeekPatternEditor()
+      FugSchedulerRuntime.setText(feedbackControl, message)
+      return false
+    end
+
+    local candidate = FugSchedulerRuntime.copyPersisted(FugSchedulerRuntime.activeSchedule)
+    local editOk, editResult, editError = pcall(editFunction, candidate)
+    if not editOk then return reject("Edit rejected: " .. tostring(editResult)) end
+    if editResult == false then return reject("Edit rejected: " .. tostring(editError or description)) end
+
+    candidate.schemaVersion = 1
+    candidate.revision = (tonumber(candidate.revision) or 0) + 1
+    local validated, warnings, validationError = FugSchedulerRuntime.validateSchedule(candidate)
+    if not validated then return reject("Edit rejected: " .. tostring(validationError)) end
+
+    local persisted = FugSchedulerRuntime.copyPersisted(validated)
+    FugSchedulerRuntime.normalizeScheduleArrays(persisted)
+    local serialized = FugSchedulerRuntime.encodeJson(persisted)
+    if serialized == "" then return reject("Edit rejected: schema-v1 JSON serialization failed") end
+
+    FugSchedulerRuntime.writingScheduleData = true
+    local writeOk, writeError = pcall(function() Controls.ScheduleData.String = serialized end)
+    FugSchedulerRuntime.writingScheduleData = false
+    if not writeOk then return reject("Edit rejected: ScheduleData write failed: " .. tostring(writeError)) end
+    FugSchedulerRuntime.refreshLineViewer("ScheduleDataViewer", serialized)
+
+    local targetId = selectedId or FugSchedulerRuntime.selectedSchedulerId
+    FugSchedulerRuntime.installValidatedSchedule(validated, warnings, targetId, "Committed")
+    local commitMessage = description .. " committed at revision " .. validated.revision
+    if feedbackControl == "DayPatternEditorStatus" then
+      FugSchedulerRuntime.refreshDayPatternEditor(commitMessage)
+    elseif feedbackControl == "WeekPatternEditorStatus" then
+      FugSchedulerRuntime.refreshWeekPatternEditor(commitMessage)
+    else
+      FugSchedulerRuntime.setText(feedbackControl, commitMessage)
+    end
+    return true
+  end
+
+  -- Return the selected Scheduler's array index in a persisted candidate model.
+  function FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+    local selectedId = FugSchedulerRuntime.selectedSchedulerId
+    for index, scheduler in ipairs(candidate.schedulers) do
+      if scheduler.id == selectedId then return index end
+    end
+    return nil
+  end
+
+  -- Return a unique operator-facing label by adding a numeric suffix when needed.
+  function FugSchedulerRuntime.uniqueLabel(items, baseLabel)
+    local used = {}
+    for _, item in ipairs(items or {}) do used[item.label] = true end
+    if not used[baseLabel] then return baseLabel end
+
+    local suffix = 2
+    while used[baseLabel .. " " .. suffix] do suffix = suffix + 1 end
+    return baseLabel .. " " .. suffix
+  end
+
+  -- Return the selected Day Pattern in the current Scheduler, falling back to its first pattern.
+  function FugSchedulerRuntime.selectedDayPattern()
+    local scheduler = FugSchedulerRuntime.selectedScheduler()
+    if not scheduler then return nil, nil end
+
+    local selectedId = FugSchedulerRuntime.selectedDayPatternIds[scheduler.id]
+    if not selectedId and Controls.DayPatternSelect then
+      selectedId = FugSchedulerRuntime.choiceId(Controls.DayPatternSelect.String)
+    end
+    local dayPattern = scheduler._dayPatternsById[selectedId]
+    if not dayPattern then dayPattern = scheduler.dayPatterns[1] end
+    if dayPattern then FugSchedulerRuntime.selectedDayPatternIds[scheduler.id] = dayPattern.id end
+    return scheduler, dayPattern
+  end
+
+  -- Return the selected Event in the current Day Pattern, falling back to its first Event.
+  function FugSchedulerRuntime.selectedEvent()
+    local scheduler, dayPattern = FugSchedulerRuntime.selectedDayPattern()
+    if not dayPattern then return scheduler, nil, nil end
+
+    local selectedId = FugSchedulerRuntime.selectedEventIds[scheduler.id]
+    if not selectedId and Controls.EventSelect then
+      selectedId = FugSchedulerRuntime.choiceId(Controls.EventSelect.String)
+    end
+    local event = dayPattern._eventsById[selectedId]
+    if not event then event = dayPattern.events[1] end
+    if event then FugSchedulerRuntime.selectedEventIds[scheduler.id] = event.id end
+    return scheduler, dayPattern, event
+  end
+
+  -- Build a runtime-only key for the selected Event Action row.
+  function FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
+    if not scheduler or not event then return nil end
+    return scheduler.id .. "\31" .. event.id
+  end
+
+  -- Return the currently selected Event Action row index when it still exists.
+  function FugSchedulerRuntime.selectedEventActionIndex()
+    local scheduler, _, event = FugSchedulerRuntime.selectedEvent()
+    if not event then return scheduler, event, nil end
+
+    local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
+    local index = FugSchedulerRuntime.selectedEventActionIndexes[key]
+    if not index and Controls.EventActionSelect then
+      index = tonumber(FugSchedulerRuntime.choiceId(Controls.EventActionSelect.String))
+    end
+    if #event.actions == 0 then index = nil end
+    if index and (index < 1 or index > #event.actions) then index = nil end
+    if not index and #event.actions > 0 then index = 1 end
+    FugSchedulerRuntime.selectedEventActionIndexes[key] = index
+    return scheduler, event, index
+  end
+
+  -- Count every Week Pattern weekday and Override reference to one Day Pattern.
+  function FugSchedulerRuntime.dayPatternReferences(scheduler, dayPatternId)
+    local weekdayCount = 0
+    local weekPatternIds = {}
+    local overrideCount = 0
+
+    for _, weekPattern in ipairs(scheduler.weekPatterns or {}) do
+      for _, weekday in ipairs({"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}) do
+        if weekPattern.days[weekday] == dayPatternId then
+          weekdayCount = weekdayCount + 1
+          weekPatternIds[weekPattern.id] = true
+        end
+      end
+    end
+    for _, override in ipairs(scheduler.overrides or {}) do
+      if override.type == "DayPattern" and override.patternId == dayPatternId then
+        overrideCount = overrideCount + 1
+      end
+    end
+
+    local weekPatternCount = 0
+    for _ in pairs(weekPatternIds) do weekPatternCount = weekPatternCount + 1 end
+    return {
+      weekdayCount = weekdayCount,
+      weekPatternCount = weekPatternCount,
+      overrideCount = overrideCount,
+      total = weekdayCount + overrideCount
+    }
+  end
+
+  -- Return Events in chronological display order while preserving persisted row order for ties.
+  function FugSchedulerRuntime.sortedEventRows(dayPattern)
+    local rows = {}
+    for index, event in ipairs(dayPattern.events or {}) do
+      table.insert(rows, {event = event, persistedIndex = index})
+    end
+    table.sort(rows, function(first, second)
+      if first.event._minutes == second.event._minutes then
+        return first.persistedIndex < second.persistedIndex
+      end
+      return first.event._minutes < second.event._minutes
+    end)
+    return rows
+  end
+
+  -- Enable or disable a declared control when it exists.
+  function FugSchedulerRuntime.setDisabled(name, disabled)
+    if Controls[name] then Controls[name].IsDisabled = disabled == true end
+  end
+
+  -- Return warnings specific to the selected Day Pattern and Event editor context.
+  function FugSchedulerRuntime.dayPatternContextWarning(scheduler, dayPattern, event)
+    local warnings = {}
+    local labelMatches = 0
+    for _, candidate in ipairs(scheduler.dayPatterns or {}) do
+      if candidate.label == dayPattern.label then labelMatches = labelMatches + 1 end
+    end
+    if labelMatches > 1 then table.insert(warnings, "Duplicate Day Pattern label") end
+
+    if event then
+      local timeMatches = 0
+      for _, candidate in ipairs(dayPattern.events or {}) do
+        if candidate.time == event.time then timeMatches = timeMatches + 1 end
+      end
+      if timeMatches > 1 then
+        table.insert(warnings, timeMatches .. " Events occur at " .. event.time .. "; persisted row order breaks ties")
+      end
+      if #event.actions == 0 then table.insert(warnings, "Selected Event has no Event Actions") end
+    end
+    return table.concat(warnings, " | ")
+  end
+
+  -- Refresh the three-column Day Pattern, Event, and Event Action editor.
+  function FugSchedulerRuntime.refreshDayPatternEditor(message)
+    if not FugSchedulerRuntime.activeSchedule then return end
+    local scheduler = FugSchedulerRuntime.selectedScheduler()
+    if not scheduler then return end
+
+    FugSchedulerRuntime.updatingDayPatternEditor = true
+
+    local dayPatternChoices = {}
+    local labelCounts = {}
+    local labelSeen = {}
+    for _, dayPattern in ipairs(scheduler.dayPatterns) do
+      labelCounts[dayPattern.label] = (labelCounts[dayPattern.label] or 0) + 1
+    end
+    for _, dayPattern in ipairs(scheduler.dayPatterns) do
+      labelSeen[dayPattern.label] = (labelSeen[dayPattern.label] or 0) + 1
+      local text = dayPattern.label
+      if labelCounts[dayPattern.label] > 1 then text = text .. " (" .. labelSeen[dayPattern.label] .. ")" end
+      table.insert(dayPatternChoices, {Text = text, Id = dayPattern.id})
+    end
+    if Controls.DayPatternSelect then Controls.DayPatternSelect.Choices = dayPatternChoices end
+
+    local _, dayPattern = FugSchedulerRuntime.selectedDayPattern()
+    if dayPattern and Controls.DayPatternSelect then
+      local selectedText = dayPattern.label
+      if labelCounts[dayPattern.label] > 1 then
+        local ordinal = 0
+        for _, candidate in ipairs(scheduler.dayPatterns) do
+          if candidate.label == dayPattern.label then ordinal = ordinal + 1 end
+          if candidate.id == dayPattern.id then break end
+        end
+        selectedText = selectedText .. " (" .. ordinal .. ")"
+      end
+      Controls.DayPatternSelect.String = FugSchedulerRuntime.encodeChoice(selectedText, dayPattern.id)
+    end
+
+    if Controls.DayPatternLabel then Controls.DayPatternLabel.String = dayPattern and dayPattern.label or "" end
+    local eventActionCount = 0
+    for _, event in ipairs(dayPattern and dayPattern.events or {}) do eventActionCount = eventActionCount + #event.actions end
+    FugSchedulerRuntime.setText("DayPatternSummary", dayPattern and string.format("%d Events, %d Event Actions", #dayPattern.events, eventActionCount) or "No Day Pattern")
+
+    local references = dayPattern and FugSchedulerRuntime.dayPatternReferences(scheduler, dayPattern.id) or {total = 0}
+    if dayPattern then
+      FugSchedulerRuntime.setText("DayPatternReferences", string.format(
+        "Used by %d weekdays in %d Week Patterns; %d Overrides",
+        references.weekdayCount,
+        references.weekPatternCount,
+        references.overrideCount
+      ))
+    else
+      FugSchedulerRuntime.setText("DayPatternReferences", "")
+    end
+
+    local eventChoices = {}
+    local eventTextCounts = {}
+    local eventTextSeen = {}
+    for _, row in ipairs(dayPattern and FugSchedulerRuntime.sortedEventRows(dayPattern) or {}) do
+      local text = row.event.time .. "  " .. row.event.label
+      eventTextCounts[text] = (eventTextCounts[text] or 0) + 1
+    end
+    for _, row in ipairs(dayPattern and FugSchedulerRuntime.sortedEventRows(dayPattern) or {}) do
+      local text = row.event.time .. "  " .. row.event.label
+      eventTextSeen[text] = (eventTextSeen[text] or 0) + 1
+      if eventTextCounts[text] > 1 then text = text .. " (" .. eventTextSeen[text] .. ")" end
+      table.insert(eventChoices, {Text = text, Id = row.event.id})
+    end
+    if Controls.EventSelect then Controls.EventSelect.Choices = eventChoices end
+
+    local _, _, event = FugSchedulerRuntime.selectedEvent()
+    if event and Controls.EventSelect then
+      local selectedText = event.time .. "  " .. event.label
+      if eventTextCounts[selectedText] and eventTextCounts[selectedText] > 1 then
+        local ordinal = 0
+        for _, row in ipairs(FugSchedulerRuntime.sortedEventRows(dayPattern)) do
+          local text = row.event.time .. "  " .. row.event.label
+          if text == selectedText then ordinal = ordinal + 1 end
+          if row.event.id == event.id then break end
+        end
+        selectedText = selectedText .. " (" .. ordinal .. ")"
+      end
+      Controls.EventSelect.String = FugSchedulerRuntime.encodeChoice(selectedText, event.id)
+    elseif Controls.EventSelect then
+      Controls.EventSelect.String = ""
+    end
+
+    if Controls.EventLabel then Controls.EventLabel.String = event and event.label or "" end
+    if Controls.EventTime then Controls.EventTime.String = event and event.time or "" end
+    FugSchedulerRuntime.setText("EventSummary", event and (#event.actions .. " Actions") or "No Event")
+
+    local actionChoices = {}
+    if event then
+      for index, eventAction in ipairs(event.actions) do
+        local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
+        local label = action and action.label or (eventAction.actionId .. " (unavailable)")
+        table.insert(actionChoices, {Text = index .. "  " .. label, Id = tostring(index)})
+      end
+    end
+    if Controls.EventActionSelect then Controls.EventActionSelect.Choices = actionChoices end
+
+    local _, _, actionIndex = FugSchedulerRuntime.selectedEventActionIndex()
+    if event and actionIndex and Controls.EventActionSelect then
+      local eventAction = event.actions[actionIndex]
+      local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
+      local label = action and action.label or (eventAction.actionId .. " (unavailable)")
+      Controls.EventActionSelect.String = FugSchedulerRuntime.encodeChoice(actionIndex .. "  " .. label, tostring(actionIndex))
+    elseif Controls.EventActionSelect then
+      Controls.EventActionSelect.String = ""
+    end
+
+    FugSchedulerRuntime.setDisabled("DayPatternLabel", not dayPattern)
+    FugSchedulerRuntime.setDisabled("DuplicateDayPattern", not dayPattern)
+    FugSchedulerRuntime.setDisabled("DeleteDayPattern", not dayPattern or references.total > 0 or #scheduler.dayPatterns <= 1)
+    FugSchedulerRuntime.setDisabled("EventSelect", not dayPattern or #dayPattern.events == 0)
+    FugSchedulerRuntime.setDisabled("EventLabel", not event)
+    FugSchedulerRuntime.setDisabled("EventTime", not event)
+    FugSchedulerRuntime.setDisabled("AddEvent", not dayPattern)
+    FugSchedulerRuntime.setDisabled("DuplicateEvent", not event)
+    FugSchedulerRuntime.setDisabled("DeleteEvent", not event)
+    FugSchedulerRuntime.setDisabled("EventActionSelect", not event or #event.actions == 0)
+    FugSchedulerRuntime.setDisabled("EventActionPicker", not event or #FugSchedulerRuntime.orderedActions == 0)
+    FugSchedulerRuntime.setDisabled("AddEventAction", not event or #FugSchedulerRuntime.orderedActions == 0)
+    FugSchedulerRuntime.setDisabled("DeleteEventAction", not actionIndex)
+    FugSchedulerRuntime.setDisabled("MoveEventActionUp", not actionIndex or actionIndex <= 1)
+    FugSchedulerRuntime.setDisabled("MoveEventActionDown", not actionIndex or actionIndex >= #(event and event.actions or {}))
+
+    FugSchedulerRuntime.updatingDayPatternEditor = false
+
+    local contextWarning = dayPattern and FugSchedulerRuntime.dayPatternContextWarning(scheduler, dayPattern, event) or ""
+    if message and contextWarning ~= "" then
+      FugSchedulerRuntime.setText("DayPatternEditorStatus", message .. " | " .. contextWarning)
+    elseif message then
+      FugSchedulerRuntime.setText("DayPatternEditorStatus", message)
+    elseif contextWarning ~= "" then
+      FugSchedulerRuntime.setText("DayPatternEditorStatus", contextWarning)
+    end
+  end
+
+  -- Return the selected Week Pattern in the current Scheduler, falling back to its first pattern.
+  function FugSchedulerRuntime.selectedWeekPattern()
+    local scheduler = FugSchedulerRuntime.selectedScheduler()
+    if not scheduler then return nil, nil end
+
+    local selectedId = FugSchedulerRuntime.selectedWeekPatternIds[scheduler.id]
+    if not selectedId and Controls.WeekPatternSelect then
+      selectedId = FugSchedulerRuntime.choiceId(Controls.WeekPatternSelect.String)
+    end
+    local weekPattern = scheduler._weekPatternsById[selectedId]
+    if not weekPattern then weekPattern = scheduler.weekPatterns[1] end
+    if weekPattern then FugSchedulerRuntime.selectedWeekPatternIds[scheduler.id] = weekPattern.id end
+    return scheduler, weekPattern
+  end
+
+  -- Count Scheduler-default and Override references to one Week Pattern, including disabled Overrides.
+  function FugSchedulerRuntime.weekPatternReferences(scheduler, weekPatternId)
+    local overrideCount = 0
+    for _, override in ipairs(scheduler.overrides or {}) do
+      if override.type == "WeekPattern" and override.patternId == weekPatternId then
+        overrideCount = overrideCount + 1
+      end
+    end
+    return {
+      isDefault = scheduler.defaultWeekPatternId == weekPatternId,
+      overrideCount = overrideCount
+    }
+  end
+
+  -- Build structured choices with duplicate labels disambiguated by display order, never by ID.
+  function FugSchedulerRuntime.labeledChoices(items)
+    local choices = {}
+    local labelCounts = {}
+    local labelSeen = {}
+    for _, item in ipairs(items or {}) do labelCounts[item.label] = (labelCounts[item.label] or 0) + 1 end
+    for _, item in ipairs(items or {}) do
+      labelSeen[item.label] = (labelSeen[item.label] or 0) + 1
+      local text = item.label
+      if labelCounts[item.label] > 1 then text = text .. " (" .. labelSeen[item.label] .. ")" end
+      table.insert(choices, {Text = text, Id = item.id})
+    end
+    return choices, labelCounts
+  end
+
+  -- Return the disambiguated display text for one selected labeled item.
+  function FugSchedulerRuntime.labeledChoiceText(items, selected, labelCounts)
+    if not selected then return "" end
+    if not labelCounts or (labelCounts[selected.label] or 0) <= 1 then return selected.label end
+    local ordinal = 0
+    for _, item in ipairs(items or {}) do
+      if item.label == selected.label then ordinal = ordinal + 1 end
+      if item.id == selected.id then break end
+    end
+    return selected.label .. " (" .. ordinal .. ")"
+  end
+
+  -- Return warnings specific to the selected Week Pattern editor context.
+  function FugSchedulerRuntime.weekPatternContextWarning(scheduler, weekPattern)
+    local labelMatches = 0
+    for _, candidate in ipairs(scheduler.weekPatterns or {}) do
+      if candidate.label == weekPattern.label then labelMatches = labelMatches + 1 end
+    end
+    if labelMatches > 1 then return "Duplicate Week Pattern label" end
+    return ""
+  end
+
+  -- Refresh the Week Pattern list, label, references, and seven structured Day Pattern selectors.
+  function FugSchedulerRuntime.refreshWeekPatternEditor(message)
+    if not FugSchedulerRuntime.activeSchedule then return end
+    local scheduler = FugSchedulerRuntime.selectedScheduler()
+    if not scheduler then return end
+
+    FugSchedulerRuntime.updatingWeekPatternEditor = true
+    local weekChoices, weekLabelCounts = FugSchedulerRuntime.labeledChoices(scheduler.weekPatterns)
+    if Controls.WeekPatternSelect then Controls.WeekPatternSelect.Choices = weekChoices end
+
+    local _, weekPattern = FugSchedulerRuntime.selectedWeekPattern()
+    if weekPattern and Controls.WeekPatternSelect then
+      Controls.WeekPatternSelect.String = FugSchedulerRuntime.encodeChoice(
+        FugSchedulerRuntime.labeledChoiceText(scheduler.weekPatterns, weekPattern, weekLabelCounts),
+        weekPattern.id
+      )
+    elseif Controls.WeekPatternSelect then
+      Controls.WeekPatternSelect.String = ""
+    end
+
+    if Controls.WeekPatternLabel then Controls.WeekPatternLabel.String = weekPattern and weekPattern.label or "" end
+    local references = weekPattern and FugSchedulerRuntime.weekPatternReferences(scheduler, weekPattern.id) or {isDefault = false, overrideCount = 0}
+    local referenceSummary = "No Week Pattern"
+    if weekPattern then
+      if references.isDefault then
+        referenceSummary = "Scheduler default; used by " .. references.overrideCount .. " Overrides"
+      elseif references.overrideCount > 0 then
+        referenceSummary = "Not default; used by " .. references.overrideCount .. " Overrides"
+      else
+        referenceSummary = "Not referenced"
+      end
+    end
+    FugSchedulerRuntime.setText("WeekPatternReferences", referenceSummary)
+
+    local dayChoices, dayLabelCounts = FugSchedulerRuntime.labeledChoices(scheduler.dayPatterns)
+    for _, weekday in ipairs(FugSchedulerWeekdays) do
+      local control = Controls[weekday.controlName]
+      if control then
+        control.Choices = dayChoices
+        local dayPattern = weekPattern and scheduler._dayPatternsById[weekPattern.days[weekday.key]] or nil
+        if dayPattern then
+          control.String = FugSchedulerRuntime.encodeChoice(
+            FugSchedulerRuntime.labeledChoiceText(scheduler.dayPatterns, dayPattern, dayLabelCounts),
+            dayPattern.id
+          )
+        else
+          control.String = ""
+        end
+        control.IsDisabled = not weekPattern
+      end
+    end
+
+    FugSchedulerRuntime.setDisabled("WeekPatternLabel", not weekPattern)
+    FugSchedulerRuntime.setDisabled("DuplicateWeekPattern", not weekPattern)
+    FugSchedulerRuntime.setDisabled(
+      "DeleteWeekPattern",
+      not weekPattern or references.isDefault or references.overrideCount > 0 or #scheduler.weekPatterns <= 1
+    )
+    FugSchedulerRuntime.updatingWeekPatternEditor = false
+
+    local contextWarning = weekPattern and FugSchedulerRuntime.weekPatternContextWarning(scheduler, weekPattern) or ""
+    if message and contextWarning ~= "" then
+      FugSchedulerRuntime.setText("WeekPatternEditorStatus", message .. " | " .. contextWarning)
+    elseif message then
+      FugSchedulerRuntime.setText("WeekPatternEditorStatus", message)
+    elseif contextWarning ~= "" then
+      FugSchedulerRuntime.setText("WeekPatternEditorStatus", contextWarning)
+    end
+  end
+
+  -- Return the selected Week Pattern and its index from a persisted candidate model.
+  function FugSchedulerRuntime.candidateSelectedWeekPattern(candidate)
+    local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+    if not schedulerIndex then return nil, nil, nil end
+    local scheduler = candidate.schedulers[schedulerIndex]
+    local selectedId = FugSchedulerRuntime.selectedWeekPatternIds[scheduler.id]
+    for index, weekPattern in ipairs(scheduler.weekPatterns) do
+      if weekPattern.id == selectedId then return scheduler, weekPattern, index end
+    end
+    return scheduler, nil, nil
+  end
+
+  -- Add a Week Pattern with a Scheduler-scoped UUID and the first Day Pattern assigned to every weekday.
+  function FugSchedulerRuntime.addWeekPattern()
+    local scheduler = FugSchedulerRuntime.selectedScheduler()
+    if not scheduler or not scheduler.dayPatterns[1] then return false end
+    local existing = {}
+    for _, weekPattern in ipairs(scheduler.weekPatterns) do existing[weekPattern.id] = true end
+    local id = FugSchedulerRuntime.generateUuid(existing)
+    local label = FugSchedulerRuntime.uniqueLabel(scheduler.weekPatterns, "New Week Pattern")
+    local firstDayPatternId = scheduler.dayPatterns[1].id
+    FugSchedulerRuntime.selectedWeekPatternIds[scheduler.id] = id
+
+    return FugSchedulerRuntime.commitScheduleEdit("Week Pattern added", function(candidate)
+      local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+      local days = {}
+      for _, weekday in ipairs(FugSchedulerWeekdays) do days[weekday.key] = firstDayPatternId end
+      table.insert(candidate.schedulers[schedulerIndex].weekPatterns, {id = id, label = label, days = days})
+    end, nil, "WeekPatternEditorStatus")
+  end
+
+  -- Duplicate the selected Week Pattern with a fresh ID and independent weekday assignments.
+  function FugSchedulerRuntime.duplicateWeekPattern()
+    local scheduler, source = FugSchedulerRuntime.selectedWeekPattern()
+    if not source then return false end
+    local existing = {}
+    for _, weekPattern in ipairs(scheduler.weekPatterns) do existing[weekPattern.id] = true end
+    local sourceId = source.id
+    local id = FugSchedulerRuntime.generateUuid(existing)
+    local label = FugSchedulerRuntime.uniqueLabel(scheduler.weekPatterns, source.label .. " Copy")
+    FugSchedulerRuntime.selectedWeekPatternIds[scheduler.id] = id
+
+    return FugSchedulerRuntime.commitScheduleEdit("Week Pattern duplicated", function(candidate)
+      local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+      local candidateScheduler = candidate.schedulers[schedulerIndex]
+      for index, weekPattern in ipairs(candidateScheduler.weekPatterns) do
+        if weekPattern.id == sourceId then
+          local duplicate = FugSchedulerRuntime.copyPersisted(weekPattern)
+          duplicate.id = id
+          duplicate.label = label
+          table.insert(candidateScheduler.weekPatterns, index + 1, duplicate)
+          return
+        end
+      end
+      return false, "selected Week Pattern no longer exists"
+    end, nil, "WeekPatternEditorStatus")
+  end
+
+  -- Delete only a non-default, unreferenced Week Pattern while retaining a neighboring selection.
+  function FugSchedulerRuntime.deleteWeekPattern()
+    local scheduler, source = FugSchedulerRuntime.selectedWeekPattern()
+    if not source then return false end
+    local references = FugSchedulerRuntime.weekPatternReferences(scheduler, source.id)
+    local message = nil
+    if references.isDefault then
+      message = "Delete rejected: Week Pattern is the Scheduler default"
+    elseif references.overrideCount > 0 then
+      message = "Delete rejected: Week Pattern is used by " .. references.overrideCount .. " Overrides"
+    elseif #scheduler.weekPatterns <= 1 then
+      message = "Delete rejected: at least one Week Pattern is required"
+    end
+    if message then
+      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.refreshWeekPatternEditor()
+      FugSchedulerRuntime.setText("WeekPatternEditorStatus", message)
+      return false
+    end
+
+    local sourceId = source.id
+    local sourceIndex = nil
+    for index, weekPattern in ipairs(scheduler.weekPatterns) do
+      if weekPattern.id == source.id then sourceIndex = index break end
+    end
+    local nextIndex = math.min(sourceIndex or 1, #scheduler.weekPatterns - 1)
+    local nextPattern = scheduler.weekPatterns[nextIndex]
+    if nextPattern.id == source.id then nextPattern = scheduler.weekPatterns[nextIndex + 1] end
+    FugSchedulerRuntime.selectedWeekPatternIds[scheduler.id] = nextPattern.id
+
+    return FugSchedulerRuntime.commitScheduleEdit("Week Pattern deleted", function(candidate)
+      local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+      local candidatePatterns = candidate.schedulers[schedulerIndex].weekPatterns
+      for index, weekPattern in ipairs(candidatePatterns) do
+        if weekPattern.id == sourceId then
+          table.remove(candidatePatterns, index)
+          return
+        end
+      end
+      return false, "selected Week Pattern no longer exists"
+    end, nil, "WeekPatternEditorStatus")
+  end
+
+  -- Return the selected Day Pattern and its index from a persisted candidate model.
+  function FugSchedulerRuntime.candidateSelectedDayPattern(candidate)
+    local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+    if not schedulerIndex then return nil, nil, nil end
+    local scheduler = candidate.schedulers[schedulerIndex]
+    local selectedId = FugSchedulerRuntime.selectedDayPatternIds[scheduler.id]
+    for index, dayPattern in ipairs(scheduler.dayPatterns) do
+      if dayPattern.id == selectedId then return scheduler, dayPattern, index end
+    end
+    return scheduler, nil, nil
+  end
+
+  -- Return the selected Event and its persisted index from a candidate model.
+  function FugSchedulerRuntime.candidateSelectedEvent(candidate)
+    local scheduler, dayPattern = FugSchedulerRuntime.candidateSelectedDayPattern(candidate)
+    if not dayPattern then return scheduler, dayPattern, nil, nil end
+    local selectedId = FugSchedulerRuntime.selectedEventIds[scheduler.id]
+    for index, event in ipairs(dayPattern.events) do
+      if event.id == selectedId then return scheduler, dayPattern, event, index end
+    end
+    return scheduler, dayPattern, nil, nil
+  end
+
+  -- Add an empty Day Pattern with a Scheduler-scoped UUID and select it.
+  function FugSchedulerRuntime.addDayPattern()
+    local scheduler = FugSchedulerRuntime.selectedScheduler()
+    if not scheduler then return false end
+    local existing = {}
+    for _, dayPattern in ipairs(scheduler.dayPatterns) do existing[dayPattern.id] = true end
+    local id = FugSchedulerRuntime.generateUuid(existing)
+    local label = FugSchedulerRuntime.uniqueLabel(scheduler.dayPatterns, "New Day Pattern")
+    FugSchedulerRuntime.selectedDayPatternIds[scheduler.id] = id
+    FugSchedulerRuntime.selectedEventIds[scheduler.id] = nil
+
+    return FugSchedulerRuntime.commitScheduleEdit("Day Pattern added", function(candidate)
+      local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+      table.insert(candidate.schedulers[schedulerIndex].dayPatterns, {id = id, label = label, events = {}})
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Duplicate a Day Pattern with fresh Day Pattern and Scheduler-scoped Event UUIDs.
+  function FugSchedulerRuntime.duplicateDayPattern()
+    local scheduler, source = FugSchedulerRuntime.selectedDayPattern()
+    if not source then return false end
+
+    local dayPatternIds = {}
+    local eventIds = {}
+    for _, dayPattern in ipairs(scheduler.dayPatterns) do
+      dayPatternIds[dayPattern.id] = true
+      for _, event in ipairs(dayPattern.events) do eventIds[event.id] = true end
+    end
+    local sourceId = source.id
+    local dayPatternId = FugSchedulerRuntime.generateUuid(dayPatternIds)
+    local eventIdMap = {}
+    for _, event in ipairs(source.events) do
+      local eventId = FugSchedulerRuntime.generateUuid(eventIds)
+      eventIds[eventId] = true
+      eventIdMap[event.id] = eventId
+    end
+    local label = FugSchedulerRuntime.uniqueLabel(scheduler.dayPatterns, source.label .. " Copy")
+    FugSchedulerRuntime.selectedDayPatternIds[scheduler.id] = dayPatternId
+    FugSchedulerRuntime.selectedEventIds[scheduler.id] = source.events[1] and eventIdMap[source.events[1].id] or nil
+
+    return FugSchedulerRuntime.commitScheduleEdit("Day Pattern duplicated", function(candidate)
+      local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+      local candidateScheduler = candidate.schedulers[schedulerIndex]
+      local dayPattern, sourceIndex = nil, nil
+      for index, candidatePattern in ipairs(candidateScheduler.dayPatterns) do
+        if candidatePattern.id == sourceId then dayPattern, sourceIndex = candidatePattern, index break end
+      end
+      if not sourceIndex then return false, "selected Day Pattern no longer exists" end
+      local duplicate = FugSchedulerRuntime.copyPersisted(dayPattern)
+      duplicate.id = dayPatternId
+      duplicate.label = label
+      for _, event in ipairs(duplicate.events) do event.id = eventIdMap[event.id] end
+      table.insert(candidateScheduler.dayPatterns, sourceIndex + 1, duplicate)
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Delete only an unreferenced Day Pattern and retain a neighboring selection.
+  function FugSchedulerRuntime.deleteDayPattern()
+    local scheduler, source = FugSchedulerRuntime.selectedDayPattern()
+    if not source then return false end
+    local references = FugSchedulerRuntime.dayPatternReferences(scheduler, source.id)
+    if references.total > 0 then
+      local message = string.format(
+        "Delete rejected: Day Pattern is used by %d weekdays and %d Overrides",
+        references.weekdayCount,
+        references.overrideCount
+      )
+      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.refreshDayPatternEditor()
+      FugSchedulerRuntime.setText("DayPatternEditorStatus", message)
+      return false
+    end
+    if #scheduler.dayPatterns <= 1 then
+      local message = "Delete rejected: at least one Day Pattern is required"
+      FugSchedulerRuntime.setText("DayPatternEditorStatus", message)
+      return false
+    end
+
+    local sourceId = source.id
+    local sourceIndex = nil
+    for index, dayPattern in ipairs(scheduler.dayPatterns) do
+      if dayPattern.id == source.id then sourceIndex = index break end
+    end
+    local nextIndex = math.min(sourceIndex or 1, #scheduler.dayPatterns - 1)
+    local nextPattern = scheduler.dayPatterns[nextIndex]
+    if nextPattern.id == source.id then nextPattern = scheduler.dayPatterns[nextIndex + 1] end
+    FugSchedulerRuntime.selectedDayPatternIds[scheduler.id] = nextPattern.id
+    FugSchedulerRuntime.selectedEventIds[scheduler.id] = nextPattern.events[1] and nextPattern.events[1].id or nil
+
+    return FugSchedulerRuntime.commitScheduleEdit("Day Pattern deleted", function(candidate)
+      local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+      local candidatePatterns = candidate.schedulers[schedulerIndex].dayPatterns
+      for index, dayPattern in ipairs(candidatePatterns) do
+        if dayPattern.id == sourceId then
+          table.remove(candidatePatterns, index)
+          return
+        end
+      end
+      return false, "selected Day Pattern no longer exists"
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Return the first unused HH:MM value in one Day Pattern.
+  function FugSchedulerRuntime.firstAvailableEventTime(dayPattern)
+    local used = {}
+    for _, event in ipairs(dayPattern.events or {}) do used[event.time] = true end
+    for minutes = 0, 1439 do
+      local timeText = string.format("%02d:%02d", math.floor(minutes / 60), minutes % 60)
+      if not used[timeText] then return timeText end
+    end
+    return "00:00"
+  end
+
+  -- Add an empty Event with a Scheduler-scoped UUID and select it.
+  function FugSchedulerRuntime.addEvent()
+    local scheduler, dayPattern = FugSchedulerRuntime.selectedDayPattern()
+    if not dayPattern then return false end
+    local existing = {}
+    for _, candidate in ipairs(scheduler.dayPatterns) do
+      for _, event in ipairs(candidate.events) do existing[event.id] = true end
+    end
+    local id = FugSchedulerRuntime.generateUuid(existing)
+    local label = FugSchedulerRuntime.uniqueLabel(dayPattern.events, "New Event")
+    local timeText = FugSchedulerRuntime.firstAvailableEventTime(dayPattern)
+    FugSchedulerRuntime.selectedEventIds[scheduler.id] = id
+
+    return FugSchedulerRuntime.commitScheduleEdit("Event added", function(candidate)
+      local _, selectedDayPattern = FugSchedulerRuntime.candidateSelectedDayPattern(candidate)
+      if not selectedDayPattern then return false, "selected Day Pattern no longer exists" end
+      table.insert(selectedDayPattern.events, {id = id, label = label, time = timeText, actions = {}})
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Duplicate the selected Event with a fresh Scheduler-scoped UUID.
+  function FugSchedulerRuntime.duplicateEvent()
+    local scheduler, _, source = FugSchedulerRuntime.selectedEvent()
+    if not source then return false end
+    local existing = {}
+    for _, candidate in ipairs(scheduler.dayPatterns) do
+      for _, event in ipairs(candidate.events) do existing[event.id] = true end
+    end
+    local sourceId = source.id
+    local dayPatternId = FugSchedulerRuntime.selectedDayPatternIds[scheduler.id]
+    local id = FugSchedulerRuntime.generateUuid(existing)
+    FugSchedulerRuntime.selectedEventIds[scheduler.id] = id
+
+    return FugSchedulerRuntime.commitScheduleEdit("Event duplicated", function(candidate)
+      local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+      for _, candidatePattern in ipairs(candidate.schedulers[schedulerIndex].dayPatterns) do
+        if candidatePattern.id == dayPatternId then
+          for index, event in ipairs(candidatePattern.events) do
+            if event.id == sourceId then
+              local duplicate = FugSchedulerRuntime.copyPersisted(event)
+              duplicate.id = id
+              duplicate.label = FugSchedulerRuntime.uniqueLabel(candidatePattern.events, event.label .. " Copy")
+              table.insert(candidatePattern.events, index + 1, duplicate)
+              return
+            end
+          end
+        end
+      end
+      return false, "selected Event no longer exists"
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Delete the selected Event; empty Day Patterns remain valid.
+  function FugSchedulerRuntime.deleteEvent()
+    local scheduler, dayPattern, source = FugSchedulerRuntime.selectedEvent()
+    if not source then return false end
+    local sourceId = source.id
+    local dayPatternId = dayPattern.id
+    local sourceIndex = nil
+    for index, event in ipairs(dayPattern.events) do
+      if event.id == source.id then sourceIndex = index break end
+    end
+    local nextEvent = nil
+    if #dayPattern.events > 1 then
+      local nextIndex = math.min(sourceIndex or 1, #dayPattern.events - 1)
+      nextEvent = dayPattern.events[nextIndex]
+      if nextEvent.id == source.id then nextEvent = dayPattern.events[nextIndex + 1] end
+    end
+    FugSchedulerRuntime.selectedEventIds[scheduler.id] = nextEvent and nextEvent.id or nil
+
+    return FugSchedulerRuntime.commitScheduleEdit("Event deleted", function(candidate)
+      local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+      for _, candidatePattern in ipairs(candidate.schedulers[schedulerIndex].dayPatterns) do
+        if candidatePattern.id == dayPatternId then
+          for index, event in ipairs(candidatePattern.events) do
+            if event.id == sourceId then
+              table.remove(candidatePattern.events, index)
+              return
+            end
+          end
+        end
+      end
+      return false, "selected Event no longer exists"
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Attach one registered Action to the selected Event.
+  function FugSchedulerRuntime.addEventAction()
+    local scheduler, _, event = FugSchedulerRuntime.selectedEvent()
+    if not event then return false end
+    local actionId = FugSchedulerRuntime.choiceId(Controls.EventActionPicker and Controls.EventActionPicker.String or "")
+    if not FugSchedulerRuntime.actionsById[actionId] then
+      local message = "Add rejected: select an available registered Action"
+      FugSchedulerRuntime.setText("DayPatternEditorStatus", message)
+      return false
+    end
+    local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
+    FugSchedulerRuntime.selectedEventActionIndexes[key] = #event.actions + 1
+
+    return FugSchedulerRuntime.commitScheduleEdit("Event Action attached", function(candidate)
+      local _, _, selectedEvent = FugSchedulerRuntime.candidateSelectedEvent(candidate)
+      if not selectedEvent then return false, "selected Event no longer exists" end
+      table.insert(selectedEvent.actions, {actionId = actionId})
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Delete the selected Event Action assignment and retain a neighboring row selection.
+  function FugSchedulerRuntime.deleteEventAction()
+    local scheduler, event, index = FugSchedulerRuntime.selectedEventActionIndex()
+    if not index then return false end
+    local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
+    FugSchedulerRuntime.selectedEventActionIndexes[key] = (#event.actions > 1) and math.min(index, #event.actions - 1) or nil
+
+    return FugSchedulerRuntime.commitScheduleEdit("Event Action deleted", function(candidate)
+      local _, _, selectedEvent = FugSchedulerRuntime.candidateSelectedEvent(candidate)
+      if not selectedEvent or not selectedEvent.actions[index] then return false, "selected Event Action no longer exists" end
+      table.remove(selectedEvent.actions, index)
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Move the selected Event Action assignment by one row while preserving all assignment fields.
+  function FugSchedulerRuntime.moveEventAction(offset)
+    local scheduler, event, index = FugSchedulerRuntime.selectedEventActionIndex()
+    if not index then return false end
+    local targetIndex = index + offset
+    if targetIndex < 1 or targetIndex > #event.actions then return false end
+    local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
+    FugSchedulerRuntime.selectedEventActionIndexes[key] = targetIndex
+
+    return FugSchedulerRuntime.commitScheduleEdit("Event Action moved", function(candidate)
+      local _, _, selectedEvent = FugSchedulerRuntime.candidateSelectedEvent(candidate)
+      if not selectedEvent or not selectedEvent.actions[index] then return false, "selected Event Action no longer exists" end
+      local assignment = table.remove(selectedEvent.actions, index)
+      table.insert(selectedEvent.actions, targetIndex, assignment)
+    end, nil, "DayPatternEditorStatus")
+  end
+
+  -- Add a minimal valid Scheduler and select it after the transaction commits.
+  function FugSchedulerRuntime.addScheduler()
+    local existing = {}
+    for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do existing[scheduler.id] = true end
+    local id = FugSchedulerRuntime.generateUuid(existing)
+    return FugSchedulerRuntime.commitScheduleEdit("Scheduler " .. id .. " added", function(candidate)
+      table.insert(candidate.schedulers, FugSchedulerRuntime.newScheduler(id, "New Scheduler"))
+    end, id)
+  end
+
+  -- Duplicate the selected Scheduler while assigning a new root-scoped Scheduler ID.
+  function FugSchedulerRuntime.duplicateScheduler()
+    local source = FugSchedulerRuntime.selectedScheduler()
+    if not source then return false end
+
+    local existing = {}
+    for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do existing[scheduler.id] = true end
+    local id = FugSchedulerRuntime.generateUuid(existing)
+    return FugSchedulerRuntime.commitScheduleEdit("Scheduler " .. source.id .. " duplicated as " .. id, function(candidate)
+      local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not index then return false, "selected Scheduler no longer exists" end
+      local duplicate = FugSchedulerRuntime.copyPersisted(candidate.schedulers[index])
+      duplicate.id = id
+      duplicate.label = duplicate.label .. " Copy"
+      table.insert(candidate.schedulers, index + 1, duplicate)
+    end, id)
+  end
+
+  -- Delete the selected Scheduler, but never permit removal of the final Scheduler.
+  function FugSchedulerRuntime.deleteScheduler()
+    local source = FugSchedulerRuntime.selectedScheduler()
+    if not source then return false end
+    if #FugSchedulerRuntime.activeSchedule.schedulers <= 1 then
+      local message = "Delete rejected: at least one Scheduler is required"
+      FugSchedulerRuntime.setText("SchedulerEditorStatus", message)
+      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.refreshSchedulerEditor()
+      return false
+    end
+
+    local currentIndex = FugSchedulerRuntime.selectedSchedulerIndex(FugSchedulerRuntime.activeSchedule)
+    local nextIndex = math.min(currentIndex or 1, #FugSchedulerRuntime.activeSchedule.schedulers - 1)
+    local selectedAfterDelete = FugSchedulerRuntime.activeSchedule.schedulers[nextIndex].id
+    if selectedAfterDelete == source.id then
+      selectedAfterDelete = FugSchedulerRuntime.activeSchedule.schedulers[nextIndex + 1].id
+    end
+
+    return FugSchedulerRuntime.commitScheduleEdit("Scheduler " .. source.id .. " deleted", function(candidate)
+      local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+      if not index then return false, "selected Scheduler no longer exists" end
+      table.remove(candidate.schedulers, index)
+    end, selectedAfterDelete)
+  end
+
+  -- Convert one Event occurrence into the stable machine-readable status contract.
+  function FugSchedulerRuntime.eventStatus(item)
+    if not item then return nil end
+
+    local actions = {}
+    for actionIndex, eventAction in ipairs(item.event.actions or {}) do
+      local registeredAction = FugSchedulerRuntime.actionsById[eventAction.actionId]
+      table.insert(actions, {
+        order = actionIndex,
+        actionId = eventAction.actionId,
+        actionLabel = registeredAction and registeredAction.label or eventAction.actionId,
+        available = registeredAction ~= nil,
+        enabled = eventAction.enabled ~= false,
+        oneShot = eventAction.oneShot == true,
+        fireOnStartup = eventAction.fireOnStartup == true,
+        repeatSeconds = eventAction.repeatSeconds
+      })
+    end
+
+    FugSchedulerRuntime.markJsonArray(actions)
+    return {
+      id = item.event.id,
+      label = item.event.label,
+      date = item.date,
+      time = item.time,
+      scheduledTime = os.date("%Y-%m-%d %H:%M:%S", item.timestamp),
+      timestamp = item.timestamp,
+      dayPatternId = item.dayPattern.id,
+      dayPatternLabel = item.dayPattern.label,
+      actions = actions
+    }
+  end
+
+  -- Convert the resolved Day Pattern into a compact status view for integrations.
+  function FugSchedulerRuntime.dayPatternStatus(dayPattern)
+    if not dayPattern then return nil end
+    local events = {}
+    for _, event in ipairs(dayPattern.events or {}) do
+      local actionIds = {}
+      for _, eventAction in ipairs(event.actions or {}) do table.insert(actionIds, eventAction.actionId) end
+      FugSchedulerRuntime.markJsonArray(actionIds)
+      table.insert(events, {id = event.id, label = event.label, time = event.time, actionIds = actionIds})
+    end
+    FugSchedulerRuntime.markJsonArray(events)
+    return {id = dayPattern.id, label = dayPattern.label, events = events}
+  end
+
+  -- Build one Scheduler's independent status entry from its resolver result.
+  function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveError)
+    if resolveError then
+      return {
+        id = scheduler.id,
+        label = scheduler.label,
+        enabled = scheduler.enabled,
+        paused = scheduler.paused,
+        health = {state = "Error", message = tostring(resolveError)}
+      }
+    end
+
+    local nextTimestamp = result.next and result.next.timestamp or nil
+    return {
+      id = scheduler.id,
+      label = scheduler.label,
+      enabled = scheduler.enabled,
+      paused = scheduler.paused,
+      health = {state = "OK", message = ""},
+      resolution = {
+        date = result.targetDate,
+        source = result.resolutionSource,
+        sourceType = result.resolutionRule and result.resolutionRule.type or nil,
+        sourceId = result.resolutionRule and result.resolutionRule.id or nil,
+        dayPatternId = result.resolvedDayPattern and result.resolvedDayPattern.id or nil,
+        dayPatternLabel = result.resolvedDayPattern and result.resolvedDayPattern.label or nil
+      },
+      resolvedDayPattern = FugSchedulerRuntime.dayPatternStatus(result.resolvedDayPattern),
+      previousEvent = FugSchedulerRuntime.eventStatus(result.previous),
+      currentEvent = FugSchedulerRuntime.eventStatus(result.current),
+      nextEvent = FugSchedulerRuntime.eventStatus(result.next),
+      nextTransitionSeconds = nextTimestamp and math.max(0, math.floor(nextTimestamp - result.timestamp)) or nil,
+      nextTransitionCountdown = FugSchedulerRuntime.formatCountdown(result.timestamp, nextTimestamp)
+    }
+  end
+
+  -- Publish the complete multi-Scheduler status snapshot for third-party integrations.
+  function FugSchedulerRuntime.publishGlobalStatus(timestamp, schedulerStatuses, hasResolutionError)
+    local status = {
+      schemaVersion = 1,
+      generatedAt = os.date("%Y-%m-%d %H:%M:%S"),
+      resolvedFor = os.date("%Y-%m-%d %H:%M:%S", timestamp),
+      configurationRevision = FugSchedulerRuntime.activeSchedule and FugSchedulerRuntime.activeSchedule.revision or nil,
+      health = {
+        state = hasResolutionError and "Error" or "OK",
+        configurationValid = FugSchedulerRuntime.activeSchedule ~= nil,
+        actionRegistryValid = #FugSchedulerRuntime.orderedActions > 0,
+        warningCount = #FugSchedulerRuntime.scheduleWarnings
+      },
+      schedulers = schedulerStatuses
+    }
+
+    FugSchedulerStatus = status
+    FugSchedulerRuntime.globalStatus = status
+    FugSchedulerRuntime.setText("GlobalSchedulerStatus", FugSchedulerRuntime.encodeJson(status))
+    FugSchedulerRuntime.setText("SchedulerCount", tostring(#schedulerStatuses))
+  end
+
+  -- Publish the selected Scheduler's resolver result to human-readable status controls.
+  function FugSchedulerRuntime.publishResolution(scheduler, result)
+    FugSchedulerRuntime.selectedSchedulerId = scheduler.id
+    if Controls.SchedulerEnabled then Controls.SchedulerEnabled.Boolean = scheduler.enabled end
+    FugSchedulerRuntime.setText("ResolutionSource", result.resolutionSource or "None")
+    FugSchedulerRuntime.setText("ResolvedDayPattern", result.resolvedDayPattern and result.resolvedDayPattern.label or "None")
+    FugSchedulerRuntime.setText("PreviousEvent", FugSchedulerRuntime.formatEvent(result.previous))
+    FugSchedulerRuntime.setText("CurrentEvent", FugSchedulerRuntime.formatEvent(result.current))
+    FugSchedulerRuntime.setText("CurrentEventActions", FugSchedulerRuntime.formatEventActions(result.current))
+    FugSchedulerRuntime.setText("NextEvent", FugSchedulerRuntime.formatEvent(result.next))
+    FugSchedulerRuntime.setText("NextEventTime", result.next and os.date("%Y-%m-%d %H:%M", result.next.timestamp) or "N/A")
+    FugSchedulerRuntime.setText("Countdown", FugSchedulerRuntime.formatCountdown(result.timestamp, result.next and result.next.timestamp or nil))
+  end
+
+  -- Resolve every configured Scheduler at TestDateTime and publish aggregate plus selected status.
+  function FugSchedulerRuntime.resolveSelectedTime()
+    if not FugSchedulerRuntime.activeSchedule then
+      FugSchedulerRuntime.setText("ScheduleStatus", "No valid Schedule is loaded")
+      return false
+    end
+
+    local requested = Controls.TestDateTime and Controls.TestDateTime.String or ""
+    local timestamp, parseError = FugSchedulerRuntime.parseDateTime(requested)
+    if not timestamp then
+      local message = "Test date/time error: " .. tostring(parseError)
+      FugSchedulerRuntime.setText("ScheduleStatus", message)
+      FugSchedulerRuntime.logLine(message)
+      return false
+    end
+
+    local resultsById = {}
+    local schedulerStatuses = {}
+    local hasResolutionError = false
+    for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
+      local resolveOk, result = pcall(FugSchedulerRuntime.resolveAt, scheduler, timestamp)
+      if resolveOk then
+        resultsById[scheduler.id] = result
+        table.insert(schedulerStatuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, nil))
+      else
+        hasResolutionError = true
+        table.insert(schedulerStatuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, nil, result))
+        FugSchedulerRuntime.logLine("Resolution error for Scheduler " .. scheduler.id .. ": " .. tostring(result))
+      end
+    end
+
+    FugSchedulerRuntime.resolutionResultsById = resultsById
+    FugSchedulerRuntime.publishGlobalStatus(timestamp, schedulerStatuses, hasResolutionError)
+
+    local selected = FugSchedulerRuntime.selectedScheduler()
+    local selectedResult = selected and resultsById[selected.id] or nil
+    if selected and selectedResult then
+      FugSchedulerRuntime.publishResolution(selected, selectedResult)
+    elseif selected then
+      FugSchedulerRuntime.setText("ScheduleStatus", "Resolution failed for selected Scheduler " .. selected.id)
+    end
+    return not hasResolutionError
+  end
+
+  -- Decode, validate, and atomically install ScheduleData before resolving it.
+  function FugSchedulerRuntime.reloadSchedule()
+    local source = Controls.ScheduleData and Controls.ScheduleData.String or ""
+    FugSchedulerRuntime.refreshLineViewer("ScheduleDataViewer", source)
+    if source == "" then
+      FugSchedulerRuntime.setText("ScheduleStatus", "Waiting for ScheduleData")
+      return false
+    end
+
+    local decodeOk, decoded, decodeError = pcall(FugSchedulerRuntime.json.decode, source)
+    if not decodeOk then
+      local message = "Schedule JSON error: " .. tostring(decoded)
+      FugSchedulerRuntime.setText("ScheduleStatus", message)
+      FugSchedulerRuntime.logLine(message)
+      return false
+    end
+    if decoded == nil then
+      local message = "Schedule JSON error: " .. tostring(decodeError)
+      FugSchedulerRuntime.setText("ScheduleStatus", message)
+      FugSchedulerRuntime.logLine(message)
+      return false
+    end
+
+    local validated, warnings, validationError = FugSchedulerRuntime.validateSchedule(decoded)
+    if not validated then
+      local message = "Schedule validation error: " .. tostring(validationError)
+      FugSchedulerRuntime.setText("ScheduleStatus", message)
+      FugSchedulerRuntime.logLine(message)
+      return false
+    end
+
+    FugSchedulerRuntime.installValidatedSchedule(
+      validated,
+      warnings,
+      FugSchedulerRuntime.selectedSchedulerId,
+      "Loaded"
+    )
+    return true
+  end
+
+  -- Refresh the aggregate plugin state without enabling automatic Event execution.
+  function FugSchedulerRuntime.refreshStatus()
+    local schedulerCount, enabledCount = 0, 0
+    if FugSchedulerRuntime.activeSchedule then
+      schedulerCount = #FugSchedulerRuntime.activeSchedule.schedulers
+      for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
+        if scheduler.enabled then enabledCount = enabledCount + 1 end
+      end
+    end
+    FugSchedulerRuntime.setText("Status", string.format(
+      "Resolution spike ready; %d/%d Schedulers enabled; automatic Event execution is off",
+      enabledCount,
+      schedulerCount
+    ))
+  end
+
+  -- Attach handlers for Action loading, Schedule loading, and deterministic resolution tests.
+  function FugSchedulerRuntime.attachHandlers()
+    if Controls.ActionSource then
+      Controls.ActionSource.EventHandler = function() FugSchedulerRuntime.reloadActions() end
+    end
+
+    if Controls.ScheduleData then
+      Controls.ScheduleData.EventHandler = function()
+        if not FugSchedulerRuntime.writingScheduleData then FugSchedulerRuntime.reloadSchedule() end
+      end
+    end
+
+    if Controls.SchedulerSelect then
+      Controls.SchedulerSelect.EventHandler = function(control)
+        FugSchedulerRuntime.selectedSchedulerId = FugSchedulerRuntime.choiceId(control.String)
+        local scheduler = FugSchedulerRuntime.selectedScheduler()
+        local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
+        if scheduler and result then FugSchedulerRuntime.publishResolution(scheduler, result) end
+        FugSchedulerRuntime.refreshSchedulerEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
+        FugSchedulerRuntime.refreshDayPatternEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
+        FugSchedulerRuntime.refreshWeekPatternEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
+      end
+    end
+
+    if Controls.SchedulerLabel then
+      Controls.SchedulerLabel.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingSchedulerEditor then return end
+        local label = control.String or ""
+        FugSchedulerRuntime.commitScheduleEdit("Scheduler label updated", function(candidate)
+          local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+          if not index then return false, "selected Scheduler no longer exists" end
+          candidate.schedulers[index].label = label
+        end)
+      end
+    end
+
+    if Controls.SchedulerEditorEnabled then
+      Controls.SchedulerEditorEnabled.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingSchedulerEditor then return end
+        local enabled = control.Boolean
+        FugSchedulerRuntime.commitScheduleEdit("Scheduler enabled state updated", function(candidate)
+          local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+          if not index then return false, "selected Scheduler no longer exists" end
+          candidate.schedulers[index].enabled = enabled
+        end)
+      end
+    end
+
+    if Controls.SchedulerPaused then
+      Controls.SchedulerPaused.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingSchedulerEditor then return end
+        local paused = control.Boolean
+        FugSchedulerRuntime.commitScheduleEdit("Scheduler paused state updated", function(candidate)
+          local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+          if not index then return false, "selected Scheduler no longer exists" end
+          candidate.schedulers[index].paused = paused
+        end)
+      end
+    end
+
+    if Controls.SchedulerDefaultWeekPattern then
+      Controls.SchedulerDefaultWeekPattern.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingSchedulerEditor then return end
+        local weekPatternId = FugSchedulerRuntime.choiceId(control.String) or ""
+        FugSchedulerRuntime.commitScheduleEdit("Default Week Pattern updated", function(candidate)
+          local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+          if not index then return false, "selected Scheduler no longer exists" end
+          candidate.schedulers[index].defaultWeekPatternId = weekPatternId
+        end)
+      end
+    end
+
+    if Controls.AddScheduler then
+      Controls.AddScheduler.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.addScheduler() end
+      end
+    end
+
+    if Controls.DuplicateScheduler then
+      Controls.DuplicateScheduler.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.duplicateScheduler() end
+      end
+    end
+
+    if Controls.DeleteScheduler then
+      Controls.DeleteScheduler.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.deleteScheduler() end
+      end
+    end
+
+    if Controls.DayPatternSelect then
+      Controls.DayPatternSelect.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingDayPatternEditor then return end
+        local scheduler = FugSchedulerRuntime.selectedScheduler()
+        if not scheduler then return end
+        FugSchedulerRuntime.selectedDayPatternIds[scheduler.id] = FugSchedulerRuntime.choiceId(control.String)
+        FugSchedulerRuntime.selectedEventIds[scheduler.id] = nil
+        FugSchedulerRuntime.refreshDayPatternEditor("Day Pattern selected")
+      end
+    end
+
+    if Controls.DayPatternLabel then
+      Controls.DayPatternLabel.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingDayPatternEditor then return end
+        local label = control.String or ""
+        FugSchedulerRuntime.commitScheduleEdit("Day Pattern label updated", function(candidate)
+          local _, dayPattern = FugSchedulerRuntime.candidateSelectedDayPattern(candidate)
+          if not dayPattern then return false, "selected Day Pattern no longer exists" end
+          dayPattern.label = label
+        end, nil, "DayPatternEditorStatus")
+      end
+    end
+
+    if Controls.AddDayPattern then
+      Controls.AddDayPattern.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.addDayPattern() end
+      end
+    end
+
+    if Controls.DuplicateDayPattern then
+      Controls.DuplicateDayPattern.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.duplicateDayPattern() end
+      end
+    end
+
+    if Controls.DeleteDayPattern then
+      Controls.DeleteDayPattern.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.deleteDayPattern() end
+      end
+    end
+
+    if Controls.EventSelect then
+      Controls.EventSelect.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingDayPatternEditor then return end
+        local scheduler = FugSchedulerRuntime.selectedScheduler()
+        if not scheduler then return end
+        FugSchedulerRuntime.selectedEventIds[scheduler.id] = FugSchedulerRuntime.choiceId(control.String)
+        FugSchedulerRuntime.refreshDayPatternEditor("Event selected")
+      end
+    end
+
+    if Controls.EventLabel then
+      Controls.EventLabel.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingDayPatternEditor then return end
+        local label = control.String or ""
+        FugSchedulerRuntime.commitScheduleEdit("Event label updated", function(candidate)
+          local _, _, event = FugSchedulerRuntime.candidateSelectedEvent(candidate)
+          if not event then return false, "selected Event no longer exists" end
+          event.label = label
+        end, nil, "DayPatternEditorStatus")
+      end
+    end
+
+    if Controls.EventTime then
+      Controls.EventTime.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingDayPatternEditor then return end
+        local timeText = control.String or ""
+        FugSchedulerRuntime.commitScheduleEdit("Event time updated", function(candidate)
+          local _, _, event = FugSchedulerRuntime.candidateSelectedEvent(candidate)
+          if not event then return false, "selected Event no longer exists" end
+          event.time = timeText
+        end, nil, "DayPatternEditorStatus")
+      end
+    end
+
+    if Controls.AddEvent then
+      Controls.AddEvent.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.addEvent() end
+      end
+    end
+
+    if Controls.DuplicateEvent then
+      Controls.DuplicateEvent.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.duplicateEvent() end
+      end
+    end
+
+    if Controls.DeleteEvent then
+      Controls.DeleteEvent.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.deleteEvent() end
+      end
+    end
+
+    if Controls.EventActionSelect then
+      Controls.EventActionSelect.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingDayPatternEditor then return end
+        local scheduler, _, event = FugSchedulerRuntime.selectedEvent()
+        if not event then return end
+        local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
+        FugSchedulerRuntime.selectedEventActionIndexes[key] = tonumber(FugSchedulerRuntime.choiceId(control.String))
+        FugSchedulerRuntime.refreshDayPatternEditor("Event Action selected")
+      end
+    end
+
+    if Controls.AddEventAction then
+      Controls.AddEventAction.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.addEventAction() end
+      end
+    end
+
+    if Controls.DeleteEventAction then
+      Controls.DeleteEventAction.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.deleteEventAction() end
+      end
+    end
+
+    if Controls.MoveEventActionUp then
+      Controls.MoveEventActionUp.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.moveEventAction(-1) end
+      end
+    end
+
+    if Controls.MoveEventActionDown then
+      Controls.MoveEventActionDown.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.moveEventAction(1) end
+      end
+    end
+
+    if Controls.WeekPatternSelect then
+      Controls.WeekPatternSelect.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingWeekPatternEditor then return end
+        local scheduler = FugSchedulerRuntime.selectedScheduler()
+        if not scheduler then return end
+        FugSchedulerRuntime.selectedWeekPatternIds[scheduler.id] = FugSchedulerRuntime.choiceId(control.String)
+        FugSchedulerRuntime.refreshWeekPatternEditor("Week Pattern selected")
+      end
+    end
+
+    if Controls.WeekPatternLabel then
+      Controls.WeekPatternLabel.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingWeekPatternEditor then return end
+        local label = control.String or ""
+        FugSchedulerRuntime.commitScheduleEdit("Week Pattern label updated", function(candidate)
+          local _, weekPattern = FugSchedulerRuntime.candidateSelectedWeekPattern(candidate)
+          if not weekPattern then return false, "selected Week Pattern no longer exists" end
+          weekPattern.label = label
+        end, nil, "WeekPatternEditorStatus")
+      end
+    end
+
+    for _, weekday in ipairs(FugSchedulerWeekdays) do
+      local weekdayKey = weekday.key
+      local controlName = weekday.controlName
+      if Controls[controlName] then
+        Controls[controlName].EventHandler = function(control)
+          if FugSchedulerRuntime.updatingWeekPatternEditor then return end
+          local dayPatternId = FugSchedulerRuntime.choiceId(control.String) or ""
+          FugSchedulerRuntime.commitScheduleEdit(weekdayKey .. " assignment updated", function(candidate)
+            local scheduler, weekPattern = FugSchedulerRuntime.candidateSelectedWeekPattern(candidate)
+            if not weekPattern then return false, "selected Week Pattern no longer exists" end
+            local dayPatternExists = false
+            for _, dayPattern in ipairs(scheduler.dayPatterns) do
+              if dayPattern.id == dayPatternId then dayPatternExists = true break end
+            end
+            if not dayPatternExists then return false, "selected Day Pattern no longer exists" end
+            weekPattern.days[weekdayKey] = dayPatternId
+          end, nil, "WeekPatternEditorStatus")
+        end
+      end
+    end
+
+    if Controls.AddWeekPattern then
+      Controls.AddWeekPattern.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.addWeekPattern() end
+      end
+    end
+
+    if Controls.DuplicateWeekPattern then
+      Controls.DuplicateWeekPattern.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.duplicateWeekPattern() end
+      end
+    end
+
+    if Controls.DeleteWeekPattern then
+      Controls.DeleteWeekPattern.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.deleteWeekPattern() end
+      end
+    end
+
+    if Controls.ReloadActions then
+      Controls.ReloadActions.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.reloadActions() end
+      end
+    end
+
+    if Controls.ReloadSchedule then
+      Controls.ReloadSchedule.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.reloadSchedule() end
+      end
+    end
+
+    if Controls.ResolveTestTime then
+      Controls.ResolveTestTime.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.resolveSelectedTime() end
+      end
+    end
+
+    if Controls.TestAction then
+      Controls.TestAction.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.testSelectedAction() end
+      end
+    end
+  end
+
+  -- Initialize sample persistence, registries, status, and the first resolution result.
+  function FugSchedulerRuntime.initialize()
+    if Controls.ActionSelect then Controls.ActionSelect.Choices = {} end
+    if Controls.SchedulerSelect then Controls.SchedulerSelect.Choices = {} end
+    if Controls.SchedulerDefaultWeekPattern then Controls.SchedulerDefaultWeekPattern.Choices = {} end
+    if Controls.DayPatternSelect then Controls.DayPatternSelect.Choices = {} end
+    if Controls.EventSelect then Controls.EventSelect.Choices = {} end
+    if Controls.EventActionSelect then Controls.EventActionSelect.Choices = {} end
+    if Controls.EventActionPicker then Controls.EventActionPicker.Choices = {} end
+    if Controls.WeekPatternSelect then Controls.WeekPatternSelect.Choices = {} end
+    for _, weekday in ipairs(FugSchedulerWeekdays) do
+      if Controls[weekday.controlName] then Controls[weekday.controlName].Choices = {} end
+    end
+    if Controls.ScheduleDataViewer then Controls.ScheduleDataViewer.Choices = {} end
+    if Controls.GlobalSchedulerStatusViewer then Controls.GlobalSchedulerStatusViewer.Choices = {} end
+    if Controls.DiagnosticLogViewer then Controls.DiagnosticLogViewer.Choices = {} end
+    FugSchedulerRuntime.setText("RegistryStatus", "Checking ActionSource evaluator support")
+    FugSchedulerRuntime.setText("RegisteredActionCount", "0")
+    FugSchedulerRuntime.setText("SchedulerCount", "0")
+    FugSchedulerRuntime.setText("GlobalSchedulerStatus", "{}")
+    FugSchedulerRuntime.setText("ScheduleStatus", "Checking persisted ScheduleData")
+    FugSchedulerRuntime.setText("SchedulerEditorStatus", "Waiting for a valid Scheduler configuration")
+    FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
+    FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
+    FugSchedulerRuntime.refreshStatus()
+    FugSchedulerRuntime.logLine("FugScheduler 2000 resolution spike initialized.")
+
+    if Controls.ScheduleData and (Controls.ScheduleData.String or "") == "" then
+      FugSchedulerRuntime.writingScheduleData = true
+      Controls.ScheduleData.String = FugSchedulerRuntime.encodeJson(FugSchedulerRuntime.sampleSchedule())
+      FugSchedulerRuntime.refreshLineViewer("ScheduleDataViewer", Controls.ScheduleData.String)
+      FugSchedulerRuntime.writingScheduleData = false
+    end
+    if Controls.TestDateTime and (Controls.TestDateTime.String or "") == "" then
+      Controls.TestDateTime.String = "2026-12-25 12:00"
+    end
+
+    FugSchedulerRuntime.reloadActions()
+    FugSchedulerRuntime.scheduleInitialized = true
+    FugSchedulerRuntime.reloadSchedule()
+  end
+
+  FugSchedulerRuntime.attachHandlers()
+  FugSchedulerRuntime.initialize()
+end

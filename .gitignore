@@ -1,0 +1,8 @@
+# Local/editor noise
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Keep generated qplug committed for easy deploy/review unless project policy changes.

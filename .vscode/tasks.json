@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Compile FugScheduler2000.qplug (local include compiler)",
+      "type": "shell",
+      "command": "python3 scripts/compile_plugin.py",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Compile and deploy FugScheduler2000.qplug to Q-SYS plugin dir",
+      "type": "shell",
+      "command": "python3 scripts/compile_plugin.py --deploy",
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}
