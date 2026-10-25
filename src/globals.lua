@@ -37,6 +37,7 @@ function pageNames(props)
   if propValue(props, "Show Diagnostics Page", true) then
     table.insert(names, "Diagnostics")
   end
+  table.insert(names, "About")
   return names
 end
 

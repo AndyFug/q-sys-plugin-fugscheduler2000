@@ -1,4 +1,10 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
+-- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
+local FugSchedulerPluginInfo = PluginInfo or {
+  BuildDate = "2026-10-25T08:22:53Z",
+  BuildTimestamp = 1792916573
+}
+
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
   {key = "Mon", label = "Monday", controlName = "WeekPatternMon"},
   {key = "Tue", label = "Tuesday", controlName = "WeekPatternTue"},
@@ -64,6 +70,27 @@ function FugSchedulerRuntime.setText(name, value)
     DiagnosticLog = "DiagnosticLogViewer"
   }
   if viewers[name] then FugSchedulerRuntime.refreshLineViewer(viewers[name], text) end
+end
+
+-- Format a UTC Unix build timestamp in the Core or emulator's local timezone.
+function FugSchedulerRuntime.formatBuildDate(timestamp)
+  local numericTimestamp = tonumber(timestamp)
+  if not numericTimestamp then return tostring(FugSchedulerPluginInfo.BuildDate or "Unknown") end
+
+  local okParts, parts = pcall(os.date, "*t", numericTimestamp)
+  local okMonth, month = pcall(os.date, "%B", numericTimestamp)
+  if not okParts or type(parts) ~= "table" or not okMonth then
+    return tostring(FugSchedulerPluginInfo.BuildDate or "Unknown")
+  end
+
+  return string.format(
+    "%d %s %d %02d:%02d",
+    parts.day,
+    tostring(month),
+    parts.year,
+    parts.hour,
+    parts.min
+  )
 end
 
 -- Append a bounded line to the diagnostic display.
@@ -2397,6 +2424,7 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.setText("SchedulerEditorStatus", "Waiting for a valid Scheduler configuration")
   FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
   FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
+  FugSchedulerRuntime.setText("BuildDateDisplay", FugSchedulerRuntime.formatBuildDate(FugSchedulerPluginInfo.BuildTimestamp))
   FugSchedulerRuntime.refreshStatus()
   FugSchedulerRuntime.logLine("FugScheduler 2000 resolution spike initialized.")
 

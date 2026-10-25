@@ -38,7 +38,7 @@ Initial boilerplate includes:
 - a generated `FugScheduler2000.qplug`
 - an ordinary hidden `ActionSource` Text input control pin
 - a reserved hidden `code` input for supplying the complete runtime during live debugging
-- initial Overview, Schedules, Actions, and Diagnostics pages
+- Overview, Schedules, Day Patterns, Week Patterns, Actions, Diagnostics, and About pages, with the public plugin version shown in the shared header and version, build, locally formatted build date, plugin ID, and author metadata on About
 - a Phase 1 Action Registry that compiles trusted source, calls `GetFugSchedulerActions()`, validates Actions, and provides guarded callback execution
 - versioned persistent `ScheduleData` JSON containing an ordered array of Schedulers, with a documented sample in `references/sample_schedule.json`
 - independent validation and read-only resolution for every Scheduler's Day Patterns, Week Patterns, Overrides, and previous/current/next Events

@@ -82,6 +82,9 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "TestDateTime", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ResolveTestTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
 
+  -- Display build metadata formatted in the Core or emulator's local timezone.
+  table.insert(ctrls, {Name = "BuildDateDisplay", ControlType = "Text", Count = 1})
+
   table.insert(ctrls, {Name = "Status", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "RegistryStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "RegisteredActionCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})

@@ -10,8 +10,10 @@
 -- Information block for the plugin.
 PluginInfo = {
   Name = "AndyFug~FugScheduler 2000",
-  Version = "0.4.0",
-  BuildVersion = "0.4.0.0",
+  Version = "0.1.0",
+  BuildVersion = "0.1.0.8",
+  BuildDate = "2026-10-25T08:22:53Z",
+  BuildTimestamp = 1792916573,
   Id = "1da6035f-30fd-41ca-8cff-828ea21c1dee",
   Author = "FugScheduler 2000 Contributors",
   Description = "UI-driven Q-SYS scheduler with actions loaded from trusted Lua source."
@@ -57,6 +59,7 @@ function pageNames(props)
   if propValue(props, "Show Diagnostics Page", true) then
     table.insert(names, "Diagnostics")
   end
+  table.insert(names, "About")
   return names
 end
 
@@ -1436,6 +1439,9 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "TestDateTime", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ResolveTestTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
 
+  -- Display build metadata formatted in the Core or emulator's local timezone.
+  table.insert(ctrls, {Name = "BuildDateDisplay", ControlType = "Text", Count = 1})
+
   table.insert(ctrls, {Name = "Status", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "RegistryStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "RegisteredActionCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
@@ -1464,7 +1470,7 @@ function GetControlLayout(props)
   local page = currentPageName(props)
 
   ui:background()
-  ui:header(page, "FugScheduler 2000 resolution spike")
+  ui:header(page, "Version " .. tostring(PluginInfo.Version))
   ui:hiddenControl("code")
   ui:hiddenControl("ActionSource")
   ui:statusBar("Status")
@@ -1501,7 +1507,7 @@ function GetControlLayout(props)
     ui:label("Resolution only", ui:rect(610, 76, 260, 28), {
       FontSize = 18,
       IsBold = true,
-      Color = ui:color("accent")
+      Color = ui:color("text")
     })
     ui:label("This phase validates JSON persistence, Day Pattern and Week Pattern resolution, Override precedence, and previous/current/next Events. Scheduled callbacks do not fire automatically yet.", ui:rect(610, 118, 258, 150), {
       VTextAlign = "Top",
@@ -1781,6 +1787,56 @@ function GetControlLayout(props)
       "Diagnostics~Global Scheduler Status",
       true
     )
+
+  elseif page == "About" then
+    ui:group("FugScheduler 2000", ui:rect(10, 44, 880, 400))
+    ui:label(PluginInfo.Description, ui:rect(32, 76, 836, 54), {
+      FontSize = 13,
+      VTextAlign = "Top",
+      WordWrap = true,
+      Color = ui:color("text")
+    })
+
+    ui:label("Q-SYS Version", ui:rect(32, 154, 180, 24), {Color = ui:color("mutedText")})
+    ui:label(tostring(PluginInfo.Version), ui:rect(222, 154, 646, 24), {
+      FontSize = 13,
+      IsBold = true,
+      Color = ui:color("text")
+    })
+    ui:label("Build Version", ui:rect(32, 190, 180, 24), {Color = ui:color("mutedText")})
+    ui:label(tostring(PluginInfo.BuildVersion), ui:rect(222, 190, 646, 24), {
+      FontSize = 13,
+      Color = ui:color("text")
+    })
+    ui:label("Build Date (Local)", ui:rect(32, 226, 180, 24), {Color = ui:color("mutedText")})
+    ui:textControl("BuildDateDisplay", ui:rect(222, 226, 646, 24), {
+      IsReadOnly = true,
+      TextBoxStyle = "NoBackground",
+      TextColor = ui:color("controlText"),
+      Font = "Roboto",
+      FontSize = 10,
+      HTextAlign = "Left",
+      VTextAlign = "Center",
+      PrettyName = "About~Build Date"
+    })
+    ui:label("Plugin ID", ui:rect(32, 262, 180, 24), {Color = ui:color("mutedText")})
+    ui:label(tostring(PluginInfo.Id), ui:rect(222, 262, 646, 24), {
+      Font = "Roboto",
+      FontSize = 10,
+      Color = ui:color("text")
+    })
+    ui:label("Author", ui:rect(32, 298, 180, 24), {Color = ui:color("mutedText")})
+    ui:label(tostring(PluginInfo.Author), ui:rect(222, 298, 646, 24), {
+      Font = "Roboto",
+      FontSize = 10,
+      Color = ui:color("text")
+    })
+
+    ui:label("Release commits are identified by Semantic Versioning Git tags. The build version identifies the specific development build being tested.", ui:rect(32, 350, 836, 58), {
+      VTextAlign = "Top",
+      WordWrap = true,
+      Color = ui:color("mutedText")
+    })
   end
 
   if propValue(props, "Layout Debug", false) then
@@ -1796,6 +1852,12 @@ end
 -- Start event-based runtime logic when loaded on a Core or in emulation.
 if Controls then
   -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
+  -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
+  local FugSchedulerPluginInfo = PluginInfo or {
+    BuildDate = "2026-10-25T08:22:53Z",
+    BuildTimestamp = 1792916573
+  }
+
   FugSchedulerWeekdays = FugSchedulerWeekdays or {
     {key = "Mon", label = "Monday", controlName = "WeekPatternMon"},
     {key = "Tue", label = "Tuesday", controlName = "WeekPatternTue"},
@@ -1861,6 +1923,27 @@ if Controls then
       DiagnosticLog = "DiagnosticLogViewer"
     }
     if viewers[name] then FugSchedulerRuntime.refreshLineViewer(viewers[name], text) end
+  end
+
+  -- Format a UTC Unix build timestamp in the Core or emulator's local timezone.
+  function FugSchedulerRuntime.formatBuildDate(timestamp)
+    local numericTimestamp = tonumber(timestamp)
+    if not numericTimestamp then return tostring(FugSchedulerPluginInfo.BuildDate or "Unknown") end
+
+    local okParts, parts = pcall(os.date, "*t", numericTimestamp)
+    local okMonth, month = pcall(os.date, "%B", numericTimestamp)
+    if not okParts or type(parts) ~= "table" or not okMonth then
+      return tostring(FugSchedulerPluginInfo.BuildDate or "Unknown")
+    end
+
+    return string.format(
+      "%d %s %d %02d:%02d",
+      parts.day,
+      tostring(month),
+      parts.year,
+      parts.hour,
+      parts.min
+    )
   end
 
   -- Append a bounded line to the diagnostic display.
@@ -4194,6 +4277,7 @@ if Controls then
     FugSchedulerRuntime.setText("SchedulerEditorStatus", "Waiting for a valid Scheduler configuration")
     FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
     FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
+    FugSchedulerRuntime.setText("BuildDateDisplay", FugSchedulerRuntime.formatBuildDate(FugSchedulerPluginInfo.BuildTimestamp))
     FugSchedulerRuntime.refreshStatus()
     FugSchedulerRuntime.logLine("FugScheduler 2000 resolution spike initialized.")
 

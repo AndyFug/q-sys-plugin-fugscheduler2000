@@ -4,7 +4,7 @@ function GetControlLayout(props)
   local page = currentPageName(props)
 
   ui:background()
-  ui:header(page, "FugScheduler 2000 resolution spike")
+  ui:header(page, "Version " .. tostring(PluginInfo.Version))
   ui:hiddenControl("code")
   ui:hiddenControl("ActionSource")
   ui:statusBar("Status")
@@ -41,7 +41,7 @@ function GetControlLayout(props)
     ui:label("Resolution only", ui:rect(610, 76, 260, 28), {
       FontSize = 18,
       IsBold = true,
-      Color = ui:color("accent")
+      Color = ui:color("text")
     })
     ui:label("This phase validates JSON persistence, Day Pattern and Week Pattern resolution, Override precedence, and previous/current/next Events. Scheduled callbacks do not fire automatically yet.", ui:rect(610, 118, 258, 150), {
       VTextAlign = "Top",
@@ -321,6 +321,56 @@ function GetControlLayout(props)
       "Diagnostics~Global Scheduler Status",
       true
     )
+
+  elseif page == "About" then
+    ui:group("FugScheduler 2000", ui:rect(10, 44, 880, 400))
+    ui:label(PluginInfo.Description, ui:rect(32, 76, 836, 54), {
+      FontSize = 13,
+      VTextAlign = "Top",
+      WordWrap = true,
+      Color = ui:color("text")
+    })
+
+    ui:label("Q-SYS Version", ui:rect(32, 154, 180, 24), {Color = ui:color("mutedText")})
+    ui:label(tostring(PluginInfo.Version), ui:rect(222, 154, 646, 24), {
+      FontSize = 13,
+      IsBold = true,
+      Color = ui:color("text")
+    })
+    ui:label("Build Version", ui:rect(32, 190, 180, 24), {Color = ui:color("mutedText")})
+    ui:label(tostring(PluginInfo.BuildVersion), ui:rect(222, 190, 646, 24), {
+      FontSize = 13,
+      Color = ui:color("text")
+    })
+    ui:label("Build Date (Local)", ui:rect(32, 226, 180, 24), {Color = ui:color("mutedText")})
+    ui:textControl("BuildDateDisplay", ui:rect(222, 226, 646, 24), {
+      IsReadOnly = true,
+      TextBoxStyle = "NoBackground",
+      TextColor = ui:color("controlText"),
+      Font = "Roboto",
+      FontSize = 10,
+      HTextAlign = "Left",
+      VTextAlign = "Center",
+      PrettyName = "About~Build Date"
+    })
+    ui:label("Plugin ID", ui:rect(32, 262, 180, 24), {Color = ui:color("mutedText")})
+    ui:label(tostring(PluginInfo.Id), ui:rect(222, 262, 646, 24), {
+      Font = "Roboto",
+      FontSize = 10,
+      Color = ui:color("text")
+    })
+    ui:label("Author", ui:rect(32, 298, 180, 24), {Color = ui:color("mutedText")})
+    ui:label(tostring(PluginInfo.Author), ui:rect(222, 298, 646, 24), {
+      Font = "Roboto",
+      FontSize = 10,
+      Color = ui:color("text")
+    })
+
+    ui:label("Release commits are identified by Semantic Versioning Git tags. The build version identifies the specific development build being tested.", ui:rect(32, 350, 836, 58), {
+      VTextAlign = "Top",
+      WordWrap = true,
+      Color = ui:color("mutedText")
+    })
   end
 
   if propValue(props, "Layout Debug", false) then
