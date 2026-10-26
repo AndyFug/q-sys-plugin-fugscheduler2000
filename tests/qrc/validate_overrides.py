@@ -127,9 +127,9 @@ def main() -> None:
         check(bool(UUID_V4.match(override_id)), "Add creates a UUID-v4-style Override ID")
         model = schedule()
         override = selected_override(model, scheduler_id, override_id)
-        check(override["type"] == "DayPattern" and override["enabled"] is True and
+        check(override["type"] == "DayPattern" and override["enabled"] is False and
               override["patternId"] == "default-day" and override["startDate"] == override["endDate"],
-              "new Override is immediately schema-valid with Day Pattern defaults")
+              "new Override is disabled and immediately schema-valid with Day Pattern defaults")
 
         list_state = controls("OverrideSelect")
         listed = [json.loads(item) for item in list_state["OverrideSelect"]["Choices"]]
@@ -151,12 +151,15 @@ def main() -> None:
         check("rejected" in snapped["OverrideEditorStatus"]["String"].lower(),
               "empty label rejection remains visible after snap-back")
 
+        set_value("OverrideEnabled", True)
+        check(selected_override(schedule(), scheduler_id, override_id)["enabled"] is True,
+              "Override enabled state commits true")
         set_value("OverrideEnabled", False)
         check(selected_override(schedule(), scheduler_id, override_id)["enabled"] is False,
               "Override enabled state commits false")
         set_value("OverrideEnabled", True)
         check(selected_override(schedule(), scheduler_id, override_id)["enabled"] is True,
-              "Override enabled state commits true")
+              "Override can be re-enabled for resolver testing")
 
         set_value("OverrideStartDate", "2030-01-02")
         set_value("OverrideEndDate", "2030-01-03")
@@ -200,9 +203,10 @@ def main() -> None:
         duplicate = selected_override(model, scheduler_id, duplicate_id)
         check(duplicate_id != override_id and bool(UUID_V4.match(duplicate_id)),
               "Duplicate creates a fresh Override ID")
-        copied_fields = ["type", "enabled", "startDate", "endDate", "patternId"]
-        check(all(duplicate[field] == source[field] for field in copied_fields) and "Copy" in duplicate["label"],
-              "Duplicate copies fields independently with an operator-facing Copy label")
+        copied_fields = ["type", "startDate", "endDate", "patternId"]
+        check(all(duplicate[field] == source[field] for field in copied_fields) and
+              duplicate["enabled"] is False and "Copy" in duplicate["label"],
+              "Duplicate copies structural fields independently and starts disabled")
 
         set_value("OverrideLabel", "Week Priority")
         model = schedule()
@@ -234,6 +238,9 @@ def main() -> None:
         check([item["id"] for item in selected_scheduler(schedule(), scheduler_id)["overrides"]] == before_order,
               "Move Down restores persisted priority order")
 
+        set_value("OverrideEnabled", True)
+        check(selected_override(schedule(), scheduler_id, duplicate_id)["enabled"] is True,
+              "duplicated Override can be explicitly enabled")
         set_value("OverrideSelect", choice(override_id, "Day Priority"))
         summary = controls("OverrideSummary")["OverrideSummary"]["String"]
         check("Overlaps 1 enabled Day Pattern Override" in summary,

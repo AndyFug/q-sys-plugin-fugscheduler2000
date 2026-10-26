@@ -12,7 +12,7 @@ That controller demonstrates multiple independent Schedulers, reusable Action de
 
 ## Scheduler model
 
-The canonical concepts are documented in `SCHEDULER_MODEL.md`; the multi-Scheduler integration status contract is documented in `STATUS_MODEL.md`. A deferred working-copy versus published/live configuration proposal is recorded in `DRAFT_PUBLISH_MODEL.md`:
+The canonical concepts are documented in `SCHEDULER_MODEL.md`; the multi-Scheduler integration status contract is documented in `STATUS_MODEL.md`. A deferred staged-versus-running configuration and commit proposal is recorded in `DRAFT_PUBLISH_MODEL.md`:
 
 - Actions are externally supplied operations.
 - Events define a time and an ordered list of Event Actions.
@@ -50,6 +50,7 @@ Initial boilerplate includes:
 - a visual Week Patterns editor with a scrollable structured selector, label/add/duplicate/guarded-delete transactions, seven structured Day Pattern assignments, per-Scheduler runtime selection, and reference summaries
 - a visual Scheduler-scoped Overrides editor for ordered Day Pattern and Week Pattern Overrides, including presentation-only DMY/MDY/ISO date preferences, buffered date validation, long-form dates, inclusive range summaries, atomic duration-preserving Start edits, convenience duration controls, type-dependent pattern selection, enabled state, add/duplicate/delete/move transactions, overlap warnings, and per-Scheduler runtime selection
 - opaque UUID-style IDs for newly created Schedulers, Day Patterns, Week Patterns, and Events; IDs remain in persisted/status integration data rather than the primary operator UI
+- disabled-by-default creation and duplication of Schedulers and Overrides so their configuration can be completed before activation
 
 ## Build
 

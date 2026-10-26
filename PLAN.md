@@ -275,9 +275,9 @@ Use the vendored FugUi framework and separate operator status from configuration
 
 Large lists should use banked editor rows with stable backing controls rather than dynamically changing control names.
 
-## Deferred draft and publish model
+## Deferred Stage and Commit model
 
-A persistent working-copy versus published/live configuration model is proposed in `DRAFT_PUBLISH_MODEL.md`. It is intentionally deferred until the intervening requested features are complete and must not be partially introduced into the current immediate-commit transaction architecture.
+A persistent staged-versus-running structural configuration model with separate live Scheduler and Override operational controls is proposed in `DRAFT_PUBLISH_MODEL.md`. It is intentionally deferred until the basic editor, resolver, persistence, and execution behavior is sufficiently complete. It must not be partially introduced into the current immediate-commit transaction architecture.
 
 ## Import, export, and reset roadmap
 

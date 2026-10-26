@@ -1974,7 +1974,7 @@ function FugSchedulerRuntime.refreshOverrideEditor(message)
   end
 end
 
--- Add an immediately valid Day Pattern Override using today's Core-local date.
+-- Add an immediately valid disabled Day Pattern Override using today's Core-local date.
 function FugSchedulerRuntime.addOverride()
   local scheduler = FugSchedulerRuntime.selectedScheduler()
   if not scheduler or not scheduler.dayPatterns[1] then return false end
@@ -1992,7 +1992,7 @@ function FugSchedulerRuntime.addOverride()
     table.insert(candidate.schedulers[schedulerIndex].overrides, {
       id = id,
       label = label,
-      enabled = true,
+      enabled = false,
       type = "DayPattern",
       startDate = dateText,
       endDate = dateText,
@@ -2020,6 +2020,7 @@ function FugSchedulerRuntime.duplicateOverride()
         local duplicate = FugSchedulerRuntime.copyPersisted(override)
         duplicate.id = id
         duplicate.label = label
+        duplicate.enabled = false
         table.insert(candidateScheduler.overrides, index + 1, duplicate)
         return
       end
@@ -2380,6 +2381,8 @@ function FugSchedulerRuntime.duplicateScheduler()
     local duplicate = FugSchedulerRuntime.copyPersisted(candidate.schedulers[index])
     duplicate.id = id
     duplicate.label = duplicate.label .. " Copy"
+    duplicate.enabled = false
+    duplicate.paused = false
     table.insert(candidate.schedulers, index + 1, duplicate)
   end, id)
 end
