@@ -50,6 +50,16 @@ function FugSchedulerUi.weekdayAssignment(ui, weekday, y)
   })
 end
 
+-- Draw one labeled control row in the Override details panel.
+function FugSchedulerUi.overrideField(ui, label, controlName, style, y, options)
+  ui:label(label, ui:rect(350, y + 2, 104, 22), {Color = ui:color("mutedText")})
+  if style == "Text" then
+    ui:textControl(controlName, ui:rect(458, y, 408, 26), options or {})
+  else
+    ui:control(controlName, style, ui:rect(458, y, 408, 26), options or {})
+  end
+end
+
 -- Draw a standard explanatory panel for unfinished editor pages.
 function FugSchedulerUi.placeholderPanel(ui, title, body)
   ui:group(title, ui:rect(10, 44, 880, 400))

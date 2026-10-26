@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-10-25T08:22:53Z",
-  BuildTimestamp = 1792916573
+  BuildDate = "2026-10-25T08:56:47Z",
+  BuildTimestamp = 1792918607
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -33,8 +33,10 @@ FugSchedulerRuntime = {
   updatingSchedulerEditor = false,
   updatingDayPatternEditor = false,
   updatingWeekPatternEditor = false,
+  updatingOverrideEditor = false,
   selectedDayPatternIds = {},
   selectedWeekPatternIds = {},
+  selectedOverrideIds = {},
   selectedEventIds = {},
   selectedEventActionIndexes = {},
   uuidCounter = 0,
@@ -694,12 +696,21 @@ function FugSchedulerRuntime.validateScheduler(scheduler, schedulerIndex)
   end
 
   local overrideIds = {}
+  local overrideLabels = {}
   for overrideIndex, override in ipairs(scheduler.overrides) do
     if type(override) ~= "table" then return nil, nil, prefix .. " Override " .. overrideIndex .. " must be an object" end
     if type(override.id) ~= "string" or override.id == "" then return nil, nil, prefix .. " Override " .. overrideIndex .. " requires an ID" end
     if overrideIds[override.id] then return nil, nil, prefix .. " has duplicate Override ID: " .. override.id end
     overrideIds[override.id] = true
     override.label = override.label or override.id
+    if type(override.label) ~= "string" or override.label == "" then
+      return nil, nil, prefix .. " Override " .. override.id .. " requires a non-empty label"
+    end
+    overrideLabels[override.label] = (overrideLabels[override.label] or 0) + 1
+    if overrideLabels[override.label] == 2 then
+      table.insert(warnings, prefix .. " has duplicate Override label: " .. override.label)
+    end
+    override.enabled = override.enabled ~= false
 
     local _, startError = FugSchedulerRuntime.parseDate(override.startDate)
     if startError then return nil, nil, prefix .. " Override " .. override.id .. " start date: " .. startError end
@@ -968,6 +979,7 @@ function FugSchedulerRuntime.installValidatedSchedule(validated, warnings, selec
   FugSchedulerRuntime.refreshSchedulerEditor(summary)
   FugSchedulerRuntime.refreshDayPatternEditor(summary)
   FugSchedulerRuntime.refreshWeekPatternEditor(summary)
+  FugSchedulerRuntime.refreshOverrideEditor(summary)
   FugSchedulerRuntime.refreshStatus()
 end
 
@@ -985,6 +997,7 @@ function FugSchedulerRuntime.commitScheduleEdit(description, editFunction, selec
     FugSchedulerRuntime.refreshSchedulerEditor()
     FugSchedulerRuntime.refreshDayPatternEditor()
     FugSchedulerRuntime.refreshWeekPatternEditor()
+    FugSchedulerRuntime.refreshOverrideEditor()
     FugSchedulerRuntime.setText(feedbackControl, message)
     return false
   end
@@ -1017,6 +1030,8 @@ function FugSchedulerRuntime.commitScheduleEdit(description, editFunction, selec
     FugSchedulerRuntime.refreshDayPatternEditor(commitMessage)
   elseif feedbackControl == "WeekPatternEditorStatus" then
     FugSchedulerRuntime.refreshWeekPatternEditor(commitMessage)
+  elseif feedbackControl == "OverrideEditorStatus" then
+    FugSchedulerRuntime.refreshOverrideEditor(commitMessage)
   else
     FugSchedulerRuntime.setText(feedbackControl, commitMessage)
   end
@@ -1028,6 +1043,14 @@ function FugSchedulerRuntime.selectedSchedulerIndex(candidate)
   local selectedId = FugSchedulerRuntime.selectedSchedulerId
   for index, scheduler in ipairs(candidate.schedulers) do
     if scheduler.id == selectedId then return index end
+  end
+  return nil
+end
+
+-- Return the item with a stable ID from an ordered schema collection.
+function FugSchedulerRuntime.itemById(items, id)
+  for _, item in ipairs(items or {}) do
+    if item.id == id then return item end
   end
   return nil
 end
@@ -1543,6 +1566,254 @@ function FugSchedulerRuntime.deleteWeekPattern()
     end
     return false, "selected Week Pattern no longer exists"
   end, nil, "WeekPatternEditorStatus")
+end
+
+-- Return the selected Override in the current Scheduler, falling back to its first row.
+function FugSchedulerRuntime.selectedOverride()
+  local scheduler = FugSchedulerRuntime.selectedScheduler()
+  if not scheduler then return nil, nil, nil end
+
+  local selectedId = FugSchedulerRuntime.selectedOverrideIds[scheduler.id]
+  if not selectedId and Controls.OverrideSelect then
+    selectedId = FugSchedulerRuntime.choiceId(Controls.OverrideSelect.String)
+  end
+  for index, override in ipairs(scheduler.overrides or {}) do
+    if override.id == selectedId then
+      FugSchedulerRuntime.selectedOverrideIds[scheduler.id] = override.id
+      return scheduler, override, index
+    end
+  end
+  local override = scheduler.overrides and scheduler.overrides[1] or nil
+  if override then FugSchedulerRuntime.selectedOverrideIds[scheduler.id] = override.id end
+  return scheduler, override, override and 1 or nil
+end
+
+-- Return the selected Override and its index from a persisted candidate model.
+function FugSchedulerRuntime.candidateSelectedOverride(candidate)
+  local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+  if not schedulerIndex then return nil, nil, nil end
+  local scheduler = candidate.schedulers[schedulerIndex]
+  local selectedId = FugSchedulerRuntime.selectedOverrideIds[scheduler.id]
+  for index, override in ipairs(scheduler.overrides or {}) do
+    if override.id == selectedId then return scheduler, override, index end
+  end
+  return scheduler, nil, nil
+end
+
+-- Count the selected Override's same-type priority and enabled overlaps.
+function FugSchedulerRuntime.overrideContext(scheduler, selected)
+  local priority, typeCount, overlapCount, labelMatches = 0, 0, 0, 0
+  for _, override in ipairs(scheduler.overrides or {}) do
+    if override.label == selected.label then labelMatches = labelMatches + 1 end
+    if override.type == selected.type then
+      typeCount = typeCount + 1
+      if override.id == selected.id then priority = typeCount end
+      if override.id ~= selected.id and selected.enabled and override.enabled and
+          FugSchedulerRuntime.dateRangesOverlap(selected, override) then
+        overlapCount = overlapCount + 1
+      end
+    end
+  end
+  return priority, typeCount, overlapCount, labelMatches
+end
+
+-- Refresh the Override list, detail controls, ordering state, and warning summary.
+function FugSchedulerRuntime.refreshOverrideEditor(message)
+  if not FugSchedulerRuntime.activeSchedule then return end
+  local scheduler = FugSchedulerRuntime.selectedScheduler()
+  if not scheduler then return end
+
+  FugSchedulerRuntime.updatingOverrideEditor = true
+  local overrideChoices, overrideLabelCounts = FugSchedulerRuntime.labeledChoices(scheduler.overrides)
+  if Controls.OverrideSelect then Controls.OverrideSelect.Choices = overrideChoices end
+
+  local _, override, overrideIndex = FugSchedulerRuntime.selectedOverride()
+  if override and Controls.OverrideSelect then
+    Controls.OverrideSelect.String = FugSchedulerRuntime.encodeChoice(
+      FugSchedulerRuntime.labeledChoiceText(scheduler.overrides, override, overrideLabelCounts),
+      override.id
+    )
+  elseif Controls.OverrideSelect then
+    Controls.OverrideSelect.String = ""
+  end
+
+  if Controls.OverrideLabel then Controls.OverrideLabel.String = override and override.label or "" end
+  if Controls.OverrideEnabled then Controls.OverrideEnabled.Boolean = override and override.enabled or false end
+  if Controls.OverrideStartDate then Controls.OverrideStartDate.String = override and override.startDate or "" end
+  if Controls.OverrideEndDate then Controls.OverrideEndDate.String = override and override.endDate or "" end
+
+  if Controls.OverrideType then
+    Controls.OverrideType.Choices = {
+      {Text = "Day Pattern", Id = "DayPattern"},
+      {Text = "Week Pattern", Id = "WeekPattern"}
+    }
+    if override then
+      local typeText = override.type == "WeekPattern" and "Week Pattern" or "Day Pattern"
+      Controls.OverrideType.String = FugSchedulerRuntime.encodeChoice(typeText, override.type)
+    else
+      Controls.OverrideType.String = ""
+    end
+  end
+
+  if Controls.OverridePattern then
+    local patterns = override and (override.type == "WeekPattern" and scheduler.weekPatterns or scheduler.dayPatterns) or {}
+    local patternChoices, patternLabelCounts = FugSchedulerRuntime.labeledChoices(patterns)
+    Controls.OverridePattern.Choices = patternChoices
+    local pattern = nil
+    if override then
+      pattern = override.type == "WeekPattern" and scheduler._weekPatternsById[override.patternId]
+        or scheduler._dayPatternsById[override.patternId]
+    end
+    Controls.OverridePattern.String = pattern and FugSchedulerRuntime.encodeChoice(
+      FugSchedulerRuntime.labeledChoiceText(patterns, pattern, patternLabelCounts),
+      pattern.id
+    ) or ""
+  end
+
+  local contextWarning = ""
+  if override then
+    local priority, typeCount, overlapCount, labelMatches = FugSchedulerRuntime.overrideContext(scheduler, override)
+    local typeLabel = override.type == "WeekPattern" and "Week Pattern" or "Day Pattern"
+    local stateSummary = string.format("Priority %d of %d; %s", priority, typeCount, override.enabled and "enabled" or "disabled")
+    local overlapSummary
+    if not override.enabled then
+      overlapSummary = "Disabled; no active overlaps"
+    elseif overlapCount > 0 then
+      overlapSummary = string.format("Overlaps %d enabled %s Override%s", overlapCount, typeLabel, overlapCount == 1 and "" or "s")
+    else
+      overlapSummary = "No enabled same-type overlaps"
+    end
+    FugSchedulerRuntime.setText("OverrideSummary", stateSummary .. " | " .. overlapSummary)
+    if labelMatches > 1 then contextWarning = "Duplicate Override label" end
+  else
+    FugSchedulerRuntime.setText("OverrideSummary", "No Overrides configured")
+  end
+
+  local noOverride = override == nil
+  FugSchedulerRuntime.setDisabled("OverrideSelect", noOverride)
+  FugSchedulerRuntime.setDisabled("OverrideLabel", noOverride)
+  FugSchedulerRuntime.setDisabled("OverrideEnabled", noOverride)
+  FugSchedulerRuntime.setDisabled("OverrideType", noOverride)
+  FugSchedulerRuntime.setDisabled("OverrideStartDate", noOverride)
+  FugSchedulerRuntime.setDisabled("OverrideEndDate", noOverride)
+  FugSchedulerRuntime.setDisabled("OverridePattern", noOverride)
+  FugSchedulerRuntime.setDisabled("DuplicateOverride", noOverride)
+  FugSchedulerRuntime.setDisabled("DeleteOverride", noOverride)
+  FugSchedulerRuntime.setDisabled("MoveOverrideUp", noOverride or overrideIndex <= 1)
+  FugSchedulerRuntime.setDisabled("MoveOverrideDown", noOverride or overrideIndex >= #scheduler.overrides)
+  FugSchedulerRuntime.updatingOverrideEditor = false
+
+  if message and contextWarning ~= "" then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", message .. " | " .. contextWarning)
+  elseif message then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", message)
+  elseif contextWarning ~= "" then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", contextWarning)
+  end
+end
+
+-- Add an immediately valid Day Pattern Override using today's Core-local date.
+function FugSchedulerRuntime.addOverride()
+  local scheduler = FugSchedulerRuntime.selectedScheduler()
+  if not scheduler or not scheduler.dayPatterns[1] then return false end
+  local existing = {}
+  for _, override in ipairs(scheduler.overrides or {}) do existing[override.id] = true end
+  local id = FugSchedulerRuntime.generateUuid(existing)
+  local label = FugSchedulerRuntime.uniqueLabel(scheduler.overrides, "New Override")
+  local dateText = os.date("%Y-%m-%d")
+  local patternId = scheduler.dayPatterns[1].id
+  FugSchedulerRuntime.selectedOverrideIds[scheduler.id] = id
+
+  return FugSchedulerRuntime.commitScheduleEdit("Override added", function(candidate)
+    local schedulerIndex = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
+    if not schedulerIndex then return false, "selected Scheduler no longer exists" end
+    table.insert(candidate.schedulers[schedulerIndex].overrides, {
+      id = id,
+      label = label,
+      enabled = true,
+      type = "DayPattern",
+      startDate = dateText,
+      endDate = dateText,
+      patternId = patternId
+    })
+  end, nil, "OverrideEditorStatus")
+end
+
+-- Duplicate the selected Override beside its source with an independent ID and fields.
+function FugSchedulerRuntime.duplicateOverride()
+  local scheduler, source = FugSchedulerRuntime.selectedOverride()
+  if not source then return false end
+  local existing = {}
+  for _, override in ipairs(scheduler.overrides or {}) do existing[override.id] = true end
+  local sourceId = source.id
+  local id = FugSchedulerRuntime.generateUuid(existing)
+  local label = FugSchedulerRuntime.uniqueLabel(scheduler.overrides, source.label .. " Copy")
+  FugSchedulerRuntime.selectedOverrideIds[scheduler.id] = id
+
+  return FugSchedulerRuntime.commitScheduleEdit("Override duplicated", function(candidate)
+    local candidateScheduler = candidate.schedulers[FugSchedulerRuntime.selectedSchedulerIndex(candidate)]
+    if not candidateScheduler then return false, "selected Scheduler no longer exists" end
+    for index, override in ipairs(candidateScheduler.overrides) do
+      if override.id == sourceId then
+        local duplicate = FugSchedulerRuntime.copyPersisted(override)
+        duplicate.id = id
+        duplicate.label = label
+        table.insert(candidateScheduler.overrides, index + 1, duplicate)
+        return
+      end
+    end
+    return false, "selected Override no longer exists"
+  end, nil, "OverrideEditorStatus")
+end
+
+-- Delete the selected Override and retain the nearest neighboring selection.
+function FugSchedulerRuntime.deleteOverride()
+  local scheduler, source, sourceIndex = FugSchedulerRuntime.selectedOverride()
+  if not source then
+    local message = "Delete rejected: no Override is selected"
+    FugSchedulerRuntime.setText("OverrideEditorStatus", message)
+    return false
+  end
+  local nextOverride = nil
+  if #scheduler.overrides > 1 then
+    nextOverride = scheduler.overrides[math.min(sourceIndex, #scheduler.overrides - 1)]
+    if nextOverride.id == source.id then nextOverride = scheduler.overrides[sourceIndex + 1] end
+  end
+  FugSchedulerRuntime.selectedOverrideIds[scheduler.id] = nextOverride and nextOverride.id or nil
+  local sourceId = source.id
+
+  return FugSchedulerRuntime.commitScheduleEdit("Override deleted", function(candidate)
+    local candidateScheduler = candidate.schedulers[FugSchedulerRuntime.selectedSchedulerIndex(candidate)]
+    if not candidateScheduler then return false, "selected Scheduler no longer exists" end
+    for index, override in ipairs(candidateScheduler.overrides) do
+      if override.id == sourceId then
+        table.remove(candidateScheduler.overrides, index)
+        return
+      end
+    end
+    return false, "selected Override no longer exists"
+  end, nil, "OverrideEditorStatus")
+end
+
+-- Move the selected complete Override object by one persisted array row.
+function FugSchedulerRuntime.moveOverride(offset)
+  local scheduler, override, index = FugSchedulerRuntime.selectedOverride()
+  if not override then return false end
+  local targetIndex = index + offset
+  if targetIndex < 1 or targetIndex > #scheduler.overrides then
+    local message = "Move rejected: Override is already at the boundary"
+    FugSchedulerRuntime.refreshOverrideEditor()
+    FugSchedulerRuntime.setText("OverrideEditorStatus", message)
+    return false
+  end
+
+  return FugSchedulerRuntime.commitScheduleEdit("Override moved", function(candidate)
+    local _, _, candidateIndex = FugSchedulerRuntime.candidateSelectedOverride(candidate)
+    if not candidateIndex then return false, "selected Override no longer exists" end
+    local candidateScheduler = candidate.schedulers[FugSchedulerRuntime.selectedSchedulerIndex(candidate)]
+    local moved = table.remove(candidateScheduler.overrides, candidateIndex)
+    table.insert(candidateScheduler.overrides, candidateIndex + offset, moved)
+  end, nil, "OverrideEditorStatus")
 end
 
 -- Return the selected Day Pattern and its index from a persisted candidate model.
@@ -2117,6 +2388,7 @@ function FugSchedulerRuntime.attachHandlers()
       FugSchedulerRuntime.refreshSchedulerEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
       FugSchedulerRuntime.refreshDayPatternEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
       FugSchedulerRuntime.refreshWeekPatternEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
+      FugSchedulerRuntime.refreshOverrideEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
     end
   end
 
@@ -2375,6 +2647,130 @@ function FugSchedulerRuntime.attachHandlers()
     end
   end
 
+  if Controls.OverrideSelect then
+    Controls.OverrideSelect.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingOverrideEditor then return end
+      local scheduler = FugSchedulerRuntime.selectedScheduler()
+      if not scheduler then return end
+      FugSchedulerRuntime.selectedOverrideIds[scheduler.id] = FugSchedulerRuntime.choiceId(control.String)
+      FugSchedulerRuntime.refreshOverrideEditor("Override selected")
+    end
+  end
+
+  if Controls.OverrideLabel then
+    Controls.OverrideLabel.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingOverrideEditor then return end
+      local label = control.String or ""
+      FugSchedulerRuntime.commitScheduleEdit("Override label updated", function(candidate)
+        local _, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
+        if not override then return false, "selected Override no longer exists" end
+        override.label = label
+      end, nil, "OverrideEditorStatus")
+    end
+  end
+
+  if Controls.OverrideEnabled then
+    Controls.OverrideEnabled.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingOverrideEditor then return end
+      local enabled = control.Boolean
+      FugSchedulerRuntime.commitScheduleEdit("Override enabled state updated", function(candidate)
+        local _, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
+        if not override then return false, "selected Override no longer exists" end
+        override.enabled = enabled
+      end, nil, "OverrideEditorStatus")
+    end
+  end
+
+  if Controls.OverrideType then
+    Controls.OverrideType.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingOverrideEditor then return end
+      local overrideType = FugSchedulerRuntime.choiceId(control.String) or ""
+      FugSchedulerRuntime.commitScheduleEdit("Override type updated", function(candidate)
+        local scheduler, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
+        if not override then return false, "selected Override no longer exists" end
+        if overrideType ~= "DayPattern" and overrideType ~= "WeekPattern" then
+          return false, "Override type must be Day Pattern or Week Pattern"
+        end
+        local patterns = overrideType == "WeekPattern" and scheduler.weekPatterns or scheduler.dayPatterns
+        override.type = overrideType
+        if not FugSchedulerRuntime.itemById(patterns, override.patternId) then
+          if not patterns[1] then return false, "selected Override type has no available Patterns" end
+          override.patternId = patterns[1].id
+        end
+      end, nil, "OverrideEditorStatus")
+    end
+  end
+
+  if Controls.OverrideStartDate then
+    Controls.OverrideStartDate.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingOverrideEditor then return end
+      local dateText = control.String or ""
+      FugSchedulerRuntime.commitScheduleEdit("Override start date updated", function(candidate)
+        local _, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
+        if not override then return false, "selected Override no longer exists" end
+        override.startDate = dateText
+      end, nil, "OverrideEditorStatus")
+    end
+  end
+
+  if Controls.OverrideEndDate then
+    Controls.OverrideEndDate.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingOverrideEditor then return end
+      local dateText = control.String or ""
+      FugSchedulerRuntime.commitScheduleEdit("Override end date updated", function(candidate)
+        local _, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
+        if not override then return false, "selected Override no longer exists" end
+        override.endDate = dateText
+      end, nil, "OverrideEditorStatus")
+    end
+  end
+
+  if Controls.OverridePattern then
+    Controls.OverridePattern.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingOverrideEditor then return end
+      local patternId = FugSchedulerRuntime.choiceId(control.String) or ""
+      FugSchedulerRuntime.commitScheduleEdit("Override pattern updated", function(candidate)
+        local scheduler, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
+        if not override then return false, "selected Override no longer exists" end
+        local patterns = override.type == "WeekPattern" and scheduler.weekPatterns or scheduler.dayPatterns
+        if not FugSchedulerRuntime.itemById(patterns, patternId) then
+          return false, "selected Pattern is invalid for this Override type"
+        end
+        override.patternId = patternId
+      end, nil, "OverrideEditorStatus")
+    end
+  end
+
+  if Controls.AddOverride then
+    Controls.AddOverride.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.addOverride() end
+    end
+  end
+
+  if Controls.DuplicateOverride then
+    Controls.DuplicateOverride.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.duplicateOverride() end
+    end
+  end
+
+  if Controls.DeleteOverride then
+    Controls.DeleteOverride.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.deleteOverride() end
+    end
+  end
+
+  if Controls.MoveOverrideUp then
+    Controls.MoveOverrideUp.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.moveOverride(-1) end
+    end
+  end
+
+  if Controls.MoveOverrideDown then
+    Controls.MoveOverrideDown.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.moveOverride(1) end
+    end
+  end
+
   if Controls.ReloadActions then
     Controls.ReloadActions.EventHandler = function(control)
       if control.Boolean then FugSchedulerRuntime.reloadActions() end
@@ -2410,6 +2806,9 @@ function FugSchedulerRuntime.initialize()
   if Controls.EventActionSelect then Controls.EventActionSelect.Choices = {} end
   if Controls.EventActionPicker then Controls.EventActionPicker.Choices = {} end
   if Controls.WeekPatternSelect then Controls.WeekPatternSelect.Choices = {} end
+  if Controls.OverrideSelect then Controls.OverrideSelect.Choices = {} end
+  if Controls.OverrideType then Controls.OverrideType.Choices = {} end
+  if Controls.OverridePattern then Controls.OverridePattern.Choices = {} end
   for _, weekday in ipairs(FugSchedulerWeekdays) do
     if Controls[weekday.controlName] then Controls[weekday.controlName].Choices = {} end
   end
@@ -2424,6 +2823,7 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.setText("SchedulerEditorStatus", "Waiting for a valid Scheduler configuration")
   FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
   FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
+  FugSchedulerRuntime.setText("OverrideEditorStatus", "Waiting for a valid Override configuration")
   FugSchedulerRuntime.setText("BuildDateDisplay", FugSchedulerRuntime.formatBuildDate(FugSchedulerPluginInfo.BuildTimestamp))
   FugSchedulerRuntime.refreshStatus()
   FugSchedulerRuntime.logLine("FugScheduler 2000 resolution spike initialized.")

@@ -71,6 +71,22 @@ function GetControls(_props)
   end
   table.insert(ctrls, {Name = "WeekPatternEditorStatus", ControlType = "Text", Count = 1})
 
+  -- Edit ordered Day Pattern and Week Pattern Overrides in the selected Scheduler.
+  table.insert(ctrls, {Name = "OverrideSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "OverrideLabel", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "OverrideEnabled", ControlType = "Button", ButtonType = "Toggle", Count = 1})
+  table.insert(ctrls, {Name = "OverrideType", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "OverrideStartDate", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "OverrideEndDate", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "OverridePattern", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "OverrideSummary", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "AddOverride", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DuplicateOverride", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DeleteOverride", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "MoveOverrideUp", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "MoveOverrideDown", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "OverrideEditorStatus", ControlType = "Text", Count = 1})
+
   table.insert(ctrls, {Name = "ReloadActions", ControlType = "Button", ButtonType = "Momentary", UserPin = true, PinStyle = "Input", Count = 1})
   table.insert(ctrls, {Name = "ActionSelect", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "TestAction", ControlType = "Button", ButtonType = "Momentary", Count = 1})

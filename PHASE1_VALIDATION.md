@@ -144,7 +144,7 @@ QRC deployment findings before the required design reload:
 
 ## Week Pattern editor implementation
 
-Implemented in the version 0.4.0 source:
+Implemented in the version 0.1.0 source:
 
 - [x] Added the Week Patterns page between Day Patterns and Actions.
 - [x] Added a scrollable structured Week Pattern ListBox with duplicate-label disambiguation that does not expose IDs.
@@ -184,7 +184,44 @@ Validated against the active `fugscheduler2000_test` Designer emulator through Q
 - Runtime hot reload retained nested Week Pattern configuration.
 - Existing Scheduler and Day Pattern editors successfully created and edited temporary configuration during the test.
 - Committed JSON contained no runtime `_...` indexes, and plugin status continued to report that automatic Event execution is off.
-- `scripts/validate_week_patterns_qrc.py` completed 42 assertions.
+- `tests/qrc/validate_week_patterns.py` completed 42 assertions.
+- The original `ScheduleData` was restored byte-for-byte after testing.
+- `SchedulerRuntimeProvider` and `AndyFugFugScheduler2000` both finished with script status `OK` and zero errors.
+
+## Overrides editor implementation
+
+Implemented and validated in development build `0.1.0.9`:
+
+- [x] Added the Overrides page between Week Patterns and Actions.
+- [x] Added a Scheduler-scoped scrollable structured Override ListBox with duplicate-label disambiguation that never displays IDs.
+- [x] Added label, enabled state, Day Pattern/Week Pattern type, inclusive start/end dates, and type-dependent structured pattern selection.
+- [x] Added UUID-v4-style Add, adjacent independent Duplicate, Delete with neighboring selection, and complete-object Move Up/Down transactions.
+- [x] Preserved persisted array order without adding an order field; Day Pattern Overrides continue to outrank Week Pattern Overrides while same-type array order defines priority.
+- [x] Added strict `YYYY-MM-DD` calendar validation and start-before-or-equal-to-end validation through the existing atomic transaction path.
+- [x] Added concise priority, enabled-state, duplicate-label, and enabled same-type overlap feedback using the shared centered editor status styling.
+- [x] Extended validated schedule installation and transaction rejection refreshes across Scheduler, Day Pattern, Week Pattern, and Override editors.
+- [x] Kept Override selection maps and runtime `_...` lookup indexes outside persisted `ScheduleData`.
+- [x] Added `tests/qrc/validate_overrides.py` to exercise the visual editor and restore the original JSON byte-for-byte.
+
+### QRC findings — Overrides editor
+
+Validated against the active `fugscheduler2000_test` Designer emulator through QRC:
+
+- The design-time `.qplug` was deployed while emulation was stopped, then Designer was returned to emulation before runtime deployment and control testing.
+- The reloaded plugin component fingerprint changed from `bf546f2e95d9ecc079ba00c69ab6d9db` to `9c5905fabcc6efbbf978fe2993003550`, and all 14 new Override controls appeared. The final corrected bundled-runtime build reloaded as fingerprint `e59013699ad34d3fd8c5bf3208be2973`.
+- `SchedulerRuntimeProvider` accepted the current `src/runtime.lua` byte-for-byte with script status `OK` and zero errors.
+- The Override ListBox returned structured `Text`/`Id` selections; duplicate labels were disambiguated by display order without exposing stable IDs.
+- Add produced a UUID-v4-style ID and an immediately valid enabled Day Pattern Override using a valid same-day range and the Scheduler's first Day Pattern.
+- Label and enabled edits committed exactly once. Empty labels, malformed dates, invalid calendar dates, and reversed ranges were rejected while JSON, revision, resolver output, and editor selections remained unchanged and controls snapped back.
+- Type changes selected valid type-appropriate pattern IDs and never left a cross-type reference. Pattern controls persisted IDs rather than labels.
+- Duplicate inserted an independent copy beside its source with a fresh ID and `Copy` label. Editing the duplicate did not change the source.
+- Move Up/Down changed persisted array order without losing fields. Boundary buttons were disabled and forced QRC presses were harmless.
+- Delete removed the selected Override and selected its neighbor.
+- Enabled same-type overlaps produced concise warnings; disabled Overrides reported no active overlap and did not create active overlap warnings.
+- Resolver checks confirmed Day Pattern Override precedence over an overlapping Week Pattern Override, and confirmed disabled Day Pattern and Week Pattern Overrides did not affect resolution.
+- Runtime hot reload retained nested Override configuration. Existing Scheduler, Day Pattern, and Week Pattern editors continued to commit and retain edits.
+- Committed JSON contained no runtime `_...` indexes, and automatic scheduled callback execution remained disabled.
+- `tests/qrc/validate_overrides.py` completed 45 assertions.
 - The original `ScheduleData` was restored byte-for-byte after testing.
 - `SchedulerRuntimeProvider` and `AndyFugFugScheduler2000` both finished with script status `OK` and zero errors.
 

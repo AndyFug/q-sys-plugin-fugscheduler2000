@@ -275,6 +275,68 @@ Use the vendored FugUi framework and separate operator status from configuration
 
 Large lists should use banked editor rows with stable backing controls rather than dynamically changing control names.
 
+## Deferred draft and publish model
+
+A persistent working-copy versus published/live configuration model is proposed in `DRAFT_PUBLISH_MODEL.md`. It is intentionally deferred until the intervening requested features are complete and must not be partially introduced into the current immediate-commit transaction architecture.
+
+## Import, export, and reset roadmap
+
+Configuration portability and destructive reset workflows should be available at both the complete-plugin and individual-Scheduler scopes.
+
+### Proposed operator actions
+
+Global actions:
+
+- **Export All Configuration** — expose the complete persisted schema root, including every Scheduler, as JSON suitable for backup and transfer.
+- **Import All Configuration** — stage, validate, and atomically replace the complete configuration from JSON.
+- **Reset All Configuration** — replace the current root with a minimal valid default configuration after explicit confirmation.
+
+Selected-Scheduler actions:
+
+- **Export Selected Scheduler** — expose one Scheduler and all of its nested Day Patterns, Week Patterns, Events, Event Actions, and Overrides in a documented transfer envelope.
+- **Import Scheduler** — stage and validate one Scheduler for addition to the existing root without replacing unrelated Schedulers.
+- **Reset Selected Scheduler** — clear the selected Scheduler's nested schedule configuration to a minimal valid Day Pattern and Week Pattern while leaving other Schedulers unchanged.
+
+Use **Reset** rather than **Factory Reset** unless the product later defines a stable, meaningful factory schedule. “Clear Configuration” may be used as explanatory text, but the operation must still produce a schema-valid model rather than an invalid empty root.
+
+### Safety and transaction requirements
+
+- Import text must be staged separately from active `ScheduleData`; typing or pasting incomplete JSON must not disturb the current model.
+- Validate the complete candidate before changing `ScheduleData`, revision, resolver output, or editor selections.
+- Apply imports and resets through the same atomic transaction/install path used by visual editors.
+- Keep the previous valid model active after malformed JSON, schema errors, missing references, duplicate IDs, or failed writes.
+- Show a summary of the staged import before Apply, including Scheduler and nested entity counts plus validation warnings.
+- Require explicit confirmation for global replacement, global reset, selected-Scheduler replacement, and selected-Scheduler reset.
+- Encourage or offer an export immediately before destructive replacement/reset operations.
+- Never serialize runtime callback functions, `_...` indexes, resolver state, or editor selections.
+- Preserve Event Action option fields and disabled Override references during export/import.
+- Keep automatic scheduled callback execution disabled during import validation unless engine behavior has been implemented and explicitly tested.
+
+### Identity and conflict policy to define
+
+Initial implementation should make these choices explicit rather than silently guessing:
+
+- whether importing a Scheduler with an existing Scheduler ID is rejected, added with regenerated Scheduler-scoped IDs, or offered as an explicit Replace Selected operation
+- whether Reset Selected Scheduler retains its stable Scheduler ID, label, enabled state, and paused state; the recommended default is to retain Scheduler identity and operator settings while replacing nested patterns and Overrides
+- whether Import All preserves the imported root revision or creates a new local revision; the recommended default is a new local revision recording the successful transaction
+- whether export text preserves the current serialized bytes or emits canonical pretty JSON
+- whether the initial interface is clipboard-oriented Text controls or later gains file transfer through an external commissioning tool
+
+### Planned validation
+
+Import/export/reset acceptance tests should cover:
+
+- complete-root export and byte-for-byte backup restoration
+- complete-root import round trips with unchanged resolver results
+- selected-Scheduler export/import without changing unrelated Schedulers
+- stable-ID collision rejection or the chosen explicit collision policy
+- malformed JSON and schema-invalid import rejection
+- global and selected-Scheduler reset confirmation guards, including forced QRC presses
+- reset output being immediately schema-valid and editor-selectable
+- runtime reload persistence after import
+- absence of runtime-only keys in every export
+- original `ScheduleData` restoration in guaranteed cleanup after every QRC test
+
 ## Scheduler semantics to define carefully
 
 Before completing the engine, document and test:
@@ -293,6 +355,20 @@ Before completing the engine, document and test:
 - changing schedule data while an action is active
 - pause/resume behavior for repeat timers and missed one-shots
 - whether manual action tests affect current scheduler state
+
+### Core-local time and DST validation
+
+Before enabling automatic scheduled callback execution, add explicit emulator/Core-local acceptance tests for:
+
+- Override ranges and date-format convenience actions crossing spring and autumn daylight-saving boundaries while retaining the expected number of calendar days
+- calendar-day shifting through month, year, leap-day, and DST boundaries using Q-SYS Lua `os.date`, `os.time`, and `os.difftime` behavior
+- nonexistent local Event times during the spring-forward transition
+- repeated local Event times during the autumn fallback transition, including whether an Event edge may execute once or twice
+- previous/current/next Event resolution on both sides of each DST transition
+- Core clock jumps forwards and backwards, including missed one-shot and state-restoring Action policy
+- Designer emulator versus physical Core behavior where their local timezone settings differ
+
+Record the Q-SYS version, configured local timezone, observed platform normalization, and chosen execution policy in validation documentation. Do not replace Q-SYS local-time handling with a custom calendar implementation; use the platform date/time functions and document any platform-specific edge behavior.
 
 ## Phases
 
@@ -336,10 +412,14 @@ Exit criterion: multiple Schedulers can resolve concurrently and one selected Sc
 
 Exit criterion: the reference controller's Site Music, Site Mute, Ice Rink, Big Wheel, and De-Icer examples can be represented and edited concurrently.
 
-### Phase 4 — import/export and operational polish
+### Phase 4 — import/export, reset, and operational polish
 
-- Add JSON import/export and schema versioning.
+- Add staged, validated global JSON export/import with explicit Apply and confirmation behavior.
+- Add selected-Scheduler export/import with a documented transfer envelope and explicit stable-ID conflict handling.
+- Add guarded Reset All Configuration and Reset Selected Scheduler operations that always produce schema-valid models.
+- Add schema versioning for future transfer formats without changing the current persisted schema until a migration is actually required.
 - Add copy/duplicate workflows for Day Patterns, Week Patterns, Overrides, and Schedulers.
+- Add QRC round-trip, rejection, reset-guard, isolation, and byte-for-byte restoration tests.
 - Improve logging, commissioning, and failure status.
 - Validate official Plugin Compiler output and Designer performance.
 

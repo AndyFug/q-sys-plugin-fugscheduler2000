@@ -11,8 +11,10 @@ Before making non-trivial FugScheduler changes, read:
 - `README.md` — project summary and current status.
 - `PLAN.md` — proposed architecture, phases, open questions, and acceptance criteria.
 - `SCHEDULER_MODEL.md` — canonical nomenclature, hierarchy, date resolution, Event execution, and Override precedence.
+- `DRAFT_PUBLISH_MODEL.md` — deferred proposal for separating persistent edits from published/live configuration.
 - `BUILD.md` — artifact name and local build wrapper.
 - `PHASE1_VALIDATION.md` — active Q-SYS Designer validation checklist.
+- `tests/README.md` — local test categories, QRC prerequisites, and restoration rules.
 - `references/fugSchedulerTextController.lua` — the working text-controller implementation that defines the initial behavioral baseline.
 - `../QSYS_PLUGIN_BUILD.md` — shared workspace build/deploy workflow.
 - `../.agents/skills/qsys-plugin-sdk/SKILL.md` — portable Q-SYS SDK workflow, official references, and Designer-validated supplemental notes.

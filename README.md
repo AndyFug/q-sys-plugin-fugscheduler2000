@@ -12,7 +12,7 @@ That controller demonstrates multiple independent Schedulers, reusable Action de
 
 ## Scheduler model
 
-The canonical concepts are documented in `SCHEDULER_MODEL.md`; the multi-Scheduler integration status contract is documented in `STATUS_MODEL.md`:
+The canonical concepts are documented in `SCHEDULER_MODEL.md`; the multi-Scheduler integration status contract is documented in `STATUS_MODEL.md`. A deferred working-copy versus published/live configuration proposal is recorded in `DRAFT_PUBLISH_MODEL.md`:
 
 - Actions are externally supplied operations.
 - Events define a time and an ordered list of Event Actions.
@@ -38,7 +38,7 @@ Initial boilerplate includes:
 - a generated `FugScheduler2000.qplug`
 - an ordinary hidden `ActionSource` Text input control pin
 - a reserved hidden `code` input for supplying the complete runtime during live debugging
-- Overview, Schedules, Day Patterns, Week Patterns, Actions, Diagnostics, and About pages, with the public plugin version shown in the shared header and version, build, locally formatted build date, plugin ID, and author metadata on About
+- Overview, Schedules, Day Patterns, Week Patterns, Overrides, Actions, Diagnostics, and About pages, with the public plugin version shown in the shared header and version, build, locally formatted build date, plugin ID, and author metadata on About
 - a Phase 1 Action Registry that compiles trusted source, calls `GetFugSchedulerActions()`, validates Actions, and provides guarded callback execution
 - versioned persistent `ScheduleData` JSON containing an ordered array of Schedulers, with a documented sample in `references/sample_schedule.json`
 - independent validation and read-only resolution for every Scheduler's Day Patterns, Week Patterns, Overrides, and previous/current/next Events
@@ -48,6 +48,7 @@ Initial boilerplate includes:
 - a first visual Scheduler editor using label-based structured selectors for Scheduler and Default Week Pattern selection, plus labels, enabled/paused state, add, duplicate, guarded delete, and transaction feedback
 - a three-column Day Patterns editor with scrollable Day Pattern, Event, and Event Action lists; Day Pattern/Event CRUD; registered Action attachment; Action deletion and ordering; reference-guarded Day Pattern deletion; and contextual validation feedback
 - a visual Week Patterns editor with a scrollable structured selector, label/add/duplicate/guarded-delete transactions, seven structured Day Pattern assignments, per-Scheduler runtime selection, and reference summaries
+- a visual Scheduler-scoped Overrides editor for ordered Day Pattern and Week Pattern Overrides, including validated dates, type-dependent pattern selection, enabled state, add/duplicate/delete/move transactions, overlap warnings, and per-Scheduler runtime selection
 - opaque UUID-style IDs for newly created Schedulers, Day Patterns, Week Patterns, and Events; IDs remain in persisted/status integration data rather than the primary operator UI
 
 ## Build
@@ -65,3 +66,14 @@ python3 scripts/compile_plugin.py --deploy
 ```
 
 See `BUILD.md` and `../QSYS_PLUGIN_BUILD.md` for details.
+
+## Testing
+
+Repeatable tests live under `tests/`; `scripts/` is reserved for build and deployment tooling. The current live emulator acceptance tests are:
+
+```bash
+python3 tests/qrc/validate_week_patterns.py
+python3 tests/qrc/validate_overrides.py
+```
+
+These tests require the expected active Designer emulator design and restore the original `ScheduleData` byte-for-byte. See `tests/README.md` and `PHASE1_VALIDATION.md`.

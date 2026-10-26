@@ -282,6 +282,70 @@ function GetControlLayout(props)
       "Week Patterns~Editor Status"
     )
 
+  elseif page == "Overrides" then
+    ui:label("Scheduler", ui:rect(18, 48, 92, 22), {Color = ui:color("mutedText")})
+    ui:control("SchedulerSelect", "ComboBox", ui:rect(112, 46, 420, 26), {
+      PrettyName = "Overrides~Selected Scheduler"
+    })
+
+    ui:group("Overrides", ui:rect(10, 82, 320, 356))
+    ui:control("OverrideSelect", "ListBox", ui:rect(24, 110, 292, 190), {
+      PrettyName = "Overrides~Selected Override",
+      FontSize = 10
+    })
+    ui:button("AddOverride", ui:rect(24, 312, 78, 28), {
+      ButtonStyle = "Momentary", Legend = "Add", Color = ui:color("schedule")
+    })
+    ui:button("DuplicateOverride", ui:rect(108, 312, 104, 28), {
+      ButtonStyle = "Momentary", Legend = "Duplicate", Color = ui:color("accent")
+    })
+    ui:button("DeleteOverride", ui:rect(218, 312, 98, 28), {
+      ButtonStyle = "Momentary", Legend = "Delete", Color = ui:color("danger")
+    })
+    ui:button("MoveOverrideUp", ui:rect(24, 354, 140, 28), {
+      ButtonStyle = "Momentary", Legend = "Move Up", Color = ui:color("accent")
+    })
+    ui:button("MoveOverrideDown", ui:rect(176, 354, 140, 28), {
+      ButtonStyle = "Momentary", Legend = "Move Down", Color = ui:color("accent")
+    })
+
+    ui:group("Override Details", ui:rect(340, 82, 550, 356))
+    FugSchedulerUi.overrideField(ui, "Label", "OverrideLabel", "Text", 110, {
+      PrettyName = "Overrides~Label"
+    })
+    ui:label("Enabled", ui:rect(350, 148, 104, 22), {Color = ui:color("mutedText")})
+    ui:button("OverrideEnabled", ui:rect(458, 146, 130, 28), {
+      ButtonStyle = "Toggle", Legend = "Enabled", Color = ui:color("accent")
+    })
+    FugSchedulerUi.overrideField(ui, "Type", "OverrideType", "ComboBox", 184, {
+      PrettyName = "Overrides~Type"
+    })
+    FugSchedulerUi.overrideField(ui, "Start Date", "OverrideStartDate", "Text", 222, {
+      PrettyName = "Overrides~Start Date", HTextAlign = "Center"
+    })
+    FugSchedulerUi.overrideField(ui, "End Date", "OverrideEndDate", "Text", 260, {
+      PrettyName = "Overrides~End Date", HTextAlign = "Center"
+    })
+    FugSchedulerUi.overrideField(ui, "Pattern", "OverridePattern", "ComboBox", 298, {
+      PrettyName = "Overrides~Pattern"
+    })
+    ui:textControl("OverrideSummary", ui:rect(358, 344, 514, 58), {
+      IsReadOnly = true,
+      TextBoxStyle = "NoBackground",
+      HTextAlign = "Center",
+      VTextAlign = "Center",
+      WordWrap = true,
+      TextColor = ui:color("controlText"),
+      FontSize = 10
+    })
+
+    FugSchedulerUi.editorStatus(
+      ui,
+      "OverrideEditorStatus",
+      ui:rect(10, 448, 880, 34),
+      "Overrides~Editor Status"
+    )
+
   elseif page == "Actions" then
     ui:group("External Action Registry", ui:rect(10, 44, 880, 400))
     ui:label("Connect trusted Lua source to ActionSource. The source defines GetFugSchedulerActions(), which returns Action definitions used by Event Actions.", ui:rect(28, 78, 844, 62), {
