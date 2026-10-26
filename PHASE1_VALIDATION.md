@@ -334,6 +334,42 @@ Validated against the active `fugscheduler2000_test` Designer emulator:
 
 Remaining execution validation covers real scheduled edges, equal-time Event ordering, callback failure/unavailable Action isolation, and forward/backward clock discontinuities.
 
+## Centralized logging implementation
+
+Implemented in source; design reload and QRC acceptance remain pending:
+
+- [x] Added one normalized logging handler with numeric levels `OFF = 0`, `ERROR = 3`, `INFO = 6`, and `DEBUG = 7`.
+- [x] Added persistent global Debug Output and Event Log level controls on Preferences, separate from `ScheduleData`.
+- [x] Defaulted Debug Output to Info and Q-SYS Event Log to Off.
+- [x] Routed enabled Event Log messages through documented `Log.Message` and `Log.Error` APIs and Debug Output through `print`.
+- [x] Kept DiagnosticLog independent of destination preferences and bounded to the newest 12,000 characters, trimming complete oldest lines where possible.
+- [x] Added timestamp, severity, and available Scheduler/Event/Action/reason context to DiagnosticLog entries while keeping Debug Output concise.
+- [x] Logged successful initial Event Action execution at Info, subsequent repeats at Debug, and missing Actions/callback failures at Error.
+- [x] Preserved callback isolation and `ExecutionStatus` updates through the centralized execution-reporting path.
+- [x] Routed existing registry, schedule validation, transaction, resolver, and initialization messages through the centralized logger.
+- [x] Added `tests/qrc/validate_logging.py` for normalized preference IDs, basic Debug Output filtering, unconditional DiagnosticLog routing, bounded retention, restoration, and script health.
+- [x] Local include compilation succeeds and the generated artifact contains no unresolved include directives.
+- [x] Deployed the changed `.qplug` while emulation was stopped and confirmed the two new controls after restart.
+- [x] Ran `tests/qrc/validate_logging.py` and recorded its assertion count.
+- [ ] Observe enabled Info/Error output in the Q-SYS Event Log and confirm Off suppresses it; the Event Log was not available for inspection in the current Designer simulation view.
+- [x] Confirmed Debug repeat output and Info initial execution output in DiagnosticLog through QRC execution testing.
+- [x] Finished with automatic execution false and both scripts reporting `OK` with zero errors.
+
+### QRC findings — centralized logging
+
+Validated against the active `fugscheduler2000_test` Designer emulator:
+
+- QRC confirmed the expected active emulator design before runtime deployment or control manipulation.
+- The rebuilt `.qplug` was deployed while emulation was stopped with matching generated/deployed SHA-256 `88ab078d3f49e3a7a199ff7d278f06bc20dac0b31bdf4c084c867f67a5e4798f`.
+- After restart, the plugin component fingerprint changed to `134631929376f6f05b0956b1e5eb29af` and exposed 130 controls, including `DebugLogLevel` and `EventLogLevel`.
+- Both preferences exposed structured numeric IDs `DEBUG = 7`, `INFO = 6`, `ERROR = 3`, and `OFF = 0`; defaults were Debug Output Info and Event Log Off.
+- `tests/qrc/validate_logging.py` completed 18 assertions. It confirmed Debug Output Off/Error/Info filtering through `log.history`, unconditional DiagnosticLog routing, the 12,000-character bound, Event Log preference handling, unchanged `ScheduleData`, and byte-for-byte preference restoration.
+- Updated `tests/qrc/validate_execution.py` completed 31 assertions. It confirmed initial state restoration logs at Info and repeats log at Debug with Scheduler/Event/Action/reason context. The fixture now temporarily disables pre-existing Schedulers so unrelated callbacks cannot overwrite `ExecutionStatus`; original `ScheduleData` remains restored byte-for-byte.
+- Event Log Info was enabled briefly and the Action Registry was reloaded to generate a known `Log.Message` entry, but the Core Event Log was not available for inspection in the current simulation view. The preference was restored to Off afterward.
+- The pre-test design had automatic execution enabled; it was disabled before runtime deployment and remained false after all testing.
+- Final state: Debug Output Info, Event Log Off, automatic execution false, and both `AndyFugFugScheduler2000` and `SchedulerRuntimeProvider` at script status `OK` with zero errors.
+- Preferences layout follow-up moved the shared status control out of the two side-by-side groups into a separate full-width Preference Status group. A second refinement reduced that group to 92 pixels and the status box to 40 pixels, matching the compact status treatment on other pages. The final deployed artifact hash is `0acf1bf6f8d7b26ab3e6e0152c479bbbb5728dff79ccf0a0d4e95e27b63e3130`; after restart the component fingerprint changed to `1d37cadc2a3f0132a3906d8149e7cb66`, with both scripts healthy and automatic execution false.
+
 ## Build validation
 
 - [x] Run `python3 scripts/compile_plugin.py` successfully.

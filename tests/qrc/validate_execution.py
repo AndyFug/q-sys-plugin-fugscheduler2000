@@ -64,7 +64,7 @@ def main() -> None:
         "AutomaticExecutionEnabled", "ExecutionStatus", "ScheduleData", "TestDateTime", "ResolveTestTime",
         "SchedulerSelect", "SchedulerEditorEnabled", "SchedulerPaused", "EventActionEnabled", "EventActionMode",
         "EventActionFireOnStartup", "EventActionFireOnResume", "EventActionRepeatSeconds",
-        "ActionSelect", "RegisteredActionCount", "GlobalSchedulerStatus", "Status",
+        "ActionSelect", "RegisteredActionCount", "GlobalSchedulerStatus", "DiagnosticLog", "Status",
         "script.status", "script.error.count",
     ]
     initial = controls(*required)
@@ -91,6 +91,9 @@ def main() -> None:
         event_time = (now - timedelta(minutes=1)).strftime("%H:%M")
 
         model = json.loads(original_schedule)
+        # Isolate ExecutionStatus from callbacks belonging to pre-existing enabled Schedulers.
+        for existing_scheduler in model["schedulers"]:
+            existing_scheduler["enabled"] = False
         scheduler_id = "qrc-execution-test-" + now.strftime("%Y%m%d%H%M%S")
         day_id = "qrc-execution-day"
         week_id = "qrc-execution-week"
@@ -159,11 +162,19 @@ def main() -> None:
               "startup does not replay the current one-shot Action")
         check("automatic execution ARMED" in startup["Status"]["String"],
               "aggregate status reports the execution guard as armed")
+        startup_log = controls("DiagnosticLog")["DiagnosticLog"]["String"]
+        check('[INFO] Scheduler "Execution QRC Test"' in startup_log and
+              "reason=startup | Executed successfully" in startup_log,
+              "initial state restoration is logged at Info with execution context")
 
         time.sleep(2.4)
         repeat_status = controls("ExecutionStatus")["ExecutionStatus"]["String"]
         check("Callback 1" in repeat_status and "repeat" in repeat_status,
               "stateful Action repeats while its Event remains current")
+        repeat_log = controls("DiagnosticLog")["DiagnosticLog"]["String"]
+        check('[DEBUG] Scheduler "Execution QRC Test"' in repeat_log and
+              "reason=repeat | Executed successfully" in repeat_log,
+              "subsequent repeat execution is logged at Debug with execution context")
 
         set_value("SchedulerPaused", True, delay=1.2)
         paused_status = controls("ExecutionStatus")["ExecutionStatus"]["String"]

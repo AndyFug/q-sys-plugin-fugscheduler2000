@@ -52,6 +52,7 @@ Initial boilerplate includes:
 - opaque UUID-style IDs for newly created Schedulers, Day Patterns, Week Patterns, and Events; IDs remain in persisted/status integration data rather than the primary operator UI
 - disabled-by-default creation and duplication of Schedulers and Overrides so their configuration can be completed before activation
 - ordered edge execution, startup/resume state restoration, missed one-shot suppression, repeat scheduling, callback isolation, and clock-discontinuity handling behind the master execution guard
+- centralized severity-based logging to the bounded DiagnosticLog, filtered Debug Output, and filtered Q-SYS Event Log, with edge executions at Info and repeats at Debug
 
 ## Build
 
@@ -78,6 +79,7 @@ python3 tests/qrc/validate_week_patterns.py
 python3 tests/qrc/validate_overrides.py
 python3 tests/qrc/validate_override_dates.py
 python3 tests/qrc/validate_execution.py
+python3 tests/qrc/validate_logging.py
 ```
 
 These tests require the expected active Designer emulator design and restore the original `ScheduleData` byte-for-byte. See `tests/README.md` and `PHASE1_VALIDATION.md`.

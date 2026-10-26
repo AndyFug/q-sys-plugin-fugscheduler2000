@@ -1500,8 +1500,10 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "MoveOverrideDown", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "OverrideEditorStatus", ControlType = "Text", Count = 1})
 
-  -- Persist presentation-only preferences separately from canonical ScheduleData.
+  -- Persist presentation and logging preferences separately from canonical ScheduleData.
   table.insert(ctrls, {Name = "DateFormatPreference", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "DebugLogLevel", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "EventLogLevel", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "PreferencesStatus", ControlType = "Text", Count = 1})
 
   table.insert(ctrls, {Name = "ReloadActions", ControlType = "Button", ButtonType = "Momentary", UserPin = true, PinStyle = "Input", Count = 1})
@@ -1938,15 +1940,30 @@ function GetControlLayout(props)
     FugSchedulerUi.statusField(ui, "Action count", "RegisteredActionCount", ui:rect(28, 256, 632, 24))
 
   elseif page == "Preferences" then
-    ui:group("Presentation Preferences", ui:rect(10, 44, 880, 400))
-    ui:label("Date format", ui:rect(32, 82, 180, 24), {Color = ui:color("mutedText")})
-    ui:control("DateFormatPreference", "ComboBox", ui:rect(222, 80, 250, 28), {
+    ui:group("Presentation Preferences", ui:rect(10, 44, 430, 236))
+    ui:label("Date format", ui:rect(32, 82, 160, 24), {Color = ui:color("mutedText")})
+    ui:control("DateFormatPreference", "ComboBox", ui:rect(202, 80, 216, 28), {
       PrettyName = "Preferences~Date Format"
     })
-    ui:label("Controls how Override dates are entered and displayed. Persisted ScheduleData always uses ISO YYYY-MM-DD.", ui:rect(32, 132, 836, 54), {
+    ui:label("Controls how Override dates are entered and displayed. Persisted ScheduleData always uses ISO YYYY-MM-DD.", ui:rect(32, 132, 386, 72), {
       VTextAlign = "Top", WordWrap = true, Color = ui:color("mutedText")
     })
-    FugSchedulerUi.editorStatus(ui, "PreferencesStatus", ui:rect(32, 210, 836, 54), "Preferences~Status")
+
+    ui:group("Logging Preferences", ui:rect(450, 44, 440, 236))
+    ui:label("Debug Output level", ui:rect(472, 82, 170, 24), {Color = ui:color("mutedText")})
+    ui:control("DebugLogLevel", "ComboBox", ui:rect(652, 80, 216, 28), {
+      PrettyName = "Preferences~Debug Output Level"
+    })
+    ui:label("Event Log level", ui:rect(472, 124, 170, 24), {Color = ui:color("mutedText")})
+    ui:control("EventLogLevel", "ComboBox", ui:rect(652, 122, 216, 28), {
+      PrettyName = "Preferences~Event Log Level"
+    })
+    ui:label("Debug Output uses print. Event Log uses Log.Message and Log.Error. The bounded DiagnosticLog always records every severity.", ui:rect(472, 172, 396, 74), {
+      VTextAlign = "Top", WordWrap = true, Color = ui:color("mutedText")
+    })
+
+    ui:group("Preference Status", ui:rect(10, 292, 880, 92))
+    FugSchedulerUi.editorStatus(ui, "PreferencesStatus", ui:rect(32, 326, 836, 40), "Preferences~Status")
 
   elseif page == "Diagnostics" then
     ui:group("Diagnostics", ui:rect(10, 44, 430, 400))
@@ -2049,6 +2066,21 @@ if Controls then
   -- Hold the latest aggregate runtime snapshot for internal and debug-runtime consumers.
   FugSchedulerStatus = nil
 
+  -- Use normalized numeric severities for inexpensive destination threshold comparisons.
+  local LogLevel = {
+    OFF = 0,
+    ERROR = 3,
+    INFO = 6,
+    DEBUG = 7
+  }
+
+  local LogLevelLabels = {
+    [LogLevel.OFF] = "Off",
+    [LogLevel.ERROR] = "Error",
+    [LogLevel.INFO] = "Info",
+    [LogLevel.DEBUG] = "Debug"
+  }
+
   FugSchedulerRuntime = {
     json = require("rapidjson"),
     actionsById = {},
@@ -2134,17 +2166,95 @@ if Controls then
     )
   end
 
-  -- Append a bounded line to the diagnostic display.
-  function FugSchedulerRuntime.logLine(message)
+  -- Return the configured numeric threshold for one external logging destination.
+  function FugSchedulerRuntime.loggingLevel(controlName, fallback)
+    local control = Controls[controlName]
+    local selected = control and tonumber(FugSchedulerRuntime.choiceId(control.String)) or nil
+    if LogLevelLabels[selected] then return selected end
+    return fallback
+  end
+
+  -- Return whether one message severity passes a configured destination threshold.
+  function FugSchedulerRuntime.shouldLog(messageLevel, destinationLevel)
+    return destinationLevel ~= LogLevel.OFF and messageLevel <= destinationLevel
+  end
+
+  -- Build the shared concise context used by every logging destination.
+  function FugSchedulerRuntime.formatLogContext(context)
+    if type(context) ~= "table" then return "" end
+    local parts = {}
+    -- Add one available label/ID pair without requiring every context field.
+    local function addEntity(kind, label, id)
+      if label and label ~= "" and id and id ~= "" then
+        table.insert(parts, string.format('%s "%s" [%s]', kind, tostring(label), tostring(id)))
+      elseif label and label ~= "" then
+        table.insert(parts, kind .. ' "' .. tostring(label) .. '"')
+      elseif id and id ~= "" then
+        table.insert(parts, kind .. " [" .. tostring(id) .. "]")
+      end
+    end
+    addEntity("Scheduler", context.schedulerLabel, context.schedulerId)
+    addEntity("Event", context.eventLabel, context.eventId)
+    addEntity("Action", context.actionLabel, context.actionId)
+    if context.actionIndex then table.insert(parts, "action=" .. tostring(context.actionIndex)) end
+    if context.reason and context.reason ~= "" then table.insert(parts, "reason=" .. tostring(context.reason)) end
+    return table.concat(parts, " | ")
+  end
+
+  -- Return the product and optional Code Name prefix needed in the shared Core Event Log.
+  function FugSchedulerRuntime.eventLogPrefix()
+    local designator = ""
+    local ok, value = pcall(function()
+      return Properties and Properties.internal_designator and Properties.internal_designator.Value or ""
+    end)
+    if ok then designator = tostring(value or "") end
+    if designator ~= "" then return "FugScheduler 2000 [" .. designator .. "] " end
+    return "FugScheduler 2000 "
+  end
+
+  -- Append one complete line while retaining only the newest 12,000 diagnostic characters.
+  function FugSchedulerRuntime.appendDiagnostic(line)
     local control = Controls.DiagnosticLog
     if not control then return end
 
     local existing = control.String or ""
     if existing ~= "" then existing = existing .. "\n" end
-    existing = existing .. tostring(message)
-    if #existing > 12000 then existing = string.sub(existing, #existing - 11999) end
+    existing = existing .. tostring(line)
+    if #existing > 12000 then
+      local overflow = #existing - 12000
+      local nextLine = string.find(existing, "\n", overflow + 1, true)
+      existing = nextLine and string.sub(existing, nextLine + 1) or string.sub(existing, -12000)
+    end
     control.String = existing
     FugSchedulerRuntime.refreshLineViewer("DiagnosticLogViewer", existing)
+  end
+
+  -- Route one normalized message to the bounded diagnostics, Debug Output, and Core Event Log.
+  function FugSchedulerRuntime.log(messageLevel, message, context)
+    if not LogLevelLabels[messageLevel] or messageLevel == LogLevel.OFF then messageLevel = LogLevel.INFO end
+    local levelName = string.upper(LogLevelLabels[messageLevel])
+    local contextText = FugSchedulerRuntime.formatLogContext(context)
+    local body = contextText ~= "" and (contextText .. " | " .. tostring(message)) or tostring(message)
+    local shortMessage = "[" .. levelName .. "] " .. body
+    FugSchedulerRuntime.appendDiagnostic(os.date("%Y-%m-%d %H:%M:%S") .. " " .. shortMessage)
+
+    local debugLevel = FugSchedulerRuntime.loggingLevel("DebugLogLevel", LogLevel.INFO)
+    if FugSchedulerRuntime.shouldLog(messageLevel, debugLevel) then print(shortMessage) end
+
+    local eventLevel = FugSchedulerRuntime.loggingLevel("EventLogLevel", LogLevel.OFF)
+    if FugSchedulerRuntime.shouldLog(messageLevel, eventLevel) then
+      local eventMessage = FugSchedulerRuntime.eventLogPrefix() .. shortMessage
+      if messageLevel == LogLevel.ERROR then
+        pcall(function() Log.Error(eventMessage) end)
+      else
+        pcall(function() Log.Message(eventMessage) end)
+      end
+    end
+  end
+
+  -- Preserve the existing internal call boundary while routing through the centralized logger.
+  function FugSchedulerRuntime.logLine(message, messageLevel, context)
+    FugSchedulerRuntime.log(messageLevel or LogLevel.INFO, message, context)
   end
 
   -- Return the sample multi-Scheduler configuration used when ScheduleData is initially empty.
@@ -2340,7 +2450,8 @@ if Controls then
   function FugSchedulerRuntime.choiceId(value)
     if type(value) ~= "string" or value == "" then return nil end
     local decodeOk, decoded = pcall(FugSchedulerRuntime.json.decode, value)
-    if decodeOk and type(decoded) == "table" and type(decoded.Id) == "string" then
+    if decodeOk and type(decoded) == "table" and
+        (type(decoded.Id) == "string" or type(decoded.Id) == "number") then
       return decoded.Id
     end
     return value
@@ -2554,7 +2665,7 @@ if Controls then
     local environment, compileError = FugSchedulerRuntime.compileSource(source)
     if not environment then
       FugSchedulerRuntime.setText("RegistryStatus", compileError)
-      FugSchedulerRuntime.logLine(compileError)
+      FugSchedulerRuntime.logLine(compileError, LogLevel.ERROR)
       return false
     end
 
@@ -2562,7 +2673,7 @@ if Controls then
     if type(provider) ~= "function" then
       local message = "ActionSource must define GetFugSchedulerActions()"
       FugSchedulerRuntime.setText("RegistryStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       return false
     end
 
@@ -2570,14 +2681,14 @@ if Controls then
     if not providerOk then
       local message = "Provider error: " .. tostring(actionDefinitions)
       FugSchedulerRuntime.setText("RegistryStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       return false
     end
 
     local actionsById, orderedActions, validationError = FugSchedulerRuntime.buildRegistry(actionDefinitions)
     if not actionsById then
       FugSchedulerRuntime.setText("RegistryStatus", validationError)
-      FugSchedulerRuntime.logLine(validationError)
+      FugSchedulerRuntime.logLine(validationError, LogLevel.ERROR)
       return false
     end
 
@@ -2602,19 +2713,20 @@ if Controls then
     if not action then
       local message = "No registered Action selected"
       FugSchedulerRuntime.setText("RegistryStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       return
     end
 
+    local context = {actionLabel = action.label, actionId = action.id, reason = "manual test"}
     local callbackOk, callbackError = pcall(action.callback)
     if callbackOk then
       local message = "Test succeeded: " .. action.label .. " [" .. action.id .. "]"
       FugSchedulerRuntime.setText("RegistryStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine("Manual Action test succeeded", LogLevel.INFO, context)
     else
       local message = "Callback error for " .. action.id .. ": " .. tostring(callbackError)
       FugSchedulerRuntime.setText("RegistryStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine("Manual Action test failed: " .. tostring(callbackError), LogLevel.ERROR, context)
     end
   end
 
@@ -3174,7 +3286,7 @@ if Controls then
 
     -- Restore every editor before publishing a transaction failure message.
     local function reject(message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       FugSchedulerRuntime.refreshSchedulerEditor()
       FugSchedulerRuntime.refreshDayPatternEditor()
       FugSchedulerRuntime.refreshWeekPatternEditor()
@@ -3760,7 +3872,7 @@ if Controls then
       message = "Delete rejected: at least one Week Pattern is required"
     end
     if message then
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       FugSchedulerRuntime.refreshWeekPatternEditor()
       FugSchedulerRuntime.setText("WeekPatternEditorStatus", message)
       return false
@@ -4326,7 +4438,7 @@ if Controls then
         references.weekdayCount,
         references.overrideCount
       )
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       FugSchedulerRuntime.refreshDayPatternEditor()
       FugSchedulerRuntime.setText("DayPatternEditorStatus", message)
       return false
@@ -4572,7 +4684,7 @@ if Controls then
     if #FugSchedulerRuntime.activeSchedule.schedulers <= 1 then
       local message = "Delete rejected: at least one Scheduler is required"
       FugSchedulerRuntime.setText("SchedulerEditorStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       FugSchedulerRuntime.refreshSchedulerEditor()
       return false
     end
@@ -4621,11 +4733,11 @@ if Controls then
     return state
   end
 
-  -- Publish one execution message and optionally include it in the diagnostic log.
-  function FugSchedulerRuntime.setExecutionMessage(message, logMessage)
+  -- Publish the latest execution result and route it through the centralized logger.
+  function FugSchedulerRuntime.setExecutionMessage(message, messageLevel, context, logText)
     FugSchedulerRuntime.lastExecutionMessage = tostring(message)
     FugSchedulerRuntime.setText("ExecutionStatus", FugSchedulerRuntime.lastExecutionMessage)
-    if logMessage ~= false then FugSchedulerRuntime.logLine(FugSchedulerRuntime.lastExecutionMessage) end
+    FugSchedulerRuntime.logLine(logText or FugSchedulerRuntime.lastExecutionMessage, messageLevel or LogLevel.INFO, context)
   end
 
   -- Stop repeat scheduling for one Scheduler without affecting timeline resolution.
@@ -4637,7 +4749,18 @@ if Controls then
   function FugSchedulerRuntime.executeEventAction(scheduler, occurrence, eventAction, actionIndex, reason)
     if eventAction.enabled == false then return false end
     local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
-    local occurrenceLabel = occurrence and occurrence.event and occurrence.event.label or "Unknown Event"
+    local event = occurrence and occurrence.event or nil
+    local occurrenceLabel = event and event.label or "Unknown Event"
+    local context = {
+      schedulerLabel = scheduler.label,
+      schedulerId = scheduler.id,
+      eventLabel = occurrenceLabel,
+      eventId = event and event.id or nil,
+      actionLabel = action and action.label or nil,
+      actionId = eventAction.actionId,
+      actionIndex = actionIndex,
+      reason = reason
+    }
     if not action then
       local message = string.format(
         "Execution skipped: Scheduler %s Event %s Action %s is unavailable",
@@ -4647,7 +4770,7 @@ if Controls then
       )
       local state = FugSchedulerRuntime.executionState(scheduler.id)
       state.lastCallbackResult = message
-      FugSchedulerRuntime.setExecutionMessage(message)
+      FugSchedulerRuntime.setExecutionMessage(message, LogLevel.ERROR, context, "Action is unavailable; execution skipped")
       return false
     end
 
@@ -4663,7 +4786,8 @@ if Controls then
         actionIndex
       )
       state.lastCallbackResult = message
-      FugSchedulerRuntime.setExecutionMessage(message)
+      local level = reason == "repeat" and LogLevel.DEBUG or LogLevel.INFO
+      FugSchedulerRuntime.setExecutionMessage(message, level, context, "Executed successfully")
       return true
     end
 
@@ -4675,7 +4799,12 @@ if Controls then
       tostring(callbackError)
     )
     state.lastCallbackResult = message
-    FugSchedulerRuntime.setExecutionMessage(message)
+    FugSchedulerRuntime.setExecutionMessage(
+      message,
+      LogLevel.ERROR,
+      context,
+      "Callback failed: " .. tostring(callbackError)
+    )
     return false
   end
 
@@ -4802,7 +4931,11 @@ if Controls then
       state.activeOccurrenceKey = currentKey
       state.lastTransitionReason = "Clock moved backwards"
       FugSchedulerRuntime.clearRepeats(state)
-      FugSchedulerRuntime.setExecutionMessage("Clock moved backwards; execution state reset without replay")
+      FugSchedulerRuntime.setExecutionMessage(
+        "Clock moved backwards; execution state reset without replay",
+        LogLevel.INFO,
+        {schedulerLabel = scheduler.label, schedulerId = scheduler.id, reason = "clock moved backwards"}
+      )
     elseif not FugSchedulerRuntime.automaticExecutionEnabled() or not scheduler.enabled then
       state.activeOccurrence = currentOccurrence
       state.activeOccurrenceKey = currentKey
@@ -4827,7 +4960,9 @@ if Controls then
         now
       )
       FugSchedulerRuntime.setExecutionMessage(
-        string.format("%s skipped historical one-shots after a %d-second clock discontinuity", scheduler.label, elapsed)
+        string.format("%s skipped historical one-shots after a %d-second clock discontinuity", scheduler.label, elapsed),
+        LogLevel.INFO,
+        {schedulerLabel = scheduler.label, schedulerId = scheduler.id, reason = "clock discontinuity"}
       )
     else
       local crossed = FugSchedulerRuntime.crossedOccurrences(scheduler, state.lastObservedTimestamp, now)
@@ -4865,7 +5000,10 @@ if Controls then
         local state = FugSchedulerRuntime.executionState(scheduler.id)
         state.lastCallbackResult = "Execution error: " .. tostring(processError)
         FugSchedulerRuntime.setExecutionMessage(
-          "Execution error for Scheduler " .. scheduler.id .. ": " .. tostring(processError)
+          "Execution error for Scheduler " .. scheduler.id .. ": " .. tostring(processError),
+          LogLevel.ERROR,
+          {schedulerLabel = scheduler.label, schedulerId = scheduler.id},
+          "Execution engine failed: " .. tostring(processError)
         )
       end
     end
@@ -5028,7 +5166,7 @@ if Controls then
     if not timestamp then
       local message = "Test date/time error: " .. tostring(parseError)
       FugSchedulerRuntime.setText("ScheduleStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       return false
     end
 
@@ -5043,7 +5181,11 @@ if Controls then
       else
         hasResolutionError = true
         table.insert(schedulerStatuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, nil, result))
-        FugSchedulerRuntime.logLine("Resolution error for Scheduler " .. scheduler.id .. ": " .. tostring(result))
+        FugSchedulerRuntime.logLine(
+          "Resolution failed: " .. tostring(result),
+          LogLevel.ERROR,
+          {schedulerLabel = scheduler.label, schedulerId = scheduler.id}
+        )
       end
     end
 
@@ -5073,13 +5215,13 @@ if Controls then
     if not decodeOk then
       local message = "Schedule JSON error: " .. tostring(decoded)
       FugSchedulerRuntime.setText("ScheduleStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       return false
     end
     if decoded == nil then
       local message = "Schedule JSON error: " .. tostring(decodeError)
       FugSchedulerRuntime.setText("ScheduleStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       return false
     end
 
@@ -5087,7 +5229,7 @@ if Controls then
     if not validated then
       local message = "Schedule validation error: " .. tostring(validationError)
       FugSchedulerRuntime.setText("ScheduleStatus", message)
-      FugSchedulerRuntime.logLine(message)
+      FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
       return false
     end
 
@@ -5118,20 +5260,49 @@ if Controls then
     ))
   end
 
-  -- Populate the persistent presentation preference without touching schedule configuration.
+  -- Populate persistent presentation and logging preferences without touching schedule configuration.
   function FugSchedulerRuntime.refreshPreferences(message)
-    if not Controls.DateFormatPreference then return end
     FugSchedulerRuntime.updatingPreferences = true
-    Controls.DateFormatPreference.Choices = {
-      {Text = "dd/mm/yyyy", Id = "DMY"},
-      {Text = "mm/dd/yyyy", Id = "MDY"},
-      {Text = "yyyy-mm-dd", Id = "ISO"}
+
+    local dateLabels = {DMY = "dd/mm/yyyy", MDY = "mm/dd/yyyy", ISO = "yyyy-mm-dd"}
+    if Controls.DateFormatPreference then
+      Controls.DateFormatPreference.Choices = {
+        {Text = dateLabels.DMY, Id = "DMY"},
+        {Text = dateLabels.MDY, Id = "MDY"},
+        {Text = dateLabels.ISO, Id = "ISO"}
+      }
+      local format = FugSchedulerRuntime.dateFormatPreference()
+      Controls.DateFormatPreference.String = FugSchedulerRuntime.encodeChoice(dateLabels[format], format)
+    end
+
+    local logChoices = {
+      {Text = LogLevelLabels[LogLevel.DEBUG], Id = LogLevel.DEBUG},
+      {Text = LogLevelLabels[LogLevel.INFO], Id = LogLevel.INFO},
+      {Text = LogLevelLabels[LogLevel.ERROR], Id = LogLevel.ERROR},
+      {Text = LogLevelLabels[LogLevel.OFF], Id = LogLevel.OFF}
     }
-    local format = FugSchedulerRuntime.dateFormatPreference()
-    local labels = {DMY = "dd/mm/yyyy", MDY = "mm/dd/yyyy", ISO = "yyyy-mm-dd"}
-    Controls.DateFormatPreference.String = FugSchedulerRuntime.encodeChoice(labels[format], format)
+    local debugLevel = FugSchedulerRuntime.loggingLevel("DebugLogLevel", LogLevel.INFO)
+    local eventLevel = FugSchedulerRuntime.loggingLevel("EventLogLevel", LogLevel.OFF)
+    if Controls.DebugLogLevel then
+      Controls.DebugLogLevel.Choices = logChoices
+      Controls.DebugLogLevel.String = FugSchedulerRuntime.encodeChoice(LogLevelLabels[debugLevel], debugLevel)
+    end
+    if Controls.EventLogLevel then
+      Controls.EventLogLevel.Choices = logChoices
+      Controls.EventLogLevel.String = FugSchedulerRuntime.encodeChoice(LogLevelLabels[eventLevel], eventLevel)
+    end
+
     FugSchedulerRuntime.updatingPreferences = false
-    FugSchedulerRuntime.setText("PreferencesStatus", message or ("Date display format: " .. labels[format]))
+    local format = FugSchedulerRuntime.dateFormatPreference()
+    FugSchedulerRuntime.setText(
+      "PreferencesStatus",
+      message or string.format(
+        "Date format: %s | Debug Output: %s | Event Log: %s | DiagnosticLog: all levels",
+        dateLabels[format],
+        LogLevelLabels[debugLevel],
+        LogLevelLabels[eventLevel]
+      )
+    )
   end
 
   -- Attach handlers for Action loading, Schedule loading, and deterministic resolution tests.
@@ -5692,6 +5863,23 @@ if Controls then
       end
     end
 
+    -- Validate and retain one destination's normalized numeric threshold selection.
+    local function attachLogLevelHandler(controlName, destinationName)
+      if not Controls[controlName] then return end
+      Controls[controlName].EventHandler = function(control)
+        if FugSchedulerRuntime.updatingPreferences then return end
+        local selected = tonumber(FugSchedulerRuntime.choiceId(control.String))
+        if not LogLevelLabels[selected] then
+          FugSchedulerRuntime.refreshPreferences("Invalid " .. destinationName .. " level; restored its default")
+          return
+        end
+        FugSchedulerRuntime.refreshPreferences(destinationName .. " level: " .. LogLevelLabels[selected])
+        FugSchedulerRuntime.logLine(destinationName .. " level changed to " .. LogLevelLabels[selected])
+      end
+    end
+    attachLogLevelHandler("DebugLogLevel", "Debug Output")
+    attachLogLevelHandler("EventLogLevel", "Event Log")
+
     if Controls.ReloadActions then
       Controls.ReloadActions.EventHandler = function(control)
         if control.Boolean then FugSchedulerRuntime.reloadActions() end
@@ -5732,6 +5920,8 @@ if Controls then
     if Controls.OverrideType then Controls.OverrideType.Choices = {} end
     if Controls.OverridePattern then Controls.OverridePattern.Choices = {} end
     if Controls.DateFormatPreference then Controls.DateFormatPreference.Choices = {} end
+    if Controls.DebugLogLevel then Controls.DebugLogLevel.Choices = {} end
+    if Controls.EventLogLevel then Controls.EventLogLevel.Choices = {} end
     for _, weekday in ipairs(FugSchedulerWeekdays) do
       if Controls[weekday.controlName] then Controls[weekday.controlName].Choices = {} end
     end
@@ -5753,10 +5943,9 @@ if Controls then
     FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
     FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
     FugSchedulerRuntime.setText("OverrideEditorStatus", "Waiting for a valid Override configuration")
-    FugSchedulerRuntime.setText("PreferencesStatus", "Loading presentation preferences")
+    FugSchedulerRuntime.setText("PreferencesStatus", "Loading preferences")
     FugSchedulerRuntime.setText("BuildDateDisplay", FugSchedulerRuntime.formatBuildDate(FugSchedulerPluginInfo.BuildTimestamp))
     FugSchedulerRuntime.refreshStatus()
-    FugSchedulerRuntime.logLine("FugScheduler 2000 scheduler runtime initialized.")
 
     if Controls.ScheduleData and (Controls.ScheduleData.String or "") == "" then
       FugSchedulerRuntime.writingScheduleData = true
@@ -5770,7 +5959,14 @@ if Controls then
     if Controls.DateFormatPreference and (Controls.DateFormatPreference.String or "") == "" then
       Controls.DateFormatPreference.String = FugSchedulerRuntime.encodeChoice("yyyy-mm-dd", "ISO")
     end
+    if Controls.DebugLogLevel and (Controls.DebugLogLevel.String or "") == "" then
+      Controls.DebugLogLevel.String = FugSchedulerRuntime.encodeChoice("Info", LogLevel.INFO)
+    end
+    if Controls.EventLogLevel and (Controls.EventLogLevel.String or "") == "" then
+      Controls.EventLogLevel.String = FugSchedulerRuntime.encodeChoice("Off", LogLevel.OFF)
+    end
     FugSchedulerRuntime.refreshPreferences()
+    FugSchedulerRuntime.logLine("FugScheduler 2000 scheduler runtime initialized.")
 
     FugSchedulerRuntime.reloadActions()
     FugSchedulerRuntime.scheduleInitialized = true

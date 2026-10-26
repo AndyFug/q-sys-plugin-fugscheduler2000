@@ -396,15 +396,30 @@ function GetControlLayout(props)
     FugSchedulerUi.statusField(ui, "Action count", "RegisteredActionCount", ui:rect(28, 256, 632, 24))
 
   elseif page == "Preferences" then
-    ui:group("Presentation Preferences", ui:rect(10, 44, 880, 400))
-    ui:label("Date format", ui:rect(32, 82, 180, 24), {Color = ui:color("mutedText")})
-    ui:control("DateFormatPreference", "ComboBox", ui:rect(222, 80, 250, 28), {
+    ui:group("Presentation Preferences", ui:rect(10, 44, 430, 236))
+    ui:label("Date format", ui:rect(32, 82, 160, 24), {Color = ui:color("mutedText")})
+    ui:control("DateFormatPreference", "ComboBox", ui:rect(202, 80, 216, 28), {
       PrettyName = "Preferences~Date Format"
     })
-    ui:label("Controls how Override dates are entered and displayed. Persisted ScheduleData always uses ISO YYYY-MM-DD.", ui:rect(32, 132, 836, 54), {
+    ui:label("Controls how Override dates are entered and displayed. Persisted ScheduleData always uses ISO YYYY-MM-DD.", ui:rect(32, 132, 386, 72), {
       VTextAlign = "Top", WordWrap = true, Color = ui:color("mutedText")
     })
-    FugSchedulerUi.editorStatus(ui, "PreferencesStatus", ui:rect(32, 210, 836, 54), "Preferences~Status")
+
+    ui:group("Logging Preferences", ui:rect(450, 44, 440, 236))
+    ui:label("Debug Output level", ui:rect(472, 82, 170, 24), {Color = ui:color("mutedText")})
+    ui:control("DebugLogLevel", "ComboBox", ui:rect(652, 80, 216, 28), {
+      PrettyName = "Preferences~Debug Output Level"
+    })
+    ui:label("Event Log level", ui:rect(472, 124, 170, 24), {Color = ui:color("mutedText")})
+    ui:control("EventLogLevel", "ComboBox", ui:rect(652, 122, 216, 28), {
+      PrettyName = "Preferences~Event Log Level"
+    })
+    ui:label("Debug Output uses print. Event Log uses Log.Message and Log.Error. The bounded DiagnosticLog always records every severity.", ui:rect(472, 172, 396, 74), {
+      VTextAlign = "Top", WordWrap = true, Color = ui:color("mutedText")
+    })
+
+    ui:group("Preference Status", ui:rect(10, 292, 880, 92))
+    FugSchedulerUi.editorStatus(ui, "PreferencesStatus", ui:rect(32, 326, 836, 40), "Preferences~Status")
 
   elseif page == "Diagnostics" then
     ui:group("Diagnostics", ui:rect(10, 44, 430, 400))

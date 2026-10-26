@@ -16,6 +16,7 @@ python3 tests/qrc/validate_week_patterns.py
 python3 tests/qrc/validate_overrides.py
 python3 tests/qrc/validate_override_dates.py
 python3 tests/qrc/validate_execution.py
+python3 tests/qrc/validate_logging.py
 ```
 
 These tests manipulate the active plugin component. Before running them:
@@ -25,6 +26,8 @@ These tests manipulate the active plugin component. Before running them:
 3. Ensure the required design-time `.qplug` was deployed while emulation was stopped, then restart emulation before runtime deployment or testing.
 
 `validate_execution.py` additionally requires the safe `Callback1` and `Callback2` provider from `references/action_source_test.lua`. It refuses to begin when the master automatic-execution guard is already armed, uses only callbacks that print test messages, and restores the guard off afterward.
+
+`validate_logging.py` checks normalized numeric preference IDs, basic Debug Output filtering through `log.history`, unconditional bounded DiagnosticLog routing, and preference handlers. Core Event Log visibility still requires a brief Designer observation because the current test design does not expose an Event Log component through QRC.
 
 Each stateful QRC test must:
 

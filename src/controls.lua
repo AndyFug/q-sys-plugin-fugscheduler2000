@@ -109,8 +109,10 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "MoveOverrideDown", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "OverrideEditorStatus", ControlType = "Text", Count = 1})
 
-  -- Persist presentation-only preferences separately from canonical ScheduleData.
+  -- Persist presentation and logging preferences separately from canonical ScheduleData.
   table.insert(ctrls, {Name = "DateFormatPreference", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "DebugLogLevel", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "EventLogLevel", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "PreferencesStatus", ControlType = "Text", Count = 1})
 
   table.insert(ctrls, {Name = "ReloadActions", ControlType = "Button", ButtonType = "Momentary", UserPin = true, PinStyle = "Input", Count = 1})
