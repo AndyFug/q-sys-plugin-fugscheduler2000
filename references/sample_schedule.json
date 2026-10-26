@@ -17,7 +17,14 @@
             "id": "weekday-morning",
             "label": "Morning",
             "time": "09:00",
-            "actions": [{"actionId": "Callback1"}]
+            "actions": [{
+              "actionId": "Callback1",
+              "enabled": true,
+              "oneShot": false,
+              "fireOnStartup": true,
+              "fireOnResume": true,
+              "repeatSeconds": 300
+            }]
           },
           {
             "id": "weekday-afternoon",
@@ -149,13 +156,25 @@
               "id": "opening-announcement",
               "label": "Opening Announcement",
               "time": "10:30",
-              "actions": [{"actionId": "Callback2"}]
+              "actions": [{
+                "actionId": "Callback2",
+                "enabled": true,
+                "oneShot": true,
+                "fireOnStartup": false,
+                "fireOnResume": false
+              }]
             },
             {
               "id": "closing-announcement",
               "label": "Closing Announcement",
               "time": "18:30",
-              "actions": [{"actionId": "Callback1"}]
+              "actions": [{
+                "actionId": "Callback1",
+                "enabled": true,
+                "oneShot": true,
+                "fireOnStartup": false,
+                "fireOnResume": false
+              }]
             }
           ]
         }

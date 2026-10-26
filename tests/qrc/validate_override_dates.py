@@ -369,7 +369,7 @@ def main() -> None:
 
         final_model = schedule()
         check(no_runtime_keys(final_model), "runtime-only date buffers and indexes are absent from ScheduleData")
-        check("automatic Event execution is off" in controls("Status")["Status"]["String"],
+        check("automatic execution OFF" in controls("Status")["Status"]["String"],
               "automatic scheduled callback execution remains disabled")
         final_health = controls("script.status", "script.error.count")
         final_runtime_health = controls("script.status", "script.error.count", component=RUNTIME_PROVIDER)

@@ -296,7 +296,7 @@ def main() -> None:
               "existing Day Pattern editor still retains edits")
         check(selected_scheduler(schedule(), scheduler_id)["label"] == "Override QRC Test",
               "existing Scheduler editor still retains edits")
-        check("automatic Event execution is off" in controls("Status")["Status"]["String"],
+        check("automatic execution OFF" in controls("Status")["Status"]["String"],
               "automatic scheduled callback execution remains disabled")
 
         final_health = controls("script.status", "script.error.count")

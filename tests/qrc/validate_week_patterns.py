@@ -267,7 +267,7 @@ def main() -> None:
         current_model = schedule()
         check(no_runtime_keys(current_model), "runtime underscore indexes are absent from ScheduleData")
         status_text = controls("Status")["Status"]["String"]
-        check("automatic Event execution is off" in status_text, "automatic scheduled callback execution remains disabled")
+        check("automatic execution OFF" in status_text, "automatic scheduled callback execution remains disabled")
         health = controls("script.status", "script.error.count")
         check(health["script.status"]["String"] == "OK" and health["script.error.count"]["Value"] == 0,
               "plugin remains OK with zero script errors")

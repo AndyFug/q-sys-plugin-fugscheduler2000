@@ -11,7 +11,13 @@ function GetFugSchedulerActions()
     {
       id = "Callback1",
       label = "Callback 1",
-      description = "Prints a test message from the first callback.",
+      description = "Prints a state-restoring test message from the first callback.",
+      defaults = {
+        oneShot = false,
+        fireOnStartup = true,
+        fireOnResume = true,
+        repeatSeconds = 300
+      },
       callback = function()
         print("FugScheduler Callback 1 executed")
       end
@@ -19,7 +25,10 @@ function GetFugSchedulerActions()
     {
       id = "Callback2",
       label = "Callback 2",
-      description = "Prints a test message from the second callback.",
+      description = "Prints a one-shot test message from the second callback.",
+      defaults = {
+        oneShot = true
+      },
       callback = function()
         print("FugScheduler Callback 2 executed")
       end

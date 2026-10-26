@@ -34,7 +34,15 @@ This distinction allows:
 - per-assignment behavior to override Action defaults in the future
 - the execution order within an Event to remain explicit
 
-Potential Event Action options include one-shot behavior, startup firing, repeat interval, enabled state, and future delay or guard settings. The exact inheritance rules between Action defaults and Event Action overrides remain to be defined.
+Event Action execution options are persisted on each assignment:
+
+- `enabled` — whether the assignment participates in automatic execution
+- `oneShot` — execute only when its scheduled edge is observed
+- `fireOnStartup` — restore the Action when the engine starts while its Event is current
+- `fireOnResume` — restore the Action when a paused Scheduler resumes while its Event is current
+- `repeatSeconds` — optional interval while the Event remains current
+
+New assignments copy any validated defaults supplied by the registered Action. The copied values then belong to the Event Action and do not change when the Action Registry is reloaded. When no defaults are supplied, assignments are enabled, stateful, do not restore automatically, and do not repeat.
 
 ### Event
 
@@ -213,13 +221,18 @@ If multiple Events share the same time, they retain their persisted array order 
 When time crosses an Event's scheduled edge:
 
 1. The Event becomes current.
-2. Its enabled Event Actions are processed in configured order.
+2. Every enabled Event Action executes in configured order, whether stateful or one-shot.
 3. Each Action ID is looked up in the current Action Registry.
 4. Each callback is invoked independently with `pcall`.
-5. Missing Actions and callback failures are logged and surfaced without stopping the Scheduler.
-6. Runtime status is updated with current, previous, and next information.
+5. Missing Actions and callback failures are logged and surfaced without stopping later Actions.
+6. Non-one-shot repeat intervals begin from the observed transition time.
+7. Runtime status is updated with current, previous, and next information.
 
-Manual Action testing does not change the Scheduler's current Event or timeline state.
+The engine detects ordinary edges over the interval `lastObservedTime < occurrenceTime <= currentTime`. Events sharing one timestamp execute in persisted Event order, with each Event's Actions retaining their configured order.
+
+When an immediate configuration change alters which Event is current, the newly current Event's enabled stateful Actions execute immediately with reason `schedule change`; its one-shot Actions do not execute. Repeat intervals restart from the reconciliation time. This applies consistently to Event time/deletion edits, pattern assignment changes, Default Week Pattern changes, and Override changes. No reconciliation callback occurs while the master guard is off or the Scheduler is disabled or paused.
+
+Manual Action testing does not change Scheduler timeline or execution state.
 
 ## State-restoring and one-shot behavior
 
@@ -227,25 +240,23 @@ An Event Action may represent either state or a momentary occurrence.
 
 ### State-restoring Action
 
-Examples include selecting a music mode, muting a site, or enabling a de-icer. On startup or resume, the current state-restoring Event Action may execute immediately so the physical system matches the schedule. It may optionally repeat while its Event remains current.
+Examples include selecting a music mode, muting a site, or enabling a de-icer. It always executes at its normal Event edge. When `fireOnStartup` or `fireOnResume` is enabled, it also executes when the already-current Event is activated through the corresponding lifecycle transition. It may optionally repeat while its Event remains current.
 
 ### One-shot Action
 
-Examples include playing an announcement or sending a pulse. A one-shot Event Action executes only when the Scheduler observes its scheduled edge. Starting or resuming after that edge must not replay it automatically.
-
-Whether these behaviors are primarily Action defaults, Event Action settings, or inherited defaults with overrides remains an implementation decision.
+Examples include playing an announcement or sending a pulse. A one-shot Event Action executes only when the Scheduler observes its scheduled edge. Starting, enabling, or resuming after that edge must not replay it automatically. One-shot assignments cannot use startup firing, resume firing, or repeat intervals.
 
 ## Pause behavior
 
-While paused, the Scheduler continues resolving dates, Day Patterns, Events, and status, but it does not execute scheduled callbacks.
+While paused, the Scheduler continues resolving dates, Day Patterns, Events, and status, but it does not execute scheduled callbacks. Event edges crossed during the pause are missed rather than queued.
 
-On resume, the recommended behavior is:
+On resume:
 
-- execute applicable current state-restoring Event Actions
-- do not replay missed one-shot Event Actions
-- restart repeat behavior from a defined resume policy
+- execute current non-one-shot Event Actions whose `fireOnResume` option is enabled
+- never replay missed one-shot Event Actions
+- restart repeat intervals from the resume time without catch-up bursts
 
-The exact repeat timing policy must be specified and tested before engine completion.
+The initial pause remains active until manually cleared. Planned operational extensions include pause until the next Event, pause for a duration or until a date/time, and a later next-day convenience policy.
 
 ## Persisted versus runtime data
 
@@ -268,8 +279,11 @@ Runtime-only data includes:
 - resolved Day Pattern
 - current, previous, and next Events
 - timestamps and countdowns
-- active repeat timers
+- last-observed timestamps and active occurrence keys
+- active repeat deadlines
 - validation and callback errors
+
+Automatic execution is additionally protected by a persistent plugin-wide safety toggle that defaults off. A Scheduler must be enabled, unpaused, and covered by that master toggle before callbacks can execute.
 
 ## Worked example
 

@@ -51,6 +51,12 @@ function GetFugSchedulerActions()
       id = "site-music-morning",
       label = "Site Music: Morning",
       description = "Recall the morning music snapshot.",
+      defaults = {
+        oneShot = false,
+        fireOnStartup = true,
+        fireOnResume = true,
+        repeatSeconds = 300
+      },
       callback = function()
         Component.New("SiteMusicSnapshots")["load.2"]:Trigger()
       end
@@ -64,7 +70,9 @@ Possible optional metadata:
 - `category`
 - `oneShotDefault`
 - `fireOnStartupDefault`
+- `fireOnResumeDefault`
 - `repeatSecondsDefault`
+- preferred nested `defaults = {...}` equivalents for those fields
 - `testCallback`
 - `available` or validation callback
 
@@ -110,6 +118,7 @@ Action = {
   defaults = {
     oneShot = false,
     fireOnStartup = true,
+    fireOnResume = true,
     repeatSeconds = 300
   }
 }
@@ -341,9 +350,9 @@ Import/export/reset acceptance tests should cover:
 
 Before completing the engine, document and test:
 
-- startup behavior when the current action is one-shot
-- whether non-one-shot current actions fire immediately on startup by default
-- whether an action repeats from scheduled start or plugin startup
+- validate that a current one-shot never replays on startup, enable, resume, or clock discontinuity
+- validate explicit `fireOnStartup` and `fireOnResume` state-restoration options
+- validate repeats beginning at a scheduled edge and restarting from startup/resume activation time without catch-up bursts
 - behavior after a clock jump, Core reboot, design restart, or long execution stall
 - daylight-saving transitions and timezone assumptions
 - duplicate Event times within a Day Pattern
@@ -352,8 +361,10 @@ Before completing the engine, document and test:
 - overlapping Overrides and deterministic precedence
 - an Event Action referencing an unregistered Action
 - ordered execution and failure isolation when one Event contains multiple Actions
-- changing schedule data while an action is active
+- validate immediate stateful reconciliation when schedule edits change the current Event; one-shots remain edge-only and repeats restart from the edit time
 - pause/resume behavior for repeat timers and missed one-shots
+- pause expiry modes: manual, next Event, duration/until time, and a defined next-day policy
+- advancing immediately to the next scheduled Event, including occurrence consumption and restart persistence
 - whether manual action tests affect current scheduler state
 
 ### Core-local time and DST validation
@@ -397,11 +408,19 @@ Exit criterion: the plugin can discover trusted external actions reliably and re
 - Implement Day Patterns, Week Patterns, Overrides, and ordered Event Actions for each Scheduler.
 - Implement current/previous/next resolution across midnight independently for every Scheduler.
 - Publish the aggregate integration contract defined in `STATUS_MODEL.md`.
-- Implement pause/resume, one-shot, startup fire, and repeat behavior.
+- Implement ordered Event Action execution, pause/resume, one-shot, startup/resume fire, and repeat behavior behind a disabled-by-default master execution safety control.
+- Track Event occurrences explicitly so duplicate-time ordering, missed edges, clock discontinuities, and a later Advance to Next Event command can be handled deterministically.
 - Build functional Overview, Scheduler, Day Patterns, Week Patterns, Overrides, Actions, and Diagnostics pages.
 - Add manual action testing with a guard/confirmation strategy.
 
 Exit criterion: multiple Schedulers can resolve concurrently and one selected Scheduler can reproduce a representative subset of the reference controller without schedule definitions in Lua.
+
+### Phase 2 follow-up — operational transport controls
+
+- Add Pause Until Next Event, timed/until-time pause, and a documented next-day pause policy.
+- Add Advance to Next Event as an explicit runtime transition that executes the next occurrence once, makes it current, and suppresses its later scheduled edge.
+- Decide whether pause expiry and advanced occurrence state survive runtime or Core restart, then persist operational state if required.
+- Keep Action testing separate from Scheduler transport state.
 
 ### Phase 3 — scalable editing
 
@@ -450,7 +469,7 @@ Built-in Actions should use the same registry/ID model so Event Actions do not c
 ## Open questions
 
 - What practical source-size and persistence limits apply to the `ActionSource` Text control?
-- Should repeat/startup/one-shot options live primarily on Action definitions, Event Actions, or both through inherited defaults and overrides?
+- Should future Action default changes ever offer an explicit bulk-update workflow for existing Event Actions? Current behavior copies defaults only when an assignment is attached.
 - Is Core-local time sufficient, or is an explicit timezone/DST policy required?
 - What capacity defaults balance Day Pattern, Event, Event Action, Week Pattern, and Override usability against control count?
 - What edit permissions/lockout controls are needed for operator-facing UCIs?

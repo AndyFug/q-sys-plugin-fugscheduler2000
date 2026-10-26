@@ -4,7 +4,7 @@
 
   Edit files under src/ and compile them into ../FugScheduler2000.qplug.
   The current runtime validates trusted external Actions, persists a versioned
-  multi-Scheduler model, and publishes read-only resolution status.
+  multi-Scheduler model, resolves every Scheduler, and provides guarded execution.
 ]]
 
 -- Information block for the plugin.

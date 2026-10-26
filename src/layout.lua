@@ -37,19 +37,25 @@ function GetControlLayout(props)
     FugSchedulerUi.statusField(ui, "Next Event Time", "NextEventTime", ui:rect(28, 332, 532, 22))
     FugSchedulerUi.statusField(ui, "Countdown", "Countdown", ui:rect(28, 360, 532, 22))
 
-    ui:group("Vertical Slice", ui:rect(590, 44, 300, 400))
-    ui:label("Resolution only", ui:rect(610, 76, 260, 28), {
+    ui:group("Execution Safety", ui:rect(590, 44, 300, 400))
+    ui:label("Automatic callbacks", ui:rect(610, 76, 260, 28), {
       FontSize = 18,
       IsBold = true,
       Color = ui:color("text")
     })
-    ui:label("This phase validates JSON persistence, Day Pattern and Week Pattern resolution, Override precedence, and previous/current/next Events. Scheduled callbacks do not fire automatically yet.", ui:rect(610, 118, 258, 150), {
+    ui:button("AutomaticExecutionEnabled", ui:rect(610, 116, 260, 30), {
+      ButtonStyle = "Toggle",
+      Legend = "Automatic Execution Enabled",
+      Color = ui:color("danger")
+    })
+    ui:label("Defaults off. When enabled, only enabled and unpaused Schedulers may execute registered callbacks.", ui:rect(610, 158, 258, 66), {
       VTextAlign = "Top",
       WordWrap = true,
       Color = ui:color("mutedText")
     })
-    FugSchedulerUi.statusField(ui, "Schedulers", "SchedulerCount", ui:rect(610, 292, 258, 22))
-    FugSchedulerUi.statusField(ui, "Actions", "RegisteredActionCount", ui:rect(610, 320, 258, 22))
+    FugSchedulerUi.statusField(ui, "Execution", "ExecutionStatus", ui:rect(610, 242, 258, 44))
+    FugSchedulerUi.statusField(ui, "Schedulers", "SchedulerCount", ui:rect(610, 304, 258, 22))
+    FugSchedulerUi.statusField(ui, "Actions", "RegisteredActionCount", ui:rect(610, 332, 258, 22))
 
   elseif page == "Schedules" then
     ui:group("Scheduler Editor", ui:rect(10, 44, 570, 400))
@@ -201,24 +207,41 @@ function GetControlLayout(props)
     })
 
     ui:group("Event Actions", ui:rect(594, 82, 296, 356))
-    ui:control("EventActionSelect", "ListBox", ui:rect(608, 110, 268, 142), {
+    ui:control("EventActionSelect", "ListBox", ui:rect(608, 106, 268, 82), {
       PrettyName = "Day Patterns~Selected Event Action",
-      FontSize = 10
+      FontSize = 9
     })
-    ui:label("Attach registered Action", ui:rect(608, 260, 268, 20), {Color = ui:color("mutedText")})
-    ui:control("EventActionPicker", "ComboBox", ui:rect(608, 282, 268, 26), {
+    ui:label("Attach Action", ui:rect(608, 194, 82, 18), {Color = ui:color("mutedText"), FontSize = 9})
+    ui:control("EventActionPicker", "ComboBox", ui:rect(692, 192, 184, 24), {
       PrettyName = "Day Patterns~Action to Attach"
     })
-    ui:button("AddEventAction", ui:rect(608, 318, 128, 28), {
+    ui:button("EventActionEnabled", ui:rect(608, 224, 82, 24), {
+      ButtonStyle = "Toggle", Legend = "Enabled", Color = ui:color("accent")
+    })
+    ui:control("EventActionMode", "ComboBox", ui:rect(698, 224, 178, 24), {
+      PrettyName = "Day Patterns~Event Action Mode"
+    })
+    ui:button("EventActionFireOnStartup", ui:rect(608, 256, 128, 24), {
+      ButtonStyle = "Toggle", Legend = "Restore on Start", Color = ui:color("schedule")
+    })
+    ui:button("EventActionFireOnResume", ui:rect(748, 256, 128, 24), {
+      ButtonStyle = "Toggle", Legend = "Restore on Resume", Color = ui:color("schedule")
+    })
+    ui:label("Repeat seconds", ui:rect(608, 290, 104, 20), {Color = ui:color("mutedText"), FontSize = 9})
+    ui:textControl("EventActionRepeatSeconds", ui:rect(718, 286, 158, 24), {
+      PrettyName = "Day Patterns~Repeat Seconds",
+      HTextAlign = "Center"
+    })
+    ui:button("AddEventAction", ui:rect(608, 320, 128, 24), {
       ButtonStyle = "Momentary", Legend = "Add Action", Color = ui:color("action", ui:color("warning"))
     })
-    ui:button("DeleteEventAction", ui:rect(748, 318, 128, 28), {
+    ui:button("DeleteEventAction", ui:rect(748, 320, 128, 24), {
       ButtonStyle = "Momentary", Legend = "Delete", Color = ui:color("danger")
     })
-    ui:button("MoveEventActionUp", ui:rect(608, 366, 128, 28), {
+    ui:button("MoveEventActionUp", ui:rect(608, 354, 128, 24), {
       ButtonStyle = "Momentary", Legend = "Move Up", Color = ui:color("accent")
     })
-    ui:button("MoveEventActionDown", ui:rect(748, 366, 128, 28), {
+    ui:button("MoveEventActionDown", ui:rect(748, 354, 128, 24), {
       ButtonStyle = "Momentary", Legend = "Move Down", Color = ui:color("accent")
     })
 

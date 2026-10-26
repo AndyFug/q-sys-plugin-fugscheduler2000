@@ -35,12 +35,18 @@ FugSchedulerRuntime = {
   updatingWeekPatternEditor = false,
   updatingOverrideEditor = false,
   updatingPreferences = false,
+  updatingExecutionControl = false,
   overrideDateBuffer = nil,
   selectedDayPatternIds = {},
   selectedWeekPatternIds = {},
   selectedOverrideIds = {},
   selectedEventIds = {},
   selectedEventActionIndexes = {},
+  executionStates = {},
+  executionTimer = nil,
+  executionPollSeconds = 1,
+  normalEdgeMaxDelaySeconds = 90,
+  lastExecutionMessage = "Automatic execution is disabled",
   uuidCounter = 0,
   uuidSeeded = false
 }
@@ -127,7 +133,10 @@ function FugSchedulerRuntime.sampleSchedule()
             id = "standard-weekday",
             label = "Standard Weekday",
             events = {
-              {id = "weekday-morning", label = "Morning", time = "09:00", actions = {{actionId = "Callback1"}}},
+              {id = "weekday-morning", label = "Morning", time = "09:00", actions = {{
+                actionId = "Callback1", enabled = true, oneShot = false,
+                fireOnStartup = true, fireOnResume = true, repeatSeconds = 300
+              }}},
               {id = "weekday-afternoon", label = "Afternoon", time = "14:00", actions = {{actionId = "Callback2"}}},
               {id = "weekday-closing", label = "Closing", time = "22:00", actions = {{actionId = "Callback1"}, {actionId = "Callback2"}}}
             }
@@ -208,8 +217,14 @@ function FugSchedulerRuntime.sampleSchedule()
             id = "announcement-day",
             label = "Announcement Day",
             events = {
-              {id = "opening-announcement", label = "Opening Announcement", time = "10:30", actions = {{actionId = "Callback2"}}},
-              {id = "closing-announcement", label = "Closing Announcement", time = "18:30", actions = {{actionId = "Callback1"}}}
+              {id = "opening-announcement", label = "Opening Announcement", time = "10:30", actions = {{
+                actionId = "Callback2", enabled = true, oneShot = true,
+                fireOnStartup = false, fireOnResume = false
+              }}},
+              {id = "closing-announcement", label = "Closing Announcement", time = "18:30", actions = {{
+                actionId = "Callback1", enabled = true, oneShot = true,
+                fireOnStartup = false, fireOnResume = false
+              }}}
             }
           }
         },
@@ -411,11 +426,52 @@ function FugSchedulerRuntime.buildRegistry(actionDefinitions)
       return nil, nil, "Action " .. id .. " label must be a string"
     end
 
+    local suppliedDefaults = type(definition.defaults) == "table" and definition.defaults or {}
+    local enabledDefault = suppliedDefaults.enabled
+    if enabledDefault == nil then enabledDefault = definition.enabledDefault end
+    local oneShotDefault = suppliedDefaults.oneShot
+    if oneShotDefault == nil then oneShotDefault = definition.oneShotDefault end
+    local fireOnStartupDefault = suppliedDefaults.fireOnStartup
+    if fireOnStartupDefault == nil then fireOnStartupDefault = definition.fireOnStartupDefault end
+    local fireOnResumeDefault = suppliedDefaults.fireOnResume
+    if fireOnResumeDefault == nil then fireOnResumeDefault = definition.fireOnResumeDefault end
+    if fireOnResumeDefault == nil then fireOnResumeDefault = fireOnStartupDefault end
+    local repeatSecondsDefault = suppliedDefaults.repeatSeconds
+    if repeatSecondsDefault == nil then repeatSecondsDefault = definition.repeatSecondsDefault end
+
+    if enabledDefault ~= nil and type(enabledDefault) ~= "boolean" then
+      return nil, nil, "Action " .. id .. " enabled default must be Boolean"
+    end
+    if oneShotDefault ~= nil and type(oneShotDefault) ~= "boolean" then
+      return nil, nil, "Action " .. id .. " oneShot default must be Boolean"
+    end
+    if fireOnStartupDefault ~= nil and type(fireOnStartupDefault) ~= "boolean" then
+      return nil, nil, "Action " .. id .. " fireOnStartup default must be Boolean"
+    end
+    if fireOnResumeDefault ~= nil and type(fireOnResumeDefault) ~= "boolean" then
+      return nil, nil, "Action " .. id .. " fireOnResume default must be Boolean"
+    end
+    if repeatSecondsDefault ~= nil and
+        (type(repeatSecondsDefault) ~= "number" or repeatSecondsDefault <= 0 or repeatSecondsDefault % 1 ~= 0) then
+      return nil, nil, "Action " .. id .. " repeatSeconds default must be a positive whole number"
+    end
+    if oneShotDefault == true and
+        (fireOnStartupDefault == true or fireOnResumeDefault == true or repeatSecondsDefault ~= nil) then
+      return nil, nil, "Action " .. id .. " one-shot defaults cannot restore or repeat"
+    end
+
     local action = {
       id = id,
       label = definition.label or id,
       description = definition.description,
-      callback = definition.callback
+      callback = definition.callback,
+      defaults = {
+        enabled = enabledDefault ~= false,
+        oneShot = oneShotDefault == true,
+        fireOnStartup = fireOnStartupDefault == true,
+        fireOnResume = fireOnResumeDefault == true,
+        repeatSeconds = repeatSecondsDefault
+      }
     }
     actionsById[id] = action
     table.insert(orderedActions, action)
@@ -725,6 +781,33 @@ function FugSchedulerRuntime.validateScheduler(scheduler, schedulerIndex)
             table.insert(warnings, prefix .. " Event " .. event.id .. " assigns Action " .. eventAction.actionId .. " more than once")
           end
           assignedActionIds[eventAction.actionId] = true
+          if eventAction.enabled ~= nil and type(eventAction.enabled) ~= "boolean" then
+            return nil, nil, prefix .. " Event Action " .. actionIndex .. " enabled must be Boolean"
+          end
+          if eventAction.oneShot ~= nil and type(eventAction.oneShot) ~= "boolean" then
+            return nil, nil, prefix .. " Event Action " .. actionIndex .. " oneShot must be Boolean"
+          end
+          if eventAction.fireOnStartup ~= nil and type(eventAction.fireOnStartup) ~= "boolean" then
+            return nil, nil, prefix .. " Event Action " .. actionIndex .. " fireOnStartup must be Boolean"
+          end
+          if eventAction.fireOnResume ~= nil and type(eventAction.fireOnResume) ~= "boolean" then
+            return nil, nil, prefix .. " Event Action " .. actionIndex .. " fireOnResume must be Boolean"
+          end
+          if eventAction.repeatSeconds ~= nil and
+              (type(eventAction.repeatSeconds) ~= "number" or eventAction.repeatSeconds <= 0 or eventAction.repeatSeconds % 1 ~= 0) then
+            return nil, nil, prefix .. " Event Action " .. actionIndex .. " repeatSeconds must be a positive whole number"
+          end
+
+          eventAction.enabled = eventAction.enabled ~= false
+          eventAction.oneShot = eventAction.oneShot == true
+          eventAction.fireOnStartup = eventAction.fireOnStartup == true
+          if eventAction.fireOnResume == nil then eventAction.fireOnResume = eventAction.fireOnStartup end
+          eventAction.fireOnResume = eventAction.fireOnResume == true
+          if eventAction.oneShot and
+              (eventAction.fireOnStartup or eventAction.fireOnResume or eventAction.repeatSeconds ~= nil) then
+            return nil, nil, prefix .. " Event Action " .. actionIndex .. " in Event " .. event.id ..
+              " is one-shot and cannot restore or repeat"
+          end
           if not FugSchedulerRuntime.actionsById[eventAction.actionId] then
             table.insert(warnings, prefix .. " Event " .. event.id .. " references unavailable Action " .. eventAction.actionId)
           end
@@ -897,10 +980,10 @@ function FugSchedulerRuntime.collectTimeline(scheduler, targetDate, radiusDays)
 end
 
 -- Resolve previous, current, and next Events for an explicit timestamp without executing Actions.
-function FugSchedulerRuntime.resolveAt(scheduler, timestamp)
+function FugSchedulerRuntime.resolveAt(scheduler, timestamp, radiusDays)
   local targetDate = os.date("%Y-%m-%d", timestamp)
   local resolvedDayPattern, resolutionSource, resolutionRule = FugSchedulerRuntime.resolveDayPattern(scheduler, targetDate)
-  local timeline = FugSchedulerRuntime.collectTimeline(scheduler, targetDate, 31)
+  local timeline = FugSchedulerRuntime.collectTimeline(scheduler, targetDate, radiusDays or 31)
   local currentIndex = nil
 
   for index, item in ipairs(timeline) do
@@ -1186,6 +1269,12 @@ function FugSchedulerRuntime.selectedEventActionIndex()
   return scheduler, event, index
 end
 
+-- Return the selected Event Action assignment and its owning Event.
+function FugSchedulerRuntime.selectedEventAction()
+  local scheduler, event, index = FugSchedulerRuntime.selectedEventActionIndex()
+  return scheduler, event, index and event.actions[index] or nil, index
+end
+
 -- Count every Week Pattern weekday and Override reference to one Day Pattern.
 function FugSchedulerRuntime.dayPatternReferences(scheduler, dayPatternId)
   local weekdayCount = 0
@@ -1352,7 +1441,9 @@ function FugSchedulerRuntime.refreshDayPatternEditor(message)
     for index, eventAction in ipairs(event.actions) do
       local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
       local label = action and action.label or (eventAction.actionId .. " (unavailable)")
-      table.insert(actionChoices, {Text = index .. "  " .. label, Id = tostring(index)})
+      local mode = eventAction.oneShot and "1x" or "state"
+      local disabled = eventAction.enabled == false and " off" or ""
+      table.insert(actionChoices, {Text = index .. "  " .. label .. " [" .. mode .. disabled .. "]", Id = tostring(index)})
     end
   end
   if Controls.EventActionSelect then Controls.EventActionSelect.Choices = actionChoices end
@@ -1362,9 +1453,37 @@ function FugSchedulerRuntime.refreshDayPatternEditor(message)
     local eventAction = event.actions[actionIndex]
     local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
     local label = action and action.label or (eventAction.actionId .. " (unavailable)")
-    Controls.EventActionSelect.String = FugSchedulerRuntime.encodeChoice(actionIndex .. "  " .. label, tostring(actionIndex))
+    local mode = eventAction.oneShot and "1x" or "state"
+    local disabled = eventAction.enabled == false and " off" or ""
+    Controls.EventActionSelect.String = FugSchedulerRuntime.encodeChoice(
+      actionIndex .. "  " .. label .. " [" .. mode .. disabled .. "]",
+      tostring(actionIndex)
+    )
   elseif Controls.EventActionSelect then
     Controls.EventActionSelect.String = ""
+  end
+
+  local selectedEventAction = actionIndex and event.actions[actionIndex] or nil
+  if Controls.EventActionMode then
+    Controls.EventActionMode.Choices = {
+      {Text = "Stateful", Id = "Stateful"},
+      {Text = "One Shot", Id = "OneShot"}
+    }
+    if selectedEventAction then
+      local modeId = selectedEventAction.oneShot and "OneShot" or "Stateful"
+      Controls.EventActionMode.String = FugSchedulerRuntime.encodeChoice(
+        selectedEventAction.oneShot and "One Shot" or "Stateful",
+        modeId
+      )
+    else
+      Controls.EventActionMode.String = ""
+    end
+  end
+  if Controls.EventActionEnabled then Controls.EventActionEnabled.Boolean = selectedEventAction and selectedEventAction.enabled ~= false or false end
+  if Controls.EventActionFireOnStartup then Controls.EventActionFireOnStartup.Boolean = selectedEventAction and selectedEventAction.fireOnStartup == true or false end
+  if Controls.EventActionFireOnResume then Controls.EventActionFireOnResume.Boolean = selectedEventAction and selectedEventAction.fireOnResume == true or false end
+  if Controls.EventActionRepeatSeconds then
+    Controls.EventActionRepeatSeconds.String = selectedEventAction and selectedEventAction.repeatSeconds and tostring(selectedEventAction.repeatSeconds) or ""
   end
 
   FugSchedulerRuntime.setDisabled("DayPatternLabel", not dayPattern)
@@ -1379,6 +1498,11 @@ function FugSchedulerRuntime.refreshDayPatternEditor(message)
   FugSchedulerRuntime.setDisabled("EventActionSelect", not event or #event.actions == 0)
   FugSchedulerRuntime.setDisabled("EventActionPicker", not event or #FugSchedulerRuntime.orderedActions == 0)
   FugSchedulerRuntime.setDisabled("AddEventAction", not event or #FugSchedulerRuntime.orderedActions == 0)
+  FugSchedulerRuntime.setDisabled("EventActionEnabled", not selectedEventAction)
+  FugSchedulerRuntime.setDisabled("EventActionMode", not selectedEventAction)
+  FugSchedulerRuntime.setDisabled("EventActionFireOnStartup", not selectedEventAction or selectedEventAction.oneShot)
+  FugSchedulerRuntime.setDisabled("EventActionFireOnResume", not selectedEventAction or selectedEventAction.oneShot)
+  FugSchedulerRuntime.setDisabled("EventActionRepeatSeconds", not selectedEventAction or selectedEventAction.oneShot)
   FugSchedulerRuntime.setDisabled("DeleteEventAction", not actionIndex)
   FugSchedulerRuntime.setDisabled("MoveEventActionUp", not actionIndex or actionIndex <= 1)
   FugSchedulerRuntime.setDisabled("MoveEventActionDown", not actionIndex or actionIndex >= #(event and event.actions or {}))
@@ -2306,23 +2430,46 @@ function FugSchedulerRuntime.deleteEvent()
   end, nil, "DayPatternEditorStatus")
 end
 
--- Attach one registered Action to the selected Event.
+-- Apply one validated option edit to the selected Event Action assignment.
+function FugSchedulerRuntime.updateSelectedEventAction(description, editFunction)
+  local _, event, eventAction, index = FugSchedulerRuntime.selectedEventAction()
+  if not eventAction or not index then return false end
+
+  return FugSchedulerRuntime.commitScheduleEdit(description, function(candidate)
+    local _, _, selectedEvent = FugSchedulerRuntime.candidateSelectedEvent(candidate)
+    if not selectedEvent or not selectedEvent.actions[index] then
+      return false, "selected Event Action no longer exists"
+    end
+    return editFunction(selectedEvent.actions[index])
+  end, nil, "DayPatternEditorStatus")
+end
+
+-- Attach one registered Action to the selected Event and copy its execution defaults.
 function FugSchedulerRuntime.addEventAction()
   local scheduler, _, event = FugSchedulerRuntime.selectedEvent()
   if not event then return false end
   local actionId = FugSchedulerRuntime.choiceId(Controls.EventActionPicker and Controls.EventActionPicker.String or "")
-  if not FugSchedulerRuntime.actionsById[actionId] then
+  local action = FugSchedulerRuntime.actionsById[actionId]
+  if not action then
     local message = "Add rejected: select an available registered Action"
     FugSchedulerRuntime.setText("DayPatternEditorStatus", message)
     return false
   end
   local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
   FugSchedulerRuntime.selectedEventActionIndexes[key] = #event.actions + 1
+  local defaults = action.defaults or {}
 
   return FugSchedulerRuntime.commitScheduleEdit("Event Action attached", function(candidate)
     local _, _, selectedEvent = FugSchedulerRuntime.candidateSelectedEvent(candidate)
     if not selectedEvent then return false, "selected Event no longer exists" end
-    table.insert(selectedEvent.actions, {actionId = actionId})
+    table.insert(selectedEvent.actions, {
+      actionId = actionId,
+      enabled = defaults.enabled ~= false,
+      oneShot = defaults.oneShot == true,
+      fireOnStartup = defaults.fireOnStartup == true,
+      fireOnResume = defaults.fireOnResume == true,
+      repeatSeconds = defaults.repeatSeconds
+    })
   end, nil, "DayPatternEditorStatus")
 end
 
@@ -2413,6 +2560,297 @@ function FugSchedulerRuntime.deleteScheduler()
   end, selectedAfterDelete)
 end
 
+-- Return whether the plugin-wide automatic execution safety control is armed.
+function FugSchedulerRuntime.automaticExecutionEnabled()
+  return Controls.AutomaticExecutionEnabled and Controls.AutomaticExecutionEnabled.Boolean == true or false
+end
+
+-- Build a stable runtime-only identity for one resolved Event occurrence.
+function FugSchedulerRuntime.occurrenceKey(item)
+  if not item then return nil end
+  return tostring(item.timestamp) .. "\31" .. tostring(item.event.id)
+end
+
+-- Return or create one Scheduler's runtime execution state.
+function FugSchedulerRuntime.executionState(schedulerId)
+  local state = FugSchedulerRuntime.executionStates[schedulerId]
+  if state then return state end
+  state = {
+    initialized = false,
+    lastObservedTimestamp = nil,
+    activeOccurrenceKey = nil,
+    activeOccurrence = nil,
+    repeatDeadlines = {},
+    lastEnabled = nil,
+    lastPaused = nil,
+    lastTransitionReason = "Not initialized",
+    lastCallbackResult = "None"
+  }
+  FugSchedulerRuntime.executionStates[schedulerId] = state
+  return state
+end
+
+-- Publish one execution message and optionally include it in the diagnostic log.
+function FugSchedulerRuntime.setExecutionMessage(message, logMessage)
+  FugSchedulerRuntime.lastExecutionMessage = tostring(message)
+  FugSchedulerRuntime.setText("ExecutionStatus", FugSchedulerRuntime.lastExecutionMessage)
+  if logMessage ~= false then FugSchedulerRuntime.logLine(FugSchedulerRuntime.lastExecutionMessage) end
+end
+
+-- Stop repeat scheduling for one Scheduler without affecting timeline resolution.
+function FugSchedulerRuntime.clearRepeats(state)
+  state.repeatDeadlines = {}
+end
+
+-- Invoke one registered Event Action with callback isolation and execution diagnostics.
+function FugSchedulerRuntime.executeEventAction(scheduler, occurrence, eventAction, actionIndex, reason)
+  if eventAction.enabled == false then return false end
+  local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
+  local occurrenceLabel = occurrence and occurrence.event and occurrence.event.label or "Unknown Event"
+  if not action then
+    local message = string.format(
+      "Execution skipped: Scheduler %s Event %s Action %s is unavailable",
+      scheduler.label,
+      occurrenceLabel,
+      tostring(eventAction.actionId)
+    )
+    local state = FugSchedulerRuntime.executionState(scheduler.id)
+    state.lastCallbackResult = message
+    FugSchedulerRuntime.setExecutionMessage(message)
+    return false
+  end
+
+  local callbackOk, callbackError = pcall(action.callback)
+  local state = FugSchedulerRuntime.executionState(scheduler.id)
+  if callbackOk then
+    local message = string.format(
+      "Executed %s / %s / %s (%s, Action %d)",
+      scheduler.label,
+      occurrenceLabel,
+      action.label,
+      reason,
+      actionIndex
+    )
+    state.lastCallbackResult = message
+    FugSchedulerRuntime.setExecutionMessage(message)
+    return true
+  end
+
+  local message = string.format(
+    "Callback error: %s / %s / %s: %s",
+    scheduler.label,
+    occurrenceLabel,
+    action.id,
+    tostring(callbackError)
+  )
+  state.lastCallbackResult = message
+  FugSchedulerRuntime.setExecutionMessage(message)
+  return false
+end
+
+-- Start repeat deadlines for the current occurrence without producing catch-up bursts.
+function FugSchedulerRuntime.scheduleRepeats(state, occurrence, now)
+  FugSchedulerRuntime.clearRepeats(state)
+  if not occurrence then return end
+  for actionIndex, eventAction in ipairs(occurrence.event.actions or {}) do
+    if eventAction.enabled ~= false and not eventAction.oneShot and eventAction.repeatSeconds then
+      state.repeatDeadlines[actionIndex] = {
+        due = now + eventAction.repeatSeconds,
+        actionId = eventAction.actionId,
+        repeatSeconds = eventAction.repeatSeconds
+      }
+    end
+  end
+end
+
+-- Execute every enabled Event Action at a normally observed Event edge.
+function FugSchedulerRuntime.executeOccurrence(scheduler, state, occurrence, reason, now)
+  state.activeOccurrence = occurrence
+  state.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(occurrence)
+  state.lastTransitionReason = reason
+  FugSchedulerRuntime.clearRepeats(state)
+
+  for actionIndex, eventAction in ipairs(occurrence.event.actions or {}) do
+    if eventAction.enabled ~= false then
+      FugSchedulerRuntime.executeEventAction(scheduler, occurrence, eventAction, actionIndex, reason)
+    end
+  end
+  FugSchedulerRuntime.scheduleRepeats(state, occurrence, now)
+end
+
+-- Activate the already-current Event after lifecycle or configuration transitions.
+-- When optionName is nil, every enabled stateful Action reconciles immediately.
+function FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, state, occurrence, optionName, reason, now)
+  state.activeOccurrence = occurrence
+  state.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(occurrence)
+  state.lastTransitionReason = reason
+  FugSchedulerRuntime.clearRepeats(state)
+  if not occurrence then return end
+
+  for actionIndex, eventAction in ipairs(occurrence.event.actions or {}) do
+    if eventAction.enabled ~= false and not eventAction.oneShot and
+        (optionName == nil or eventAction[optionName] == true) then
+      FugSchedulerRuntime.executeEventAction(scheduler, occurrence, eventAction, actionIndex, reason)
+    end
+  end
+  FugSchedulerRuntime.scheduleRepeats(state, occurrence, now)
+end
+
+-- Return every Event occurrence crossed during one ordinary polling interval.
+function FugSchedulerRuntime.crossedOccurrences(scheduler, fromTimestamp, toTimestamp)
+  local targetDate = os.date("%Y-%m-%d", toTimestamp)
+  local timeline = FugSchedulerRuntime.collectTimeline(scheduler, targetDate, 2)
+  local crossed = {}
+  for _, occurrence in ipairs(timeline) do
+    if occurrence.timestamp > fromTimestamp and occurrence.timestamp <= toTimestamp then
+      table.insert(crossed, occurrence)
+    end
+  end
+  return crossed
+end
+
+-- Run due repeats once and reschedule from now so delayed polls never create callback bursts.
+function FugSchedulerRuntime.processRepeats(scheduler, state, currentOccurrence, now)
+  if not currentOccurrence or state.activeOccurrenceKey ~= FugSchedulerRuntime.occurrenceKey(currentOccurrence) then return end
+
+  for actionIndex, eventAction in ipairs(currentOccurrence.event.actions or {}) do
+    local repeatState = state.repeatDeadlines[actionIndex]
+    local shouldRepeat = eventAction.enabled ~= false and not eventAction.oneShot and eventAction.repeatSeconds ~= nil
+    local repeatMatches = repeatState and repeatState.actionId == eventAction.actionId and
+      repeatState.repeatSeconds == eventAction.repeatSeconds
+    if shouldRepeat and not repeatMatches then
+      state.repeatDeadlines[actionIndex] = {
+        due = now + eventAction.repeatSeconds,
+        actionId = eventAction.actionId,
+        repeatSeconds = eventAction.repeatSeconds
+      }
+    elseif not shouldRepeat then
+      state.repeatDeadlines[actionIndex] = nil
+    end
+  end
+
+  for actionIndex, repeatState in pairs(state.repeatDeadlines or {}) do
+    local eventAction = currentOccurrence.event.actions[actionIndex]
+    local assignmentStillMatches = eventAction and eventAction.enabled ~= false and not eventAction.oneShot and
+      eventAction.actionId == repeatState.actionId and eventAction.repeatSeconds == repeatState.repeatSeconds
+    if not assignmentStillMatches then
+      state.repeatDeadlines[actionIndex] = nil
+    elseif repeatState.due <= now then
+      FugSchedulerRuntime.executeEventAction(scheduler, currentOccurrence, eventAction, actionIndex, "repeat")
+      repeatState.due = now + eventAction.repeatSeconds
+    end
+  end
+end
+
+-- Advance one Scheduler's live execution state while preserving resolver operation when blocked.
+function FugSchedulerRuntime.processSchedulerExecution(scheduler, now)
+  local state = FugSchedulerRuntime.executionState(scheduler.id)
+  local result = FugSchedulerRuntime.resolveAt(scheduler, now, 2)
+  if not result.current then result = FugSchedulerRuntime.resolveAt(scheduler, now, 31) end
+  local currentOccurrence = result.current
+  local currentKey = FugSchedulerRuntime.occurrenceKey(currentOccurrence)
+  local allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler.enabled and not scheduler.paused
+
+  if not state.initialized then
+    state.initialized = true
+    state.lastObservedTimestamp = now
+    state.lastEnabled = scheduler.enabled
+    state.lastPaused = scheduler.paused
+    state.activeOccurrence = currentOccurrence
+    state.activeOccurrenceKey = currentKey
+    state.lastTransitionReason = "Initialized"
+    if allowed then
+      FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, state, currentOccurrence, "fireOnStartup", "startup", now)
+    end
+    return
+  end
+
+  local elapsed = now - state.lastObservedTimestamp
+  if elapsed < 0 then
+    state.activeOccurrence = currentOccurrence
+    state.activeOccurrenceKey = currentKey
+    state.lastTransitionReason = "Clock moved backwards"
+    FugSchedulerRuntime.clearRepeats(state)
+    FugSchedulerRuntime.setExecutionMessage("Clock moved backwards; execution state reset without replay")
+  elseif not FugSchedulerRuntime.automaticExecutionEnabled() or not scheduler.enabled then
+    state.activeOccurrence = currentOccurrence
+    state.activeOccurrenceKey = currentKey
+    state.lastTransitionReason = not scheduler.enabled and "Scheduler disabled" or "Automatic execution disabled"
+    FugSchedulerRuntime.clearRepeats(state)
+  elseif scheduler.paused then
+    state.activeOccurrence = currentOccurrence
+    state.activeOccurrenceKey = currentKey
+    state.lastTransitionReason = "Scheduler paused"
+    FugSchedulerRuntime.clearRepeats(state)
+  elseif state.lastEnabled == false and scheduler.enabled then
+    FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, state, currentOccurrence, "fireOnStartup", "enabled", now)
+  elseif state.lastPaused == true and not scheduler.paused then
+    FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, state, currentOccurrence, "fireOnResume", "resume", now)
+  elseif elapsed > FugSchedulerRuntime.normalEdgeMaxDelaySeconds then
+    FugSchedulerRuntime.restoreCurrentOccurrence(
+      scheduler,
+      state,
+      currentOccurrence,
+      "fireOnStartup",
+      "forward clock jump or delayed poll",
+      now
+    )
+    FugSchedulerRuntime.setExecutionMessage(
+      string.format("%s skipped historical one-shots after a %d-second clock discontinuity", scheduler.label, elapsed)
+    )
+  else
+    local crossed = FugSchedulerRuntime.crossedOccurrences(scheduler, state.lastObservedTimestamp, now)
+    if #crossed > 0 then
+      for _, occurrence in ipairs(crossed) do
+        FugSchedulerRuntime.executeOccurrence(scheduler, state, occurrence, "scheduled edge", now)
+      end
+    elseif state.activeOccurrenceKey ~= currentKey then
+      FugSchedulerRuntime.restoreCurrentOccurrence(
+        scheduler,
+        state,
+        currentOccurrence,
+        nil,
+        "schedule change",
+        now
+      )
+    end
+    FugSchedulerRuntime.processRepeats(scheduler, state, currentOccurrence, now)
+  end
+
+  state.lastObservedTimestamp = now
+  state.lastEnabled = scheduler.enabled
+  state.lastPaused = scheduler.paused
+end
+
+-- Poll every Scheduler independently so one resolver or callback failure cannot stop the others.
+function FugSchedulerRuntime.executionPoll()
+  if not FugSchedulerRuntime.activeSchedule then return end
+  local now = os.time()
+  local existing = {}
+  for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
+    existing[scheduler.id] = true
+    local processOk, processError = pcall(FugSchedulerRuntime.processSchedulerExecution, scheduler, now)
+    if not processOk then
+      local state = FugSchedulerRuntime.executionState(scheduler.id)
+      state.lastCallbackResult = "Execution error: " .. tostring(processError)
+      FugSchedulerRuntime.setExecutionMessage(
+        "Execution error for Scheduler " .. scheduler.id .. ": " .. tostring(processError)
+      )
+    end
+  end
+  for schedulerId in pairs(FugSchedulerRuntime.executionStates) do
+    if not existing[schedulerId] then FugSchedulerRuntime.executionStates[schedulerId] = nil end
+  end
+end
+
+-- Create and retain the Q-SYS timer that drives live edge detection and repeats.
+function FugSchedulerRuntime.startExecutionTimer()
+  if FugSchedulerRuntime.executionTimer then return end
+  FugSchedulerRuntime.executionTimer = Timer.New()
+  FugSchedulerRuntime.executionTimer.EventHandler = function() FugSchedulerRuntime.executionPoll() end
+  FugSchedulerRuntime.executionTimer:Start(FugSchedulerRuntime.executionPollSeconds)
+end
+
 -- Convert one Event occurrence into the stable machine-readable status contract.
 function FugSchedulerRuntime.eventStatus(item)
   if not item then return nil end
@@ -2428,6 +2866,7 @@ function FugSchedulerRuntime.eventStatus(item)
       enabled = eventAction.enabled ~= false,
       oneShot = eventAction.oneShot == true,
       fireOnStartup = eventAction.fireOnStartup == true,
+      fireOnResume = eventAction.fireOnResume == true,
       repeatSeconds = eventAction.repeatSeconds
     })
   end
@@ -2473,6 +2912,9 @@ function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveErro
   end
 
   local nextTimestamp = result.next and result.next.timestamp or nil
+  local executionState = FugSchedulerRuntime.executionState(scheduler.id)
+  local repeatCount = 0
+  for _ in pairs(executionState.repeatDeadlines or {}) do repeatCount = repeatCount + 1 end
   return {
     id = scheduler.id,
     label = scheduler.label,
@@ -2488,6 +2930,16 @@ function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveErro
       dayPatternLabel = result.resolvedDayPattern and result.resolvedDayPattern.label or nil
     },
     resolvedDayPattern = FugSchedulerRuntime.dayPatternStatus(result.resolvedDayPattern),
+    execution = {
+      allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler.enabled and not scheduler.paused,
+      initialized = executionState.initialized,
+      activeOccurrence = FugSchedulerRuntime.eventStatus(executionState.activeOccurrence),
+      activeRepeatCount = repeatCount,
+      lastObservedTime = executionState.lastObservedTimestamp and
+        os.date("%Y-%m-%d %H:%M:%S", executionState.lastObservedTimestamp) or nil,
+      lastTransitionReason = executionState.lastTransitionReason,
+      lastCallbackResult = executionState.lastCallbackResult
+    },
     previousEvent = FugSchedulerRuntime.eventStatus(result.previous),
     currentEvent = FugSchedulerRuntime.eventStatus(result.current),
     nextEvent = FugSchedulerRuntime.eventStatus(result.next),
@@ -2509,6 +2961,7 @@ function FugSchedulerRuntime.publishGlobalStatus(timestamp, schedulerStatuses, h
       actionRegistryValid = #FugSchedulerRuntime.orderedActions > 0,
       warningCount = #FugSchedulerRuntime.scheduleWarnings
     },
+    automaticExecutionEnabled = Controls.AutomaticExecutionEnabled and Controls.AutomaticExecutionEnabled.Boolean == true or false,
     schedulers = schedulerStatuses
   }
 
@@ -2616,7 +3069,7 @@ function FugSchedulerRuntime.reloadSchedule()
   return true
 end
 
--- Refresh the aggregate plugin state without enabling automatic Event execution.
+-- Refresh the aggregate plugin state and report whether automatic execution is armed.
 function FugSchedulerRuntime.refreshStatus()
   local schedulerCount, enabledCount = 0, 0
   if FugSchedulerRuntime.activeSchedule then
@@ -2625,10 +3078,12 @@ function FugSchedulerRuntime.refreshStatus()
       if scheduler.enabled then enabledCount = enabledCount + 1 end
     end
   end
+  local executionState = FugSchedulerRuntime.automaticExecutionEnabled() and "ARMED" or "OFF"
   FugSchedulerRuntime.setText("Status", string.format(
-    "Resolution spike ready; %d/%d Schedulers enabled; automatic Event execution is off",
+    "Scheduler ready; %d/%d Schedulers enabled; automatic execution %s",
     enabledCount,
-    schedulerCount
+    schedulerCount,
+    executionState
   ))
 end
 
@@ -2652,6 +3107,21 @@ end
 function FugSchedulerRuntime.attachHandlers()
   if Controls.ActionSource then
     Controls.ActionSource.EventHandler = function() FugSchedulerRuntime.reloadActions() end
+  end
+
+  if Controls.AutomaticExecutionEnabled then
+    Controls.AutomaticExecutionEnabled.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingExecutionControl then return end
+      FugSchedulerRuntime.executionStates = {}
+      if control.Boolean then
+        FugSchedulerRuntime.setExecutionMessage("Automatic execution armed; initializing live Scheduler state")
+        FugSchedulerRuntime.executionPoll()
+      else
+        FugSchedulerRuntime.setExecutionMessage("Automatic execution disabled; callbacks and repeats are blocked")
+      end
+      FugSchedulerRuntime.refreshStatus()
+      FugSchedulerRuntime.resolveSelectedTime()
+    end
   end
 
   if Controls.ScheduleData then
@@ -2844,6 +3314,76 @@ function FugSchedulerRuntime.attachHandlers()
       local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
       FugSchedulerRuntime.selectedEventActionIndexes[key] = tonumber(FugSchedulerRuntime.choiceId(control.String))
       FugSchedulerRuntime.refreshDayPatternEditor("Event Action selected")
+    end
+  end
+
+  if Controls.EventActionEnabled then
+    Controls.EventActionEnabled.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingDayPatternEditor then return end
+      local enabled = control.Boolean
+      FugSchedulerRuntime.updateSelectedEventAction("Event Action enabled state updated", function(eventAction)
+        eventAction.enabled = enabled
+      end)
+    end
+  end
+
+  if Controls.EventActionMode then
+    Controls.EventActionMode.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingDayPatternEditor then return end
+      local mode = FugSchedulerRuntime.choiceId(control.String)
+      FugSchedulerRuntime.updateSelectedEventAction("Event Action mode updated", function(eventAction)
+        if mode == "OneShot" then
+          eventAction.oneShot = true
+          eventAction.fireOnStartup = false
+          eventAction.fireOnResume = false
+          eventAction.repeatSeconds = nil
+        elseif mode == "Stateful" then
+          eventAction.oneShot = false
+        else
+          return false, "Event Action mode must be Stateful or One Shot"
+        end
+      end)
+    end
+  end
+
+  if Controls.EventActionFireOnStartup then
+    Controls.EventActionFireOnStartup.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingDayPatternEditor then return end
+      local enabled = control.Boolean
+      FugSchedulerRuntime.updateSelectedEventAction("Startup restore option updated", function(eventAction)
+        if eventAction.oneShot then return false, "one-shot Event Actions cannot restore on startup" end
+        eventAction.fireOnStartup = enabled
+      end)
+    end
+  end
+
+  if Controls.EventActionFireOnResume then
+    Controls.EventActionFireOnResume.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingDayPatternEditor then return end
+      local enabled = control.Boolean
+      FugSchedulerRuntime.updateSelectedEventAction("Resume restore option updated", function(eventAction)
+        if eventAction.oneShot then return false, "one-shot Event Actions cannot restore on resume" end
+        eventAction.fireOnResume = enabled
+      end)
+    end
+  end
+
+  if Controls.EventActionRepeatSeconds then
+    Controls.EventActionRepeatSeconds.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingDayPatternEditor then return end
+      local text = string.match(control.String or "", "^%s*(.-)%s*$") or ""
+      FugSchedulerRuntime.updateSelectedEventAction("Repeat interval updated", function(eventAction)
+        if eventAction.oneShot and text ~= "" then return false, "one-shot Event Actions cannot repeat" end
+        if text == "" then
+          eventAction.repeatSeconds = nil
+          return
+        end
+        local seconds = tonumber(text)
+        if not seconds or seconds <= 0 or seconds % 1 ~= 0 then
+          return false, "repeat interval must be a positive whole number of seconds"
+        end
+        eventAction.repeatSeconds = seconds
+      end)
     end
   end
 
@@ -3155,6 +3695,7 @@ function FugSchedulerRuntime.initialize()
   if Controls.EventSelect then Controls.EventSelect.Choices = {} end
   if Controls.EventActionSelect then Controls.EventActionSelect.Choices = {} end
   if Controls.EventActionPicker then Controls.EventActionPicker.Choices = {} end
+  if Controls.EventActionMode then Controls.EventActionMode.Choices = {} end
   if Controls.WeekPatternSelect then Controls.WeekPatternSelect.Choices = {} end
   if Controls.OverrideSelect then Controls.OverrideSelect.Choices = {} end
   if Controls.OverrideType then Controls.OverrideType.Choices = {} end
@@ -3170,6 +3711,12 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.setText("RegisteredActionCount", "0")
   FugSchedulerRuntime.setText("SchedulerCount", "0")
   FugSchedulerRuntime.setText("GlobalSchedulerStatus", "{}")
+  FugSchedulerRuntime.setText(
+    "ExecutionStatus",
+    FugSchedulerRuntime.automaticExecutionEnabled() and
+      "Automatic execution is armed; waiting for live initialization" or
+      "Automatic execution is disabled"
+  )
   FugSchedulerRuntime.setText("ScheduleStatus", "Checking persisted ScheduleData")
   FugSchedulerRuntime.setText("SchedulerEditorStatus", "Waiting for a valid Scheduler configuration")
   FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
@@ -3178,7 +3725,7 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.setText("PreferencesStatus", "Loading presentation preferences")
   FugSchedulerRuntime.setText("BuildDateDisplay", FugSchedulerRuntime.formatBuildDate(FugSchedulerPluginInfo.BuildTimestamp))
   FugSchedulerRuntime.refreshStatus()
-  FugSchedulerRuntime.logLine("FugScheduler 2000 resolution spike initialized.")
+  FugSchedulerRuntime.logLine("FugScheduler 2000 scheduler runtime initialized.")
 
   if Controls.ScheduleData and (Controls.ScheduleData.String or "") == "" then
     FugSchedulerRuntime.writingScheduleData = true
@@ -3197,6 +3744,7 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.reloadActions()
   FugSchedulerRuntime.scheduleInitialized = true
   FugSchedulerRuntime.reloadSchedule()
+  FugSchedulerRuntime.startExecutionTimer()
 end
 
 FugSchedulerRuntime.attachHandlers()

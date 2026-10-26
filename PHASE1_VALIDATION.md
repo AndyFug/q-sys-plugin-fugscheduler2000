@@ -288,6 +288,52 @@ Validated in development build `0.1.0.11`:
 - Build `0.1.0.17` doubled the Pattern-to-Start section gap from 10 to 20 pixels while retaining all internal date-section spacing. The reloaded component fingerprint changed to `c68207ce40759824bb8af08b45ba0b69`; matching runtime deployment completed with both scripts healthy.
 - Build `0.1.0.18` fixed overlapping invalid-date and friendly-date text by clearing the friendly-date control while its red validation control is active. The component fingerprint changed to `3303075343396c4c2c1b875301a69293`; the updated date test completed 54 assertions with byte-for-byte restoration and both scripts healthy.
 
+## Guarded Event execution implementation
+
+Implemented in source; design reload and QRC acceptance remain pending:
+
+- [x] Added explicit Event Action enabled, Stateful/One Shot, restore-on-start, restore-on-resume, and repeat interval editing.
+- [x] Added validation that one-shot assignments cannot restore or repeat.
+- [x] Added optional Action Registry defaults that are copied into a new Event Action once at attachment time.
+- [x] Added a persistent plugin-wide `AutomaticExecutionEnabled` safety control that defaults off for new controls.
+- [x] Added independent per-Scheduler occurrence tracking and a retained one-second Q-SYS timer.
+- [x] Added ordered execution for all Events crossed in an ordinary poll interval, including duplicate-time persisted order.
+- [x] Added startup/enable restoration, resume restoration, missed one-shot suppression, repeat scheduling without catch-up bursts, and callback isolation.
+- [x] Added backward-clock reset and forward-discontinuity handling that skips historical one-shots and restores only the current configured state.
+- [x] Added runtime execution details to `GlobalSchedulerStatus` without serializing them into `ScheduleData`.
+- [x] Added `tests/qrc/validate_execution.py` for guarded startup, repeat, pause, resume, one-shot suppression, and guaranteed restoration.
+- [x] Deploy the design-time plugin while emulation is stopped and confirm the new controls appear after restart.
+- [x] Confirm the master execution guard remains off across initial design reload and blocks callbacks and repeats.
+- [ ] Validate normal edge ordering, duplicate-time ordering, callback failure isolation, and unavailable Action handling.
+- [x] Validate startup, Scheduler enable, pause, resume, and repeat behavior for stateful Event Actions.
+- [ ] Validate that one-shots are not replayed on startup, enable, resume, or forward clock discontinuity; startup, enable, and resume are complete.
+- [x] Validate repeat timers restart from resume time without catch-up bursts.
+- [x] Run existing Week Pattern and Override regression tests with the execution guard off and restore persistent controls byte-for-byte.
+
+Pause-until-next-Event, timed pause, next-day pause policy, and Advance to Next Event remain the next operational transport slice.
+
+### QRC findings — guarded Event execution
+
+Validated against the active `fugscheduler2000_test` Designer emulator:
+
+- Before deployment, QRC confirmed the expected active design and the prior 121-control component. The user stopped emulation, the generated `.qplug` was deployed with a matching SHA-256 hash, and emulation was restarted.
+- The reloaded plugin exposes 128 controls, including all seven new execution and Event Action option controls.
+- `SchedulerRuntimeProvider` accepted the current `src/runtime.lua` byte-for-byte; both scripts reported `OK` with zero errors.
+- The plugin-wide automatic-execution guard remained off after design reload. The execution test also refused to begin unless the guard was off.
+- A temporary enabled Scheduler restored its current stateful Action on engine startup, while the one-shot assignment in the same Event did not replay.
+- A two-second repeat fired while active, stopped throughout pause, restarted from resume, and did not produce a catch-up burst.
+- Resume restored the configured stateful Action and did not replay the current one-shot Action.
+- Turning the master guard off blocked subsequent repeats and returned aggregate status to `automatic execution OFF`.
+- Event Action editor controls displayed the persisted enabled, Stateful, startup, resume, and repeat values correctly.
+- Runtime execution state remained absent from serialized `ScheduleData`.
+- `tests/qrc/validate_execution.py` completed 29 assertions and restored `ScheduleData`, `TestDateTime`, and the master guard.
+- Adding a later current Event through a schedule edit immediately reconciled that Event's stateful Action even with startup/resume restoration disabled.
+- Moving that Event into the future immediately restored the preceding stateful Event, skipped its one-shot Action, and restarted its repeat interval from the edit time.
+- Regression results: Week Patterns 42 assertions, Overrides 48 assertions, and Override Dates 54 assertions. Every test restored persistent controls byte-for-byte.
+- Final state: expected emulator design active, master execution guard false, plugin and runtime-provider scripts `OK`, and zero script errors.
+
+Remaining execution validation covers real scheduled edges, equal-time Event ordering, callback failure/unavailable Action isolation, and forward/backward clock discontinuities.
+
 ## Build validation
 
 - [x] Run `python3 scripts/compile_plugin.py` successfully.
