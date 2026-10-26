@@ -304,9 +304,9 @@ Implemented in source; design reload and QRC acceptance remain pending:
 - [x] Added `tests/qrc/validate_execution.py` for guarded startup, repeat, pause, resume, one-shot suppression, and guaranteed restoration.
 - [x] Deploy the design-time plugin while emulation is stopped and confirm the new controls appear after restart.
 - [x] Confirm the master execution guard remains off across initial design reload and blocks callbacks and repeats.
-- [ ] Validate normal edge ordering, duplicate-time ordering, callback failure isolation, and unavailable Action handling.
+- [x] Validate normal edge ordering, duplicate-time ordering, callback failure isolation, and unavailable Action handling.
 - [x] Validate startup, Scheduler enable, pause, resume, and repeat behavior for stateful Event Actions.
-- [ ] Validate that one-shots are not replayed on startup, enable, resume, or forward clock discontinuity; startup, enable, and resume are complete.
+- [ ] Validate that one-shots are not replayed on startup, enable, resume, or forward clock discontinuity; startup, enable, resume, and schedule-change coverage are complete, while deterministic forward-discontinuity injection remains blocked.
 - [x] Validate repeat timers restart from resume time without catch-up bursts.
 - [x] Run existing Week Pattern and Override regression tests with the execution guard off and restore persistent controls byte-for-byte.
 
@@ -332,7 +332,27 @@ Validated against the active `fugscheduler2000_test` Designer emulator:
 - Regression results: Week Patterns 42 assertions, Overrides 48 assertions, and Override Dates 54 assertions. Every test restored persistent controls byte-for-byte.
 - Final state: expected emulator design active, master execution guard false, plugin and runtime-provider scripts `OK`, and zero script errors.
 
-Remaining execution validation covers real scheduled edges, equal-time Event ordering, callback failure/unavailable Action isolation, and forward/backward clock discontinuities.
+### QRC findings — remaining guarded execution acceptance
+
+Validated against the active `fugscheduler2000_test` Designer emulator on 2026-10-26:
+
+- QRC confirmed `Platform = Emulator`, `State = Active`, and `DesignName = fugscheduler2000_test` before provider mutation, Scheduler mutation, the scheduled-edge phase, runtime deployment, and cleanup.
+- The first preflight found `AutomaticExecutionEnabled = true`, so testing was refused until the user disabled it. Every subsequent execution test began with the guard false and finished with it false.
+- `tests/qrc/validate_execution.py` now snapshots `ScheduleData`, `TestDateTime`, both logging preferences, the plugin `ActionSource`, and the complete `ActionProvider` `code` source. Guaranteed cleanup restored and explicitly verified every value byte-for-byte, restored the provider source byte-for-byte, and left tested momentary controls false.
+- A genuine upcoming Core-local `HH:MM` edge executed automatically. Two Events sharing that timestamp executed in persisted Event order, and all Event Actions executed in configured array order.
+- An unavailable Action logged Error and did not prevent the following failing and successful Actions. A deliberately failing callback remained isolated by `pcall`, logged Error with its failure text, and did not prevent the following successful Action or the next same-time Event.
+- Successful edge execution logged at Info with Scheduler, Event, Action, action index, and `reason=scheduled edge` context. A two-second repeat after the initial edge logged at Debug.
+- The scheduled one-shot executed exactly once at its edge. Separate lifecycle coverage confirmed current one-shots did not replay on startup, Scheduler enable, resume, or schedule change.
+- `ExecutionStatus` retained the latest scheduled execution result, and serialized `ScheduleData` contained no runtime-only `_...` state.
+- Commands run: `python3 scripts/compile_plugin.py`; unresolved-include scan with `rg`; verified runtime deployment with `qsys-qrc.cjs ... deploy SchedulerRuntimeProvider src/runtime.lua`; `python3 tests/qrc/validate_execution.py`; and `python3 tests/qrc/validate_logging.py`.
+- The local compile succeeded and `FugScheduler2000.qplug` contained no unresolved include directives. No design-time declarations changed, so no `.qplug` redeployment or emulation restart was required.
+- The expanded execution test completed 56 assertions. `tests/qrc/validate_logging.py` then completed 18 regression assertions. Both tests confirmed restoration.
+- During test development, four rapid post-edge visual-editor transactions caused Q-SYS `Max execution limits exceeded` diagnostics. The acceptance test was corrected to avoid unnecessary rapid editor mutations; no product runtime change was required. The plugin script was explicitly reloaded, the corrected test passed, and final script health returned to `OK` with zero errors.
+- `TestDateTime` is resolver-only, while live execution polling calls `os.time()` directly. No existing validated QRC, control, or documented Q-SYS API can inject a backward or forward live clock discontinuity. Host, emulator, and Core clocks were not changed. Backward-reset and forward-skip/state-restoration behavior therefore remain code-reviewed but not deterministically QRC-validated; implementing a test seam requires a separate proposal and approval.
+- Final observed persistent states after byte-for-byte restoration were Debug Output `Info` and Event Log `Info`, matching the values present at test start. This differs from the documented default Event Log `Off` but was preserved as required rather than overwritten. Automatic execution finished false.
+- Final health: `AndyFugFugScheduler2000`, `SchedulerRuntimeProvider`, and `ActionProvider` all reported `OK` with zero script errors.
+
+Remaining execution validation is limited to deterministic backward/forward clock-discontinuity behavior once a safe supported injection mechanism or approved test seam exists.
 
 ## Centralized logging implementation
 

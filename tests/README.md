@@ -25,7 +25,9 @@ These tests manipulate the active plugin component. Before running them:
 2. Confirm the expected controls exist and both the plugin and runtime provider report `OK` with zero script errors.
 3. Ensure the required design-time `.qplug` was deployed while emulation was stopped, then restart emulation before runtime deployment or testing.
 
-`validate_execution.py` additionally requires the safe `Callback1` and `Callback2` provider from `references/action_source_test.lua`. It refuses to begin when the master automatic-execution guard is already armed, uses only callbacks that print test messages, and restores the guard off afterward.
+`validate_execution.py` additionally requires the `ActionProvider` Text Controller connected to the plugin's `ActionSource` input. It refuses to begin when the master automatic-execution guard is already armed. The test snapshots the provider's complete `code` source byte-for-byte, temporarily installs safe print callbacks plus one deliberately failing callback, and restores and verifies the original provider source during guaranteed cleanup. It uses a genuine upcoming `HH:MM` edge, so allow up to roughly 95 seconds for the focused edge phase.
+
+`TestDateTime` affects deterministic resolver display only; live execution polling uses Core-local `os.time()`. The current design has no validated clock-discontinuity injection mechanism. Do not change the host/emulator/Core clock to test jumps. Backward and forward discontinuity acceptance remains blocked unless a dedicated test seam is proposed and approved.
 
 `validate_logging.py` checks normalized numeric preference IDs, basic Debug Output filtering through `log.history`, unconditional bounded DiagnosticLog routing, and preference handlers. Core Event Log visibility still requires a brief Designer observation because the current test design does not expose an Event Log component through QRC.
 
