@@ -225,6 +225,68 @@ Validated against the active `fugscheduler2000_test` Designer emulator through Q
 - The original `ScheduleData` was restored byte-for-byte after testing.
 - `SchedulerRuntimeProvider` and `AndyFugFugScheduler2000` both finished with script status `OK` and zero errors.
 
+## Override date editing implementation
+
+Implemented and QRC-validated in development build `0.1.0.10`:
+
+- [x] Added a persistent presentation-only Date Format preference with `DMY`, `MDY`, and `ISO` stable IDs on a Preferences page.
+- [x] Kept canonical Override dates in `ScheduleData` as ISO `YYYY-MM-DD` values.
+- [x] Added runtime-only selected-Override Start/End text buffering so invalid text remains visible without changing configuration or resolver state.
+- [x] Added fixed-English long-form date displays, separate red ordinary-text validation messages, and an inclusive range summary.
+- [x] Added atomic Start edits that preserve duration, End edits that change duration, `-1 Day`, `Today`, `+1 Day`, and `1 Day` operations.
+- [x] Used Core-local `os.date`, `os.time`, and `os.difftime` with local-midday normalization for calendar arithmetic.
+- [x] Added `tests/qrc/validate_override_dates.py` and updated the existing Override test for buffered invalid input and preference restoration.
+- [x] Local include compilation succeeds and the generated artifact contains no unresolved include directives.
+- [x] Confirmed the final rebuilt `.qplug` was deployed while simulation was stopped.
+- [x] Ran the new date test plus existing Override and Week Pattern regression tests and recorded assertion counts.
+- [x] Confirmed date preference persistence across a complete Designer stop/start cycle.
+
+Validation blocker on 2026-10-26:
+
+- QRC `StatusGet` and direct TCP connection attempts to `10.211.55.4:1710` timed out before and after the initial design-time deployment.
+- The host could reach the emulator, but the dev container selected its `192.168.215.1` gateway and could not establish TCP connectivity to the emulator subnet.
+- No runtime deployment or plugin control manipulation occurred while the expected active design could not be identified through QRC.
+- Restarting the dev container restored connectivity; subsequent sessions confirmed `Platform = Emulator`, `State = Active`, and `DesignName = fugscheduler2000_test` before every deployment or mutation phase.
+- The official SDK documents `TextColor` as a design-time layout property but does not document a writable runtime Text-control color property. The implementation therefore uses a separate red ordinary-text validation control rather than inventing an unsupported API.
+
+### QRC findings — Override date editing
+
+Validated against the active `fugscheduler2000_test` Designer emulator through QRC:
+
+- The final plugin component fingerprint is `83e65d5c6a1bc2e03379bab4fda9a323`, changed from the prior documented build fingerprint `e59013699ad34d3fd8c5bf3208be2973`; all 115 component controls were present.
+- The Preferences page exposed structured `DMY`, `MDY`, and `ISO` choices with neutral labels `dd/mm/yyyy`, `mm/dd/yyyy`, and `yyyy-mm-dd`.
+- Preference changes and a complete Designer stop/start persistence check left `ScheduleData`, revision, and resolver status unchanged; the original preference was restored byte-for-byte afterward.
+- Canonical ISO dates rendered and committed correctly in all three preferences. One-digit day/month input normalized to two digits.
+- Invalid formatting, invalid calendar dates, and End-before-Start text remained visible in the runtime-only buffer while JSON, revision, resolver output, and selections remained unchanged.
+- Separate red ordinary-text validation controls displayed field errors because a writable runtime Text-control color API is not documented.
+- Fixed-English long-form dates and inclusive summaries rendered correctly, including `3 days inclusive` for 24–26 December 2026.
+- Start edits preserved range duration and committed Start/End together in one revision; End edits changed duration in one revision.
+- `1 Day` collapsed End to Start; `-1 Day` and `+1 Day` initially shifted the complete range, then were refined in build `0.1.0.13` to shorten or extend duration by moving only End. `Today` remains the only convenience action that moves Start and preserves duration.
+- Leap-day, year, and configured spring DST-boundary duration changes retained the expected calendar-day behavior using local-midday platform normalization.
+- Invalid buffers were discarded safely when changing Override or Scheduler, and no runtime `_...` keys or date buffer fields entered `ScheduleData`.
+- `tests/qrc/validate_override_dates.py` completed 44 assertions.
+- Updated `tests/qrc/validate_overrides.py` completed 46 assertions; `tests/qrc/validate_week_patterns.py` completed 42 assertions.
+- Every test restored `ScheduleData` byte-for-byte; date tests also restored `DateFormatPreference` byte-for-byte.
+- Automatic scheduled callback execution remained disabled, all momentary controls finished false, and both scripts finished with status `OK` and zero errors.
+
+## Overrides layout refinement
+
+Validated in development build `0.1.0.11`:
+
+- Stacked the compact Type and Pattern ComboBoxes so each label sits directly beside its field.
+- Tightened Start and End date row spacing while retaining dedicated validation-message space.
+- Replaced the large coloured range convenience buttons with a compact centred neutral-grey group.
+- Deployed the design-time plugin while simulation was stopped; the component fingerprint changed to `754de19e3030fc424ba6a489cdaebc88`.
+- Confirmed the unchanged control set, existing `ScheduleData`, and date preference remained intact after restart.
+- Deployed the matching runtime source byte-for-byte; both scripts reported `OK` with zero errors.
+- Follow-up build `0.1.0.12` matched the Type and Pattern ComboBox widths to the 270-pixel Label field width; the reloaded component fingerprint changed to `05fba2a8c9c9a5e850282a9983ebb500` with persistent values intact.
+- Build `0.1.0.13` changed the neutral-grey convenience button text to white and refined `-1 Day`/`+1 Day` as End-only duration controls. The date test completed 46 assertions with byte-for-byte restoration before deployment; the reloaded component fingerprint changed to `b64e8d1e37a87931ab02de6760ea5470` and both scripts reported `OK` with zero errors.
+- Build `0.1.0.14` moved compact convenience controls beside their associated date entries and moved each friendly resolved date beneath its entry. Start provides `Today`, ±1 Day, and ±1 Week while preserving duration; End provides `1 Day`, ±1 Day, and ±1 Week while changing duration. The component now exposes 121 controls with fingerprint `d6db0c7a9c3fc6400f7352b792987032`; the expanded date test completed 54 assertions and restored both persistent values byte-for-byte.
+- Build `0.1.0.15` moved the complete End Date row upward by 5 pixels, but the visual change was too subtle.
+- Build `0.1.0.16` uses an exact 8-pixel gap between the Start friendly-date line and the End entry row by overlaying the mutually exclusive validation text on the friendly-date line. The End row is 13 pixels above its original build-0.1.0.14 position; the reloaded component fingerprint changed to `fbd108d305d50acd7535300d3d54cb03`, the deployed artifact hash matched the generated file, and both scripts reported `OK` with zero errors.
+- Build `0.1.0.17` doubled the Pattern-to-Start section gap from 10 to 20 pixels while retaining all internal date-section spacing. The reloaded component fingerprint changed to `c68207ce40759824bb8af08b45ba0b69`; matching runtime deployment completed with both scripts healthy.
+- Build `0.1.0.18` fixed overlapping invalid-date and friendly-date text by clearing the friendly-date control while its red validation control is active. The component fingerprint changed to `3303075343396c4c2c1b875301a69293`; the updated date test completed 54 assertions with byte-for-byte restoration and both scripts healthy.
+
 ## Build validation
 
 - [x] Run `python3 scripts/compile_plugin.py` successfully.

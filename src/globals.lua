@@ -33,7 +33,7 @@ end
 
 -- Return the page names implied by the current design-time properties.
 function pageNames(props)
-  local names = {"Overview", "Schedules", "Day Patterns", "Week Patterns", "Overrides", "Actions"}
+  local names = {"Overview", "Schedules", "Day Patterns", "Week Patterns", "Overrides", "Actions", "Preferences"}
   if propValue(props, "Show Diagnostics Page", true) then
     table.insert(names, "Diagnostics")
   end

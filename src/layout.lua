@@ -288,55 +288,59 @@ function GetControlLayout(props)
       PrettyName = "Overrides~Selected Scheduler"
     })
 
-    ui:group("Overrides", ui:rect(10, 82, 320, 356))
-    ui:control("OverrideSelect", "ListBox", ui:rect(24, 110, 292, 190), {
+    ui:group("Overrides", ui:rect(10, 82, 280, 356))
+    ui:control("OverrideSelect", "ListBox", ui:rect(24, 110, 252, 190), {
       PrettyName = "Overrides~Selected Override",
       FontSize = 10
     })
-    ui:button("AddOverride", ui:rect(24, 312, 78, 28), {
+    ui:button("AddOverride", ui:rect(24, 312, 68, 28), {
       ButtonStyle = "Momentary", Legend = "Add", Color = ui:color("schedule")
     })
-    ui:button("DuplicateOverride", ui:rect(108, 312, 104, 28), {
+    ui:button("DuplicateOverride", ui:rect(98, 312, 88, 28), {
       ButtonStyle = "Momentary", Legend = "Duplicate", Color = ui:color("accent")
     })
-    ui:button("DeleteOverride", ui:rect(218, 312, 98, 28), {
+    ui:button("DeleteOverride", ui:rect(192, 312, 84, 28), {
       ButtonStyle = "Momentary", Legend = "Delete", Color = ui:color("danger")
     })
-    ui:button("MoveOverrideUp", ui:rect(24, 354, 140, 28), {
+    ui:button("MoveOverrideUp", ui:rect(24, 354, 120, 28), {
       ButtonStyle = "Momentary", Legend = "Move Up", Color = ui:color("accent")
     })
-    ui:button("MoveOverrideDown", ui:rect(176, 354, 140, 28), {
+    ui:button("MoveOverrideDown", ui:rect(156, 354, 120, 28), {
       ButtonStyle = "Momentary", Legend = "Move Down", Color = ui:color("accent")
     })
 
-    ui:group("Override Details", ui:rect(340, 82, 550, 356))
-    FugSchedulerUi.overrideField(ui, "Label", "OverrideLabel", "Text", 110, {
-      PrettyName = "Overrides~Label"
-    })
-    ui:label("Enabled", ui:rect(350, 148, 104, 22), {Color = ui:color("mutedText")})
-    ui:button("OverrideEnabled", ui:rect(458, 146, 130, 28), {
+    ui:group("Override Details", ui:rect(300, 82, 590, 356))
+    ui:label("Label", ui:rect(314, 106, 88, 22), {Color = ui:color("mutedText")})
+    ui:textControl("OverrideLabel", ui:rect(406, 104, 270, 26), {PrettyName = "Overrides~Label"})
+    ui:button("OverrideEnabled", ui:rect(690, 104, 180, 28), {
       ButtonStyle = "Toggle", Legend = "Enabled", Color = ui:color("accent")
     })
-    FugSchedulerUi.overrideField(ui, "Type", "OverrideType", "ComboBox", 184, {
-      PrettyName = "Overrides~Type"
+    ui:label("Type", ui:rect(314, 144, 88, 22), {Color = ui:color("mutedText")})
+    ui:control("OverrideType", "ComboBox", ui:rect(406, 142, 270, 26), {PrettyName = "Overrides~Type"})
+    ui:label("Pattern", ui:rect(314, 178, 88, 22), {Color = ui:color("mutedText")})
+    ui:control("OverridePattern", "ComboBox", ui:rect(406, 176, 270, 26), {PrettyName = "Overrides~Pattern"})
+
+    FugSchedulerUi.overrideDateField(ui, "Start Date", "OverrideStartDate", "OverrideStartDateLongForm", "OverrideStartDateValidation", 222)
+    FugSchedulerUi.overrideDateButton(ui, "SetOverrideRangeToday", "Today", 576, 223)
+    FugSchedulerUi.overrideDateButton(ui, "ShiftOverrideStartBackDay", "-1 Day", 634, 223)
+    FugSchedulerUi.overrideDateButton(ui, "ShiftOverrideStartForwardDay", "+1 Day", 692, 223)
+    FugSchedulerUi.overrideDateButton(ui, "ShiftOverrideStartBackWeek", "-1 Wk", 750, 223)
+    FugSchedulerUi.overrideDateButton(ui, "ShiftOverrideStartForwardWeek", "+1 Wk", 808, 223)
+
+    FugSchedulerUi.overrideDateField(ui, "End Date", "OverrideEndDate", "OverrideEndDateLongForm", "OverrideEndDateValidation", 275)
+    FugSchedulerUi.overrideDateButton(ui, "SetOverrideRangeOneDay", "1 Day", 576, 276)
+    FugSchedulerUi.overrideDateButton(ui, "ShiftOverrideRangeBack", "-1 Day", 634, 276)
+    FugSchedulerUi.overrideDateButton(ui, "ShiftOverrideRangeForward", "+1 Day", 692, 276)
+    FugSchedulerUi.overrideDateButton(ui, "ShiftOverrideEndBackWeek", "-1 Wk", 750, 276)
+    FugSchedulerUi.overrideDateButton(ui, "ShiftOverrideEndForwardWeek", "+1 Wk", 808, 276)
+
+    ui:textControl("OverrideRangeSummary", ui:rect(314, 325, 556, 38), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Center", VTextAlign = "Center",
+      WordWrap = true, TextColor = ui:color("controlText"), FontSize = 10
     })
-    FugSchedulerUi.overrideField(ui, "Start Date", "OverrideStartDate", "Text", 222, {
-      PrettyName = "Overrides~Start Date", HTextAlign = "Center"
-    })
-    FugSchedulerUi.overrideField(ui, "End Date", "OverrideEndDate", "Text", 260, {
-      PrettyName = "Overrides~End Date", HTextAlign = "Center"
-    })
-    FugSchedulerUi.overrideField(ui, "Pattern", "OverridePattern", "ComboBox", 298, {
-      PrettyName = "Overrides~Pattern"
-    })
-    ui:textControl("OverrideSummary", ui:rect(358, 344, 514, 58), {
-      IsReadOnly = true,
-      TextBoxStyle = "NoBackground",
-      HTextAlign = "Center",
-      VTextAlign = "Center",
-      WordWrap = true,
-      TextColor = ui:color("controlText"),
-      FontSize = 10
+    ui:textControl("OverrideSummary", ui:rect(314, 367, 556, 24), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Center", VTextAlign = "Center",
+      WordWrap = true, TextColor = ui:color("mutedText"), FontSize = 9
     })
 
     FugSchedulerUi.editorStatus(
@@ -367,6 +371,17 @@ function GetControlLayout(props)
     })
     FugSchedulerUi.statusField(ui, "Registry status", "RegistryStatus", ui:rect(28, 224, 632, 24))
     FugSchedulerUi.statusField(ui, "Action count", "RegisteredActionCount", ui:rect(28, 256, 632, 24))
+
+  elseif page == "Preferences" then
+    ui:group("Presentation Preferences", ui:rect(10, 44, 880, 400))
+    ui:label("Date format", ui:rect(32, 82, 180, 24), {Color = ui:color("mutedText")})
+    ui:control("DateFormatPreference", "ComboBox", ui:rect(222, 80, 250, 28), {
+      PrettyName = "Preferences~Date Format"
+    })
+    ui:label("Controls how Override dates are entered and displayed. Persisted ScheduleData always uses ISO YYYY-MM-DD.", ui:rect(32, 132, 836, 54), {
+      VTextAlign = "Top", WordWrap = true, Color = ui:color("mutedText")
+    })
+    FugSchedulerUi.editorStatus(ui, "PreferencesStatus", ui:rect(32, 210, 836, 54), "Preferences~Status")
 
   elseif page == "Diagnostics" then
     ui:group("Diagnostics", ui:rect(10, 44, 430, 400))

@@ -14,6 +14,7 @@ Run from the plugin repository root:
 ```bash
 python3 tests/qrc/validate_week_patterns.py
 python3 tests/qrc/validate_overrides.py
+python3 tests/qrc/validate_override_dates.py
 ```
 
 These tests manipulate the active plugin component. Before running them:
@@ -24,10 +25,10 @@ These tests manipulate the active plugin component. Before running them:
 
 Each stateful QRC test must:
 
-- save the original persistent control text before mutation
+- save the original persistent control text before mutation, including presentation preferences used by the test
 - create temporary Scheduler-scoped test data rather than altering user configuration in place
 - use `try/finally` restoration
-- restore `ScheduleData` byte-for-byte, not merely to equivalent decoded JSON
+- restore `ScheduleData` and any changed persistent preference controls byte-for-byte, not merely to equivalent decoded values
 - verify restoration before reporting success
 - leave momentary controls false and automatic callback execution disabled unless execution is explicitly under test
 - fail clearly if the expected active emulator design cannot be identified

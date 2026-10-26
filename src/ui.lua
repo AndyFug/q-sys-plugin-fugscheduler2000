@@ -50,14 +50,38 @@ function FugSchedulerUi.weekdayAssignment(ui, weekday, y)
   })
 end
 
--- Draw one labeled control row in the Override details panel.
-function FugSchedulerUi.overrideField(ui, label, controlName, style, y, options)
-  ui:label(label, ui:rect(350, y + 2, 104, 22), {Color = ui:color("mutedText")})
-  if style == "Text" then
-    ui:textControl(controlName, ui:rect(458, y, 408, 26), options or {})
-  else
-    ui:control(controlName, style, ui:rect(458, y, 408, 26), options or {})
-  end
+-- Draw one Override date entry with normal long-form output and a separate red validation message.
+function FugSchedulerUi.overrideDateField(ui, label, entryName, longFormName, validationName, y)
+  ui:label(label, ui:rect(314, y + 2, 88, 22), {Color = ui:color("mutedText")})
+  ui:textControl(entryName, ui:rect(406, y, 160, 26), {
+    PrettyName = "Overrides~" .. label,
+    HTextAlign = "Center"
+  })
+  ui:textControl(longFormName, ui:rect(406, y + 27, 464, 18), {
+    IsReadOnly = true,
+    TextBoxStyle = "NoBackground",
+    HTextAlign = "Left",
+    TextColor = ui:color("controlText"),
+    FontSize = 10
+  })
+  ui:textControl(validationName, ui:rect(406, y + 27, 464, 18), {
+    IsReadOnly = true,
+    TextBoxStyle = "NoBackground",
+    HTextAlign = "Left",
+    TextColor = ui:color("danger"),
+    FontSize = 9
+  })
+end
+
+-- Draw one compact neutral Override date convenience button.
+function FugSchedulerUi.overrideDateButton(ui, controlName, legend, x, y)
+  ui:button(controlName, ui:rect(x, y, 54, 24), {
+    ButtonStyle = "Momentary",
+    Legend = legend,
+    Color = ui:color("statusBackground"),
+    TextColor = {255, 255, 255},
+    FontSize = 9
+  })
 end
 
 -- Draw a standard explanatory panel for unfinished editor pages.

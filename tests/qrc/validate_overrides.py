@@ -95,9 +95,12 @@ def main() -> None:
     check(status["DesignName"] == DESIGN, "expected design is active")
 
     original = schedule_text()
+    original_preference = controls("DateFormatPreference")["DateFormatPreference"]["String"]
     restored = False
+    preference_restored = False
 
     try:
+        set_value("DateFormatPreference", choice("ISO", "yyyy-mm-dd"))
         required = [
             "OverrideSelect", "OverrideLabel", "OverrideEnabled", "OverrideType",
             "OverrideStartDate", "OverrideEndDate", "OverridePattern", "OverrideSummary",
@@ -155,22 +158,22 @@ def main() -> None:
         check(selected_override(schedule(), scheduler_id, override_id)["enabled"] is True,
               "Override enabled state commits true")
 
-        set_value("OverrideEndDate", "2030-01-03")
         set_value("OverrideStartDate", "2030-01-02")
+        set_value("OverrideEndDate", "2030-01-03")
         override = selected_override(schedule(), scheduler_id, override_id)
         check(override["startDate"] == "2030-01-02" and override["endDate"] == "2030-01-03",
               "valid inclusive start and end dates commit")
 
-        for invalid_value, label in [("2030-1-02", "invalid date formatting"), ("2030-02-30", "invalid calendar date")]:
+        for invalid_value, label in [("2030/1/02", "invalid date formatting"), ("2030-02-30", "invalid calendar date")]:
             before = failure_snapshot()
             set_value("OverrideStartDate", invalid_value)
-            check(failure_snapshot() == before and controls("OverrideStartDate")["OverrideStartDate"]["String"] == "2030-01-02",
-                  f"{label} is rejected and snaps back")
+            check(failure_snapshot() == before and controls("OverrideStartDate")["OverrideStartDate"]["String"] == invalid_value,
+                  f"{label} is rejected and remains buffered")
 
         before = failure_snapshot()
-        set_value("OverrideStartDate", "2030-01-04")
-        check(failure_snapshot() == before and controls("OverrideStartDate")["OverrideStartDate"]["String"] == "2030-01-02",
-              "start date after end date is rejected without state changes")
+        set_value("OverrideEndDate", "2030-01-01")
+        check(failure_snapshot() == before and controls("OverrideEndDate")["OverrideEndDate"]["String"] == "2030-01-01",
+              "end date before start is rejected without state changes")
 
         press("AddDayPattern")
         alternate_day_id = selected_id("DayPatternSelect")
@@ -295,13 +298,18 @@ def main() -> None:
 
     finally:
         set_value("ScheduleData", original)
+        set_value("DateFormatPreference", original_preference)
         restored = schedule_text() == original
+        preference_restored = controls("DateFormatPreference")["DateFormatPreference"]["String"] == original_preference
         print(f"RESTORE: {'PASS' if restored else 'FAIL'} byte-for-byte ScheduleData restoration")
+        print(f"RESTORE preference: {'PASS' if preference_restored else 'FAIL'} byte-for-byte restoration")
         if restored:
             assertions.append("original ScheduleData restored byte-for-byte")
+        if preference_restored:
+            assertions.append("original date preference restored byte-for-byte")
 
-    if not restored:
-        raise AssertionError("original ScheduleData was not restored byte-for-byte")
+    if not restored or not preference_restored:
+        raise AssertionError("original persistent values were not restored byte-for-byte")
     print(f"RESULT: {len(assertions)} assertions passed")
 
 

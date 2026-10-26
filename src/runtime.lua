@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-10-25T08:56:47Z",
-  BuildTimestamp = 1792918607
+  BuildDate = "2026-10-26T09:18:54Z",
+  BuildTimestamp = 1793006334
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -34,6 +34,8 @@ FugSchedulerRuntime = {
   updatingDayPatternEditor = false,
   updatingWeekPatternEditor = false,
   updatingOverrideEditor = false,
+  updatingPreferences = false,
+  overrideDateBuffer = nil,
   selectedDayPatternIds = {},
   selectedWeekPatternIds = {},
   selectedOverrideIds = {},
@@ -541,6 +543,65 @@ function FugSchedulerRuntime.parseDate(dateText)
   return timestamp, nil
 end
 
+-- Return the selected persistent date presentation preference, defaulting to ISO.
+function FugSchedulerRuntime.dateFormatPreference()
+  local value = Controls.DateFormatPreference and FugSchedulerRuntime.choiceId(Controls.DateFormatPreference.String) or nil
+  if value == "DMY" or value == "MDY" or value == "ISO" then return value end
+  return "ISO"
+end
+
+-- Parse a preference-formatted date and return canonical ISO text plus its local-midday timestamp.
+function FugSchedulerRuntime.parseDisplayDate(dateText, format)
+  if type(dateText) ~= "string" then return nil, nil, "Invalid date" end
+  dateText = string.match(dateText, "^%s*(.-)%s*$") or dateText
+  local year, month, day
+  if format == "DMY" then
+    day, month, year = string.match(dateText, "^(%d%d?)/(%d%d?)/(%d%d%d%d)$")
+  elseif format == "MDY" then
+    month, day, year = string.match(dateText, "^(%d%d?)/(%d%d?)/(%d%d%d%d)$")
+  else
+    year, month, day = string.match(dateText, "^(%d%d%d%d)%-(%d%d?)%-(%d%d?)$")
+  end
+  if not year then return nil, nil, "Invalid date" end
+
+  local canonical = string.format("%04d-%02d-%02d", tonumber(year), tonumber(month), tonumber(day))
+  local timestamp, parseError = FugSchedulerRuntime.parseDate(canonical)
+  if not timestamp then return nil, nil, parseError == "invalid calendar date" and "Invalid date" or tostring(parseError) end
+  return canonical, timestamp, nil
+end
+
+-- Format one canonical ISO date for the selected entry/display preference.
+function FugSchedulerRuntime.formatDisplayDate(dateText, format)
+  local timestamp = FugSchedulerRuntime.parseDate(dateText)
+  if not timestamp then return "" end
+  if format == "DMY" then return os.date("%d/%m/%Y", timestamp) end
+  if format == "MDY" then return os.date("%m/%d/%Y", timestamp) end
+  return os.date("%Y-%m-%d", timestamp)
+end
+
+-- Format one canonical ISO date with fixed English names and Core-local calendar fields.
+function FugSchedulerRuntime.formatLongDate(dateText)
+  local timestamp = FugSchedulerRuntime.parseDate(dateText)
+  if not timestamp then return "Invalid date" end
+  local parts = os.date("*t", timestamp)
+  local weekdays = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+  local months = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  }
+  return string.format("%s, %02d %s %04d", weekdays[parts.wday], parts.day, months[parts.month], parts.year)
+end
+
+-- Return whole calendar-day distance using local midday timestamps to limit DST ambiguity.
+function FugSchedulerRuntime.calendarDayDifference(startDate, endDate)
+  local startTimestamp = FugSchedulerRuntime.parseDate(startDate)
+  local endTimestamp = FugSchedulerRuntime.parseDate(endDate)
+  if not startTimestamp or not endTimestamp then return nil end
+  local elapsedDays = os.difftime(endTimestamp, startTimestamp) / 86400
+  if elapsedDays >= 0 then return math.floor(elapsedDays + 0.5) end
+  return math.ceil(elapsedDays - 0.5)
+end
+
 -- Parse and validate an HH:MM Event time and return hour, minute, and normalized minutes.
 function FugSchedulerRuntime.parseEventTime(timeText)
   if type(timeText) ~= "string" then return nil, nil, nil, "time must be a string" end
@@ -577,6 +638,12 @@ function FugSchedulerRuntime.shiftDate(dateText, dayOffset)
   parts.day = parts.day + dayOffset
   parts.hour, parts.min, parts.sec = 12, 0, 0
   return os.date("%Y-%m-%d", os.time(parts))
+end
+
+-- Return the inclusive number of calendar dates in one valid canonical range.
+function FugSchedulerRuntime.inclusiveRangeDays(startDate, endDate)
+  local difference = FugSchedulerRuntime.calendarDayDifference(startDate, endDate)
+  return difference and (difference + 1) or nil
 end
 
 -- Return true when two inclusive date ranges overlap.
@@ -1617,6 +1684,191 @@ function FugSchedulerRuntime.overrideContext(scheduler, selected)
   return priority, typeCount, overlapCount, labelMatches
 end
 
+-- Return a stable runtime-only key for the selected Override date buffer.
+function FugSchedulerRuntime.overrideDateBufferKey(scheduler, override)
+  if not scheduler or not override then return nil end
+  return scheduler.id .. "\31" .. override.id
+end
+
+-- Ensure the narrow date edit buffer targets the selected Override and selected format.
+function FugSchedulerRuntime.ensureOverrideDateBuffer(scheduler, override)
+  if not scheduler or not override then
+    FugSchedulerRuntime.overrideDateBuffer = nil
+    return nil
+  end
+  local key = FugSchedulerRuntime.overrideDateBufferKey(scheduler, override)
+  local format = FugSchedulerRuntime.dateFormatPreference()
+  local buffer = FugSchedulerRuntime.overrideDateBuffer
+  if not buffer or buffer.key ~= key or buffer.format ~= format then
+    buffer = {
+      key = key,
+      format = format,
+      startText = FugSchedulerRuntime.formatDisplayDate(override.startDate, format),
+      endText = FugSchedulerRuntime.formatDisplayDate(override.endDate, format),
+      startError = nil,
+      endError = nil
+    }
+    FugSchedulerRuntime.overrideDateBuffer = buffer
+  end
+  return buffer
+end
+
+-- Refresh buffered date entry, long-form resolution, validation, and inclusive range summary controls.
+function FugSchedulerRuntime.refreshOverrideDateDisplays(scheduler, override)
+  local buffer = FugSchedulerRuntime.ensureOverrideDateBuffer(scheduler, override)
+  if not override or not buffer then
+    FugSchedulerRuntime.setText("OverrideStartDateLongForm", "")
+    FugSchedulerRuntime.setText("OverrideStartDateValidation", "")
+    FugSchedulerRuntime.setText("OverrideEndDateLongForm", "")
+    FugSchedulerRuntime.setText("OverrideEndDateValidation", "")
+    FugSchedulerRuntime.setText("OverrideRangeSummary", "No Override selected")
+    return
+  end
+
+  if Controls.OverrideStartDate then Controls.OverrideStartDate.String = buffer.startText end
+  if Controls.OverrideEndDate then Controls.OverrideEndDate.String = buffer.endText end
+  FugSchedulerRuntime.setText(
+    "OverrideStartDateLongForm",
+    buffer.startError and "" or FugSchedulerRuntime.formatLongDate(override.startDate)
+  )
+  FugSchedulerRuntime.setText("OverrideStartDateValidation", buffer.startError or "")
+  FugSchedulerRuntime.setText(
+    "OverrideEndDateLongForm",
+    buffer.endError and "" or FugSchedulerRuntime.formatLongDate(override.endDate)
+  )
+  FugSchedulerRuntime.setText("OverrideEndDateValidation", buffer.endError or "")
+
+  local days = FugSchedulerRuntime.inclusiveRangeDays(override.startDate, override.endDate) or 0
+  FugSchedulerRuntime.setText("OverrideRangeSummary", string.format(
+    "%d day%s inclusive\n%s – %s",
+    days,
+    days == 1 and "" or "s",
+    FugSchedulerRuntime.formatLongDate(override.startDate),
+    FugSchedulerRuntime.formatLongDate(override.endDate)
+  ))
+end
+
+-- Keep invalid date text visible without changing the active model or resolver state.
+function FugSchedulerRuntime.rejectBufferedOverrideDate(field, message)
+  local scheduler, override = FugSchedulerRuntime.selectedOverride()
+  local buffer = FugSchedulerRuntime.ensureOverrideDateBuffer(scheduler, override)
+  if not buffer then return false end
+  if field == "start" then buffer.startError = message else buffer.endError = message end
+  FugSchedulerRuntime.updatingOverrideEditor = true
+  FugSchedulerRuntime.refreshOverrideDateDisplays(scheduler, override)
+  FugSchedulerRuntime.updatingOverrideEditor = false
+  local fieldLabel = field == "start" and "Start date" or "End date"
+  FugSchedulerRuntime.setText("OverrideEditorStatus", fieldLabel .. ": " .. message)
+  return false
+end
+
+-- Commit a complete canonical Override range through the existing atomic transaction path.
+function FugSchedulerRuntime.commitOverrideRange(description, startDate, endDate)
+  FugSchedulerRuntime.overrideDateBuffer = nil
+  return FugSchedulerRuntime.commitScheduleEdit(description, function(candidate)
+    local _, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
+    if not override then return false, "selected Override no longer exists" end
+    override.startDate = startDate
+    override.endDate = endDate
+  end, nil, "OverrideEditorStatus")
+end
+
+-- Apply buffered Start text while preserving the existing inclusive range duration.
+function FugSchedulerRuntime.editOverrideStartDate(dateText)
+  local scheduler, override = FugSchedulerRuntime.selectedOverride()
+  if not override then return FugSchedulerRuntime.rejectBufferedOverrideDate("start", "No Override is selected") end
+  local buffer = FugSchedulerRuntime.ensureOverrideDateBuffer(scheduler, override)
+  buffer.startText = dateText
+  buffer.startError = nil
+  local startDate = FugSchedulerRuntime.parseDisplayDate(dateText, buffer.format)
+  if not startDate then
+    return FugSchedulerRuntime.rejectBufferedOverrideDate("start", "Invalid date")
+  end
+  local durationOffset = FugSchedulerRuntime.calendarDayDifference(override.startDate, override.endDate)
+  local endDate = durationOffset and FugSchedulerRuntime.shiftDate(startDate, durationOffset) or nil
+  if not endDate then return FugSchedulerRuntime.rejectBufferedOverrideDate("start", "Invalid date") end
+  return FugSchedulerRuntime.commitOverrideRange("Override range start updated", startDate, endDate)
+end
+
+-- Apply buffered End text only when it resolves on or after the persisted Start date.
+function FugSchedulerRuntime.editOverrideEndDate(dateText)
+  local scheduler, override = FugSchedulerRuntime.selectedOverride()
+  if not override then return FugSchedulerRuntime.rejectBufferedOverrideDate("end", "No Override is selected") end
+  local buffer = FugSchedulerRuntime.ensureOverrideDateBuffer(scheduler, override)
+  buffer.endText = dateText
+  buffer.endError = nil
+  local endDate = FugSchedulerRuntime.parseDisplayDate(dateText, buffer.format)
+  if not endDate then return FugSchedulerRuntime.rejectBufferedOverrideDate("end", "Invalid date") end
+  if endDate < override.startDate then
+    return FugSchedulerRuntime.rejectBufferedOverrideDate("end", "End date must not be before Start date")
+  end
+  return FugSchedulerRuntime.commitOverrideRange("Override range end updated", override.startDate, endDate)
+end
+
+-- Move Start by whole calendar days while preserving the complete range duration.
+function FugSchedulerRuntime.shiftOverrideStart(dayOffset)
+  local _, override = FugSchedulerRuntime.selectedOverride()
+  if not override then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", "Start date change rejected: no Override is selected")
+    return false
+  end
+  local startDate = FugSchedulerRuntime.shiftDate(override.startDate, dayOffset)
+  local endDate = FugSchedulerRuntime.shiftDate(override.endDate, dayOffset)
+  if not startDate or not endDate then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", "Start date change rejected: invalid persisted range")
+    return false
+  end
+  return FugSchedulerRuntime.commitOverrideRange("Override Start date shifted", startDate, endDate)
+end
+
+-- Change the selected range duration by moving only its End date by whole calendar days.
+function FugSchedulerRuntime.shiftOverrideRange(dayOffset)
+  local _, override = FugSchedulerRuntime.selectedOverride()
+  if not override then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", "Duration change rejected: no Override is selected")
+    return false
+  end
+  local endDate = FugSchedulerRuntime.shiftDate(override.endDate, dayOffset)
+  if not endDate then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", "Duration change rejected: invalid persisted range")
+    return false
+  end
+  if endDate < override.startDate then
+    FugSchedulerRuntime.refreshOverrideEditor()
+    FugSchedulerRuntime.setText("OverrideEditorStatus", "Duration change rejected: range is already 1 day")
+    return false
+  end
+  local description = dayOffset < 0 and "Override duration shortened" or "Override duration extended"
+  return FugSchedulerRuntime.commitOverrideRange(description, override.startDate, endDate)
+end
+
+-- Move the selected range to today's Core-local date while preserving duration.
+function FugSchedulerRuntime.setOverrideRangeToday()
+  local _, override = FugSchedulerRuntime.selectedOverride()
+  if not override then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", "Today rejected: no Override is selected")
+    return false
+  end
+  local durationOffset = FugSchedulerRuntime.calendarDayDifference(override.startDate, override.endDate)
+  local startDate = os.date("%Y-%m-%d")
+  local endDate = durationOffset and FugSchedulerRuntime.shiftDate(startDate, durationOffset) or nil
+  if not endDate then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", "Today rejected: invalid persisted range")
+    return false
+  end
+  return FugSchedulerRuntime.commitOverrideRange("Override range moved to Today", startDate, endDate)
+end
+
+-- Collapse the selected range to one inclusive calendar date.
+function FugSchedulerRuntime.setOverrideRangeOneDay()
+  local _, override = FugSchedulerRuntime.selectedOverride()
+  if not override then
+    FugSchedulerRuntime.setText("OverrideEditorStatus", "1 Day rejected: no Override is selected")
+    return false
+  end
+  return FugSchedulerRuntime.commitOverrideRange("Override range set to 1 Day", override.startDate, override.startDate)
+end
+
 -- Refresh the Override list, detail controls, ordering state, and warning summary.
 function FugSchedulerRuntime.refreshOverrideEditor(message)
   if not FugSchedulerRuntime.activeSchedule then return end
@@ -1639,8 +1891,7 @@ function FugSchedulerRuntime.refreshOverrideEditor(message)
 
   if Controls.OverrideLabel then Controls.OverrideLabel.String = override and override.label or "" end
   if Controls.OverrideEnabled then Controls.OverrideEnabled.Boolean = override and override.enabled or false end
-  if Controls.OverrideStartDate then Controls.OverrideStartDate.String = override and override.startDate or "" end
-  if Controls.OverrideEndDate then Controls.OverrideEndDate.String = override and override.endDate or "" end
+  FugSchedulerRuntime.refreshOverrideDateDisplays(scheduler, override)
 
   if Controls.OverrideType then
     Controls.OverrideType.Choices = {
@@ -1697,6 +1948,17 @@ function FugSchedulerRuntime.refreshOverrideEditor(message)
   FugSchedulerRuntime.setDisabled("OverrideStartDate", noOverride)
   FugSchedulerRuntime.setDisabled("OverrideEndDate", noOverride)
   FugSchedulerRuntime.setDisabled("OverridePattern", noOverride)
+  local durationOffset = override and FugSchedulerRuntime.calendarDayDifference(override.startDate, override.endDate) or nil
+  FugSchedulerRuntime.setDisabled("SetOverrideRangeToday", noOverride)
+  FugSchedulerRuntime.setDisabled("ShiftOverrideStartBackDay", noOverride)
+  FugSchedulerRuntime.setDisabled("ShiftOverrideStartForwardDay", noOverride)
+  FugSchedulerRuntime.setDisabled("ShiftOverrideStartBackWeek", noOverride)
+  FugSchedulerRuntime.setDisabled("ShiftOverrideStartForwardWeek", noOverride)
+  FugSchedulerRuntime.setDisabled("SetOverrideRangeOneDay", noOverride)
+  FugSchedulerRuntime.setDisabled("ShiftOverrideRangeBack", noOverride or durationOffset == 0)
+  FugSchedulerRuntime.setDisabled("ShiftOverrideRangeForward", noOverride)
+  FugSchedulerRuntime.setDisabled("ShiftOverrideEndBackWeek", noOverride or not durationOffset or durationOffset < 7)
+  FugSchedulerRuntime.setDisabled("ShiftOverrideEndForwardWeek", noOverride)
   FugSchedulerRuntime.setDisabled("DuplicateOverride", noOverride)
   FugSchedulerRuntime.setDisabled("DeleteOverride", noOverride)
   FugSchedulerRuntime.setDisabled("MoveOverrideUp", noOverride or overrideIndex <= 1)
@@ -2367,6 +2629,22 @@ function FugSchedulerRuntime.refreshStatus()
   ))
 end
 
+-- Populate the persistent presentation preference without touching schedule configuration.
+function FugSchedulerRuntime.refreshPreferences(message)
+  if not Controls.DateFormatPreference then return end
+  FugSchedulerRuntime.updatingPreferences = true
+  Controls.DateFormatPreference.Choices = {
+    {Text = "dd/mm/yyyy", Id = "DMY"},
+    {Text = "mm/dd/yyyy", Id = "MDY"},
+    {Text = "yyyy-mm-dd", Id = "ISO"}
+  }
+  local format = FugSchedulerRuntime.dateFormatPreference()
+  local labels = {DMY = "dd/mm/yyyy", MDY = "mm/dd/yyyy", ISO = "yyyy-mm-dd"}
+  Controls.DateFormatPreference.String = FugSchedulerRuntime.encodeChoice(labels[format], format)
+  FugSchedulerRuntime.updatingPreferences = false
+  FugSchedulerRuntime.setText("PreferencesStatus", message or ("Date display format: " .. labels[format]))
+end
+
 -- Attach handlers for Action loading, Schedule loading, and deterministic resolution tests.
 function FugSchedulerRuntime.attachHandlers()
   if Controls.ActionSource then
@@ -2375,13 +2653,17 @@ function FugSchedulerRuntime.attachHandlers()
 
   if Controls.ScheduleData then
     Controls.ScheduleData.EventHandler = function()
-      if not FugSchedulerRuntime.writingScheduleData then FugSchedulerRuntime.reloadSchedule() end
+      if not FugSchedulerRuntime.writingScheduleData then
+        FugSchedulerRuntime.overrideDateBuffer = nil
+        FugSchedulerRuntime.reloadSchedule()
+      end
     end
   end
 
   if Controls.SchedulerSelect then
     Controls.SchedulerSelect.EventHandler = function(control)
       FugSchedulerRuntime.selectedSchedulerId = FugSchedulerRuntime.choiceId(control.String)
+      FugSchedulerRuntime.overrideDateBuffer = nil
       local scheduler = FugSchedulerRuntime.selectedScheduler()
       local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
       if scheduler and result then FugSchedulerRuntime.publishResolution(scheduler, result) end
@@ -2653,6 +2935,7 @@ function FugSchedulerRuntime.attachHandlers()
       local scheduler = FugSchedulerRuntime.selectedScheduler()
       if not scheduler then return end
       FugSchedulerRuntime.selectedOverrideIds[scheduler.id] = FugSchedulerRuntime.choiceId(control.String)
+      FugSchedulerRuntime.overrideDateBuffer = nil
       FugSchedulerRuntime.refreshOverrideEditor("Override selected")
     end
   end
@@ -2704,24 +2987,14 @@ function FugSchedulerRuntime.attachHandlers()
   if Controls.OverrideStartDate then
     Controls.OverrideStartDate.EventHandler = function(control)
       if FugSchedulerRuntime.updatingOverrideEditor then return end
-      local dateText = control.String or ""
-      FugSchedulerRuntime.commitScheduleEdit("Override start date updated", function(candidate)
-        local _, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
-        if not override then return false, "selected Override no longer exists" end
-        override.startDate = dateText
-      end, nil, "OverrideEditorStatus")
+      FugSchedulerRuntime.editOverrideStartDate(control.String or "")
     end
   end
 
   if Controls.OverrideEndDate then
     Controls.OverrideEndDate.EventHandler = function(control)
       if FugSchedulerRuntime.updatingOverrideEditor then return end
-      local dateText = control.String or ""
-      FugSchedulerRuntime.commitScheduleEdit("Override end date updated", function(candidate)
-        local _, override = FugSchedulerRuntime.candidateSelectedOverride(candidate)
-        if not override then return false, "selected Override no longer exists" end
-        override.endDate = dateText
-      end, nil, "OverrideEditorStatus")
+      FugSchedulerRuntime.editOverrideEndDate(control.String or "")
     end
   end
 
@@ -2771,6 +3044,80 @@ function FugSchedulerRuntime.attachHandlers()
     end
   end
 
+  if Controls.ShiftOverrideStartBackDay then
+    Controls.ShiftOverrideStartBackDay.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.shiftOverrideStart(-1) end
+    end
+  end
+
+  if Controls.ShiftOverrideStartForwardDay then
+    Controls.ShiftOverrideStartForwardDay.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.shiftOverrideStart(1) end
+    end
+  end
+
+  if Controls.ShiftOverrideStartBackWeek then
+    Controls.ShiftOverrideStartBackWeek.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.shiftOverrideStart(-7) end
+    end
+  end
+
+  if Controls.ShiftOverrideStartForwardWeek then
+    Controls.ShiftOverrideStartForwardWeek.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.shiftOverrideStart(7) end
+    end
+  end
+
+  if Controls.ShiftOverrideRangeBack then
+    Controls.ShiftOverrideRangeBack.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.shiftOverrideRange(-1) end
+    end
+  end
+
+  if Controls.SetOverrideRangeToday then
+    Controls.SetOverrideRangeToday.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.setOverrideRangeToday() end
+    end
+  end
+
+  if Controls.ShiftOverrideRangeForward then
+    Controls.ShiftOverrideRangeForward.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.shiftOverrideRange(1) end
+    end
+  end
+
+  if Controls.ShiftOverrideEndBackWeek then
+    Controls.ShiftOverrideEndBackWeek.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.shiftOverrideRange(-7) end
+    end
+  end
+
+  if Controls.ShiftOverrideEndForwardWeek then
+    Controls.ShiftOverrideEndForwardWeek.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.shiftOverrideRange(7) end
+    end
+  end
+
+  if Controls.SetOverrideRangeOneDay then
+    Controls.SetOverrideRangeOneDay.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.setOverrideRangeOneDay() end
+    end
+  end
+
+  if Controls.DateFormatPreference then
+    Controls.DateFormatPreference.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingPreferences then return end
+      local format = FugSchedulerRuntime.choiceId(control.String)
+      if format ~= "DMY" and format ~= "MDY" and format ~= "ISO" then
+        FugSchedulerRuntime.refreshPreferences("Invalid date format preference; retained previous value")
+        return
+      end
+      FugSchedulerRuntime.overrideDateBuffer = nil
+      FugSchedulerRuntime.refreshPreferences()
+      FugSchedulerRuntime.refreshOverrideEditor("Date format preference updated")
+    end
+  end
+
   if Controls.ReloadActions then
     Controls.ReloadActions.EventHandler = function(control)
       if control.Boolean then FugSchedulerRuntime.reloadActions() end
@@ -2809,6 +3156,7 @@ function FugSchedulerRuntime.initialize()
   if Controls.OverrideSelect then Controls.OverrideSelect.Choices = {} end
   if Controls.OverrideType then Controls.OverrideType.Choices = {} end
   if Controls.OverridePattern then Controls.OverridePattern.Choices = {} end
+  if Controls.DateFormatPreference then Controls.DateFormatPreference.Choices = {} end
   for _, weekday in ipairs(FugSchedulerWeekdays) do
     if Controls[weekday.controlName] then Controls[weekday.controlName].Choices = {} end
   end
@@ -2824,6 +3172,7 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
   FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
   FugSchedulerRuntime.setText("OverrideEditorStatus", "Waiting for a valid Override configuration")
+  FugSchedulerRuntime.setText("PreferencesStatus", "Loading presentation preferences")
   FugSchedulerRuntime.setText("BuildDateDisplay", FugSchedulerRuntime.formatBuildDate(FugSchedulerPluginInfo.BuildTimestamp))
   FugSchedulerRuntime.refreshStatus()
   FugSchedulerRuntime.logLine("FugScheduler 2000 resolution spike initialized.")
@@ -2837,6 +3186,10 @@ function FugSchedulerRuntime.initialize()
   if Controls.TestDateTime and (Controls.TestDateTime.String or "") == "" then
     Controls.TestDateTime.String = "2026-12-25 12:00"
   end
+  if Controls.DateFormatPreference and (Controls.DateFormatPreference.String or "") == "" then
+    Controls.DateFormatPreference.String = FugSchedulerRuntime.encodeChoice("yyyy-mm-dd", "ISO")
+  end
+  FugSchedulerRuntime.refreshPreferences()
 
   FugSchedulerRuntime.reloadActions()
   FugSchedulerRuntime.scheduleInitialized = true

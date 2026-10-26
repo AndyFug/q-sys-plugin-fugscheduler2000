@@ -48,7 +48,7 @@ Initial boilerplate includes:
 - a first visual Scheduler editor using label-based structured selectors for Scheduler and Default Week Pattern selection, plus labels, enabled/paused state, add, duplicate, guarded delete, and transaction feedback
 - a three-column Day Patterns editor with scrollable Day Pattern, Event, and Event Action lists; Day Pattern/Event CRUD; registered Action attachment; Action deletion and ordering; reference-guarded Day Pattern deletion; and contextual validation feedback
 - a visual Week Patterns editor with a scrollable structured selector, label/add/duplicate/guarded-delete transactions, seven structured Day Pattern assignments, per-Scheduler runtime selection, and reference summaries
-- a visual Scheduler-scoped Overrides editor for ordered Day Pattern and Week Pattern Overrides, including validated dates, type-dependent pattern selection, enabled state, add/duplicate/delete/move transactions, overlap warnings, and per-Scheduler runtime selection
+- a visual Scheduler-scoped Overrides editor for ordered Day Pattern and Week Pattern Overrides, including presentation-only DMY/MDY/ISO date preferences, buffered date validation, long-form dates, inclusive range summaries, atomic duration-preserving Start edits, convenience duration controls, type-dependent pattern selection, enabled state, add/duplicate/delete/move transactions, overlap warnings, and per-Scheduler runtime selection
 - opaque UUID-style IDs for newly created Schedulers, Day Patterns, Week Patterns, and Events; IDs remain in persisted/status integration data rather than the primary operator UI
 
 ## Build
@@ -74,6 +74,7 @@ Repeatable tests live under `tests/`; `scripts/` is reserved for build and deplo
 ```bash
 python3 tests/qrc/validate_week_patterns.py
 python3 tests/qrc/validate_overrides.py
+python3 tests/qrc/validate_override_dates.py
 ```
 
 These tests require the expected active Designer emulator design and restore the original `ScheduleData` byte-for-byte. See `tests/README.md` and `PHASE1_VALIDATION.md`.
