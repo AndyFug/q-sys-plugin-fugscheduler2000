@@ -428,6 +428,27 @@ Final QRC findings against the active `fugscheduler2000_test` emulator:
 - Final post-test restart retained revision `79`, the expected four Scheduler IDs and `2/4` enabled state, `TestDateTime = 2030-01-02 12:00`, Info/Info logging preferences, no temporary `qrc-...` Scheduler, no serialized runtime fields, false momentaries, and automatic execution off. `AndyFugFugScheduler2000`, `SchedulerRuntimeProvider`, and `ActionProvider` all restarted `OK` with zero errors.
 - Deterministic backward/forward live clock-discontinuity injection remains blocked exactly as before; no host, emulator, or Core clock was changed and no unsupported Q-SYS clock API or test seam was introduced.
 
+## Banked Overview and Inspector refactor
+
+Implemented in source; Designer deployment and QRC acceptance pending:
+
+- [x] Added a ten-row banked Overview backed by counted controls and fixed-bounds FugUi row boxes.
+- [x] Removed row selection, kept bold Scheduler names, and left Inspector/editors responsible for the shared stable-ID selector.
+- [x] Added compact live Enable/Pause toggles that persist by stable Scheduler ID, plus equal-share wrapped Current Pattern and dated Current/Next Event columns.
+- [x] Kept the global safety control on Overview and relabeled it Master Execution without changing its public control name or pin contract.
+- [x] Moved the former selected-Scheduler Overview detail into a dedicated Inspector page.
+- [x] Moved Test Date/Time to Diagnostics, added Use Live Time, and removed the seeded test-time default for new components.
+- [x] Deploy the design-time control/page change and verify fixed-bounds row geometry in Q-SYS Designer.
+- [x] Validate ten-row banking, empty rows, bank boundaries, operational status fields, Master Execution safety, and live/test-time switching through QRC.
+- [x] Re-run focused execution and editor regressions after the page/control lifecycle change.
+
+Designer/QRC findings:
+
+- The first retained-flow draft allowed grow columns to escape the intended row bounds in Designer. The corrected layout uses one fixed 880-unit FugUi Box per row and splits all local columns inside that box; visual inspection confirmed the table now fits the normal page width.
+- Q-SYS exposes counted controls as runtime collections while QRC addresses them as `Name N`. The runtime now resolves both representations, and the hot-deploy fallback remains self-contained.
+- Master Execution is now explicitly forced off at each runtime initialization, preventing a previously persisted armed value from surviving a restart.
+- `tests/qrc/validate_overview.py` completed 39 assertions with byte-for-byte restoration and all three scripts healthy. It confirmed the bold Scheduler column, preference-formatted occurrence dates/times, equal-share wrapped detail columns, `source / Day Pattern` display, persistent live Enable/Pause transactions with revision increments, hidden toggles on unused rows, lower grey bank controls, and `Page N of M (Total X schedulers)` status. The existing execution suite completed 62 assertions and the Week Pattern, Override, and Override Date regressions completed 42, 48, and 54 assertions respectively after the page/control lifecycle change.
+
 ## Build validation
 
 - [x] Run `python3 scripts/compile_plugin.py` successfully.

@@ -9,6 +9,22 @@ FugSchedulerWeekdays = {
   {key = "Sun", label = "Sunday", controlName = "WeekPatternSun"}
 }
 
+-- Keep the operational Overview compact and banked consistently across controls, layout, and runtime.
+FugSchedulerOverviewRows = 10
+
+-- Return the resolved Q-SYS name for one member of a counted Overview control.
+function overviewControlName(baseName, index)
+  return baseName .. " " .. tostring(index)
+end
+
+-- Return one counted runtime control across Q-SYS table and suffixed-name representations.
+function countedControl(baseName, index)
+  if not Controls then return nil end
+  local collection = Controls[baseName]
+  if type(collection) == "table" and collection[index] then return collection[index] end
+  return Controls[overviewControlName(baseName, index)]
+end
+
 FugSchedulerTheme = {
   pageW = 900,
   pageH = 520,
@@ -33,7 +49,7 @@ end
 
 -- Return the page names implied by the current design-time properties.
 function pageNames(props)
-  local names = {"Overview", "Schedules", "Day Patterns", "Week Patterns", "Overrides", "Actions", "Preferences"}
+  local names = {"Overview", "Inspector", "Schedules", "Day Patterns", "Week Patterns", "Overrides", "Actions", "Preferences"}
   if propValue(props, "Show Diagnostics Page", true) then
     table.insert(names, "Diagnostics")
   end

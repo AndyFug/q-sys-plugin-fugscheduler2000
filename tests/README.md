@@ -15,6 +15,7 @@ Run from the plugin repository root:
 python3 tests/qrc/validate_week_patterns.py
 python3 tests/qrc/validate_overrides.py
 python3 tests/qrc/validate_override_dates.py
+python3 tests/qrc/validate_overview.py
 python3 tests/qrc/validate_execution.py
 python3 tests/qrc/validate_execution_plan_lifecycle.py
 python3 tests/qrc/validate_execution_resolution.py
@@ -35,6 +36,8 @@ These tests manipulate the active plugin component. Before running them:
 The execution test also inspects runtime-plan diagnostics in `GlobalSchedulerStatus`: one plan per Scheduler, distinct stagger phases, independent timer poll counts, Scheduler/Event/Action counts, affected-plan generation replacement, and unrelated plan/timer preservation after a scoped edit. These fields are runtime-only and must remain absent from `ScheduleData`.
 
 `validate_execution_scale.py` replaces the schedule temporarily with disabled synthetic fixtures at 5 Schedulers × 10 Events and 20 × 20. It measures QRC install elapsed time plus the runtime's average/maximum poll, delayed-poll, and rebuild diagnostics. All synthetic Event Actions use a safe callback ID, but every Scheduler remains disabled and the master guard must remain off. The test restores `ScheduleData` and `TestDateTime` byte-for-byte.
+
+`validate_overview.py` validates the ten-row operational table, bank boundaries, empty rows, persistent live Enable/Pause transactions, Pattern/Current/Next status, Diagnostics preview/live switching, Master Execution safety, runtime-state exclusion, and byte-for-byte restoration.
 
 `validate_execution_plan_lifecycle.py` explicitly adds and removes a Scheduler plan, verifies that its independent timer polls, waits through multiple former timer periods after deletion, and confirms that an unaffected plan retains its generation and timer phase while continuing to poll.
 

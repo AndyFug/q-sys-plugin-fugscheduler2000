@@ -28,6 +28,18 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "AutomaticExecutionEnabled", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Input", Count = 1})
   table.insert(ctrls, {Name = "ExecutionStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
 
+  -- Present ten operational Scheduler rows with live Enable/Pause toggles per Overview bank.
+  table.insert(ctrls, {Name = "OverviewPreviousBank", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "OverviewNextBank", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "OverviewBankStatus", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "OverviewSchedulerLabel", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewSchedulerEnabled", ControlType = "Button", ButtonType = "Toggle", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewSchedulerPaused", ControlType = "Button", ButtonType = "Toggle", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewCurrentPattern", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewCurrentEvent", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewNextEvent", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewNextTime", ControlType = "Text", Count = FugSchedulerOverviewRows})
+
   -- Edit the selected Scheduler through the runtime's validated transaction layer.
   table.insert(ctrls, {Name = "SchedulerLabel", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "SchedulerEditorEnabled", ControlType = "Button", ButtonType = "Toggle", Count = 1})
@@ -125,6 +137,7 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "ReloadSchedule", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "TestDateTime", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ResolveTestTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "UseLiveTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
 
   -- Display build metadata formatted in the Core or emulator's local timezone.
   table.insert(ctrls, {Name = "BuildDateDisplay", ControlType = "Text", Count = 1})

@@ -31,6 +31,22 @@ FugSchedulerWeekdays = {
   {key = "Sun", label = "Sunday", controlName = "WeekPatternSun"}
 }
 
+-- Keep the operational Overview compact and banked consistently across controls, layout, and runtime.
+FugSchedulerOverviewRows = 10
+
+-- Return the resolved Q-SYS name for one member of a counted Overview control.
+function overviewControlName(baseName, index)
+  return baseName .. " " .. tostring(index)
+end
+
+-- Return one counted runtime control across Q-SYS table and suffixed-name representations.
+function countedControl(baseName, index)
+  if not Controls then return nil end
+  local collection = Controls[baseName]
+  if type(collection) == "table" and collection[index] then return collection[index] end
+  return Controls[overviewControlName(baseName, index)]
+end
+
 FugSchedulerTheme = {
   pageW = 900,
   pageH = 520,
@@ -55,7 +71,7 @@ end
 
 -- Return the page names implied by the current design-time properties.
 function pageNames(props)
-  local names = {"Overview", "Schedules", "Day Patterns", "Week Patterns", "Overrides", "Actions", "Preferences"}
+  local names = {"Overview", "Inspector", "Schedules", "Day Patterns", "Week Patterns", "Overrides", "Actions", "Preferences"}
   if propValue(props, "Show Diagnostics Page", true) then
     table.insert(names, "Diagnostics")
   end
@@ -1227,6 +1243,70 @@ FugSchedulerTheme = FugUi.theme(FugSchedulerTheme)
 -- Scheduler-specific UI helpers.
 FugSchedulerUi = FugSchedulerUi or {}
 
+-- Return the shared retained-container column specifications for Overview rows.
+function FugSchedulerUi.overviewColumnSpecs()
+  return {
+    {width = 157},
+    {width = 42},
+    {width = 42},
+    {grow = 1},
+    {grow = 1},
+    {grow = 1}
+  }
+end
+
+-- Add the compact header within one fixed-bounds FugUi Box.
+function FugSchedulerUi.overviewHeader(ui, rect)
+  local row = FugUi.box(ui, rect, {padding = 2})
+  local cells = {row:splitRow(FugSchedulerUi.overviewColumnSpecs(), {gap = 4})}
+  local labels = {"Scheduler", "Enable", "Pause", "Current Pattern", "Current Event", "Next Event"}
+  for index, cell in ipairs(cells) do
+    ui:label(labels[index], cell:fill(), {
+      Color = ui:color("mutedText"), FontSize = 9, IsBold = true,
+      HTextAlign = index >= 2 and index <= 3 and "Center" or "Left"
+    })
+  end
+  return row
+end
+
+-- Add one movable fixed-bounds Scheduler row and split its local child columns.
+function FugSchedulerUi.overviewSchedulerRow(ui, rect, rowIndex)
+  local row = FugUi.box(ui, rect, {padding = 2})
+  row:group("", {
+    Fill = ui:color(rowIndex % 2 == 0 and "panelAlt" or "panel"),
+    StrokeColor = ui:color("stroke"), StrokeWidth = 1, CornerRadius = 3
+  })
+  local cells = {row:splitRow(FugSchedulerUi.overviewColumnSpecs(), {gap = 4})}
+
+  local schedulerCell = cells[1]:fill()
+  local schedulerText = ui:rect(schedulerCell.x + 6, schedulerCell.y, schedulerCell.w - 6, schedulerCell.h)
+  ui:textControl(overviewControlName("OverviewSchedulerLabel", rowIndex), schedulerText, {
+    IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+    HTextAlign = "Left", FontSize = 9, IsBold = true
+  })
+  local enableCell = cells[2]:fill()
+  local pauseCell = cells[3]:fill()
+  ui:button(overviewControlName("OverviewSchedulerEnabled", rowIndex), ui:center(enableCell, 30, enableCell.h), {
+    ButtonStyle = "Toggle", Legend = "", Color = ui:color("ok")
+  })
+  ui:button(overviewControlName("OverviewSchedulerPaused", rowIndex), ui:center(pauseCell, 30, pauseCell.h), {
+    ButtonStyle = "Toggle", Legend = "", Color = ui:color("warning")
+  })
+  ui:textControl(overviewControlName("OverviewCurrentPattern", rowIndex), cells[4]:fill(), {
+    IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
+  })
+  ui:textControl(overviewControlName("OverviewCurrentEvent", rowIndex), cells[5]:fill(), {
+    IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
+  })
+  ui:textControl(overviewControlName("OverviewNextEvent", rowIndex), cells[6]:fill(), {
+    IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
+  })
+  return row
+end
+
 -- Draw a label and read-only Text control as one status row.
 function FugSchedulerUi.statusField(ui, label, controlName, rect)
   local labelWidth = 150
@@ -1419,6 +1499,18 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "AutomaticExecutionEnabled", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Input", Count = 1})
   table.insert(ctrls, {Name = "ExecutionStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
 
+  -- Present ten operational Scheduler rows with live Enable/Pause toggles per Overview bank.
+  table.insert(ctrls, {Name = "OverviewPreviousBank", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "OverviewNextBank", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "OverviewBankStatus", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "OverviewSchedulerLabel", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewSchedulerEnabled", ControlType = "Button", ButtonType = "Toggle", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewSchedulerPaused", ControlType = "Button", ButtonType = "Toggle", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewCurrentPattern", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewCurrentEvent", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewNextEvent", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  table.insert(ctrls, {Name = "OverviewNextTime", ControlType = "Text", Count = FugSchedulerOverviewRows})
+
   -- Edit the selected Scheduler through the runtime's validated transaction layer.
   table.insert(ctrls, {Name = "SchedulerLabel", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "SchedulerEditorEnabled", ControlType = "Button", ButtonType = "Toggle", Count = 1})
@@ -1516,6 +1608,7 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "ReloadSchedule", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "TestDateTime", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ResolveTestTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "UseLiveTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
 
   -- Display build metadata formatted in the Core or emulator's local timezone.
   table.insert(ctrls, {Name = "BuildDateDisplay", ControlType = "Text", Count = 1})
@@ -1554,52 +1647,67 @@ function GetControlLayout(props)
   ui:statusBar("Status")
 
   if page == "Overview" then
-    ui:group("Scheduler Resolution", ui:rect(10, 44, 570, 400))
-    ui:control("SchedulerSelect", "ComboBox", ui:rect(28, 70, 250, 26), {
-      PrettyName = "Schedules~Selected Scheduler"
+    local toolbar = FugUi.box(ui, ui:rect(10, 44, 880, 46), {padding = 6})
+    toolbar:group("", {Fill = ui:color("panel"), StrokeColor = ui:color("stroke"), CornerRadius = 5})
+    local master, execution = toolbar:splitRow({
+      {width = 178}, {grow = 1}
+    }, {gap = 6})
+    ui:button("AutomaticExecutionEnabled", master:fill(), {
+      ButtonStyle = "Toggle", Legend = "Master Execution", Color = ui:color("danger")
     })
-    ui:button("SchedulerEnabled", ui:rect(292, 70, 130, 26), {
-      ButtonStyle = "Toggle",
-      Legend = "Scheduler Enabled",
-      IsDisabled = true,
-      Color = ui:color("accent")
-    })
-    ui:button("ReloadSchedule", ui:rect(436, 70, 124, 26), {
-      ButtonStyle = "Momentary",
-      Legend = "Reload Schedule",
-      Color = ui:color("schedule")
+    ui:textControl("ExecutionStatus", execution:fill(), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+      HTextAlign = "Left", VTextAlign = "Center", FontSize = 9
     })
 
-    FugSchedulerUi.statusField(ui, "Action registry", "RegistryStatus", ui:rect(28, 108, 532, 22))
-    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(28, 136, 532, 22))
-    FugSchedulerUi.statusField(ui, "Resolution source", "ResolutionSource", ui:rect(28, 164, 532, 22))
-    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(28, 192, 532, 22))
-    FugSchedulerUi.statusField(ui, "Previous Event", "PreviousEvent", ui:rect(28, 220, 532, 22))
-    FugSchedulerUi.statusField(ui, "Current Event", "CurrentEvent", ui:rect(28, 248, 532, 22))
-    FugSchedulerUi.statusField(ui, "Current Actions", "CurrentEventActions", ui:rect(28, 276, 532, 22))
-    FugSchedulerUi.statusField(ui, "Next Event", "NextEvent", ui:rect(28, 304, 532, 22))
+    FugSchedulerUi.overviewHeader(ui, ui:rect(10, 96, 880, 22))
+    local overviewRows = ui:rows(ui:rect(10, 122, 880, 310), FugSchedulerOverviewRows, 3)
+    for rowIndex, rowRect in ipairs(overviewRows) do
+      FugSchedulerUi.overviewSchedulerRow(ui, rowRect, rowIndex)
+    end
+    ui:button("OverviewPreviousBank", ui:rect(582, 442, 28, 22), {
+      ButtonStyle = "Momentary", Legend = "◀", Color = ui:color("statusBackground"),
+      TextColor = {255, 255, 255}, FontSize = 9
+    })
+    ui:textControl("OverviewBankStatus", ui:rect(616, 442, 240, 22), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+      HTextAlign = "Center", VTextAlign = "Center", FontSize = 9
+    })
+    ui:button("OverviewNextBank", ui:rect(862, 442, 28, 22), {
+      ButtonStyle = "Momentary", Legend = "▶", Color = ui:color("statusBackground"),
+      TextColor = {255, 255, 255}, FontSize = 9
+    })
+
+  elseif page == "Inspector" then
+    ui:group("Selected Scheduler", ui:rect(10, 44, 570, 400))
+    ui:control("SchedulerSelect", "ComboBox", ui:rect(28, 70, 350, 26), {
+      PrettyName = "Inspector~Selected Scheduler"
+    })
+    ui:button("SchedulerEnabled", ui:rect(390, 70, 80, 26), {
+      ButtonStyle = "Toggle", Legend = "Enabled", IsDisabled = true, Color = ui:color("ok")
+    })
+    ui:button("SchedulerPaused", ui:rect(480, 70, 80, 26), {
+      ButtonStyle = "Toggle", Legend = "Paused", IsDisabled = true, Color = ui:color("warning")
+    })
+
+    FugSchedulerUi.statusField(ui, "Resolution source", "ResolutionSource", ui:rect(28, 116, 532, 22))
+    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(28, 148, 532, 22))
+    FugSchedulerUi.statusField(ui, "Previous Event", "PreviousEvent", ui:rect(28, 180, 532, 22))
+    FugSchedulerUi.statusField(ui, "Current Event", "CurrentEvent", ui:rect(28, 212, 532, 22))
+    FugSchedulerUi.statusField(ui, "Current Actions", "CurrentEventActions", ui:rect(28, 244, 532, 44))
+    FugSchedulerUi.statusField(ui, "Next Event", "NextEvent", ui:rect(28, 300, 532, 22))
     FugSchedulerUi.statusField(ui, "Next Event Time", "NextEventTime", ui:rect(28, 332, 532, 22))
-    FugSchedulerUi.statusField(ui, "Countdown", "Countdown", ui:rect(28, 360, 532, 22))
+    FugSchedulerUi.statusField(ui, "Countdown", "Countdown", ui:rect(28, 364, 532, 22))
 
-    ui:group("Execution Safety", ui:rect(590, 44, 300, 400))
-    ui:label("Automatic callbacks", ui:rect(610, 76, 260, 28), {
-      FontSize = 18,
-      IsBold = true,
-      Color = ui:color("text")
+    ui:group("Runtime Status", ui:rect(590, 44, 300, 400))
+    FugSchedulerUi.statusField(ui, "Execution", "ExecutionStatus", ui:rect(610, 76, 260, 58))
+    FugSchedulerUi.statusField(ui, "Action registry", "RegistryStatus", ui:rect(610, 154, 260, 44))
+    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(610, 218, 260, 58))
+    FugSchedulerUi.statusField(ui, "Schedulers", "SchedulerCount", ui:rect(610, 298, 260, 22))
+    FugSchedulerUi.statusField(ui, "Actions", "RegisteredActionCount", ui:rect(610, 330, 260, 22))
+    ui:button("ReloadSchedule", ui:rect(610, 374, 260, 28), {
+      ButtonStyle = "Momentary", Legend = "Validate / Reload Schedule", Color = ui:color("schedule")
     })
-    ui:button("AutomaticExecutionEnabled", ui:rect(610, 116, 260, 30), {
-      ButtonStyle = "Toggle",
-      Legend = "Automatic Execution Enabled",
-      Color = ui:color("danger")
-    })
-    ui:label("Defaults off. When enabled, only enabled and unpaused Schedulers may execute registered callbacks.", ui:rect(610, 158, 258, 66), {
-      VTextAlign = "Top",
-      WordWrap = true,
-      Color = ui:color("mutedText")
-    })
-    FugSchedulerUi.statusField(ui, "Execution", "ExecutionStatus", ui:rect(610, 242, 258, 44))
-    FugSchedulerUi.statusField(ui, "Schedulers", "SchedulerCount", ui:rect(610, 304, 258, 22))
-    FugSchedulerUi.statusField(ui, "Actions", "RegisteredActionCount", ui:rect(610, 332, 258, 22))
 
   elseif page == "Schedules" then
     ui:group("Scheduler Editor", ui:rect(10, 44, 570, 400))
@@ -1652,29 +1760,16 @@ function GetControlLayout(props)
       "Schedules~Editor Status"
     )
 
-    ui:group("Resolver / JSON", ui:rect(590, 44, 300, 400))
-    ui:label("Test date/time", ui:rect(610, 70, 260, 20), {Color = ui:color("mutedText")})
-    ui:textControl("TestDateTime", ui:rect(610, 92, 260, 26), {
-      PrettyName = "Schedule~Test Date Time"
+    ui:group("Schedule Data", ui:rect(590, 44, 300, 400))
+    ui:button("ReloadSchedule", ui:rect(610, 72, 260, 28), {
+      ButtonStyle = "Momentary", Legend = "Validate / Reload JSON", Color = ui:color("schedule")
     })
-    ui:button("ResolveTestTime", ui:rect(610, 128, 124, 26), {
-      ButtonStyle = "Momentary",
-      Legend = "Resolve All",
-      Color = ui:color("accent")
-    })
-    ui:button("ReloadSchedule", ui:rect(746, 128, 124, 26), {
-      ButtonStyle = "Momentary",
-      Legend = "Validate JSON",
-      Color = ui:color("schedule")
-    })
-    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(610, 166, 260, 22))
-    FugSchedulerUi.statusField(ui, "Source", "ResolutionSource", ui:rect(610, 194, 260, 22))
-    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(610, 222, 260, 22))
-    ui:label("Canonical ScheduleData", ui:rect(610, 258, 260, 20), {Color = ui:color("mutedText")})
+    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(610, 116, 260, 50))
+    ui:label("Canonical ScheduleData", ui:rect(610, 182, 260, 20), {Color = ui:color("mutedText")})
     FugSchedulerUi.dataViewer(
       ui,
       "ScheduleDataViewer",
-      ui:rect(610, 280, 260, 134),
+      ui:rect(610, 206, 260, 208),
       "Schedule~JSON Data",
       false
     )
@@ -1966,19 +2061,34 @@ function GetControlLayout(props)
     FugSchedulerUi.editorStatus(ui, "PreferencesStatus", ui:rect(32, 326, 836, 40), "Preferences~Status")
 
   elseif page == "Diagnostics" then
-    ui:group("Diagnostics", ui:rect(10, 44, 430, 400))
+    ui:group("Resolution Preview", ui:rect(10, 44, 880, 92))
+    ui:label("Test date/time", ui:rect(28, 74, 96, 22), {Color = ui:color("mutedText")})
+    ui:textControl("TestDateTime", ui:rect(126, 70, 274, 28), {
+      PrettyName = "Diagnostics~Test Date Time"
+    })
+    ui:button("ResolveTestTime", ui:rect(414, 70, 138, 28), {
+      ButtonStyle = "Momentary", Legend = "Preview Test Time", Color = ui:color("accent")
+    })
+    ui:button("UseLiveTime", ui:rect(564, 70, 138, 28), {
+      ButtonStyle = "Momentary", Legend = "Use Live Time", Color = ui:color("schedule")
+    })
+    ui:label("Blank means live time. A test value pins Inspector and JSON status until Use Live Time is pressed.", ui:rect(714, 62, 158, 54), {
+      VTextAlign = "Top", WordWrap = true, FontSize = 9, Color = ui:color("mutedText")
+    })
+
+    ui:group("Diagnostics", ui:rect(10, 146, 430, 298))
     FugSchedulerUi.dataViewer(
       ui,
       "DiagnosticLogViewer",
-      ui:rect(28, 78, 394, 332),
+      ui:rect(28, 180, 394, 230),
       "Diagnostics~Log",
       true
     )
-    ui:group("Global Scheduler Status JSON", ui:rect(450, 44, 440, 400))
+    ui:group("Global Scheduler Status JSON", ui:rect(450, 146, 440, 298))
     FugSchedulerUi.dataViewer(
       ui,
       "GlobalSchedulerStatusViewer",
-      ui:rect(468, 78, 404, 332),
+      ui:rect(468, 180, 404, 230),
       "Diagnostics~Global Scheduler Status",
       true
     )
@@ -2085,6 +2195,19 @@ if Controls then
     DEBUG = 7
   }
 
+  FugSchedulerOverviewRows = FugSchedulerOverviewRows or 10
+
+  -- Resolve counted controls in both embedded-plugin and hot-deployed runtime environments.
+  overviewControlName = overviewControlName or function(baseName, index)
+    return baseName .. " " .. tostring(index)
+  end
+  countedControl = countedControl or function(baseName, index)
+    if not Controls then return nil end
+    local collection = Controls[baseName]
+    if type(collection) == "table" and collection[index] then return collection[index] end
+    return Controls[overviewControlName(baseName, index)]
+  end
+
   local LogLevelLabels = {
     [LogLevel.OFF] = "Off",
     [LogLevel.ERROR] = "Error",
@@ -2101,6 +2224,7 @@ if Controls then
     scheduleWarnings = {},
     scheduleInitialized = false,
     selectedSchedulerId = nil,
+    overviewBank = 1,
     resolutionResultsById = {},
     globalStatus = nil,
     writingScheduleData = false,
@@ -3444,6 +3568,119 @@ if Controls then
     FugSchedulerRuntime.selectedSchedulerId = selectedId
     local selected = FugSchedulerRuntime.activeSchedule._schedulersById[selectedId]
     Controls.SchedulerSelect.String = FugSchedulerRuntime.encodeChoice(selected.label, selected.id)
+  end
+
+  -- Format one Event with preference-formatted occurrence date and time for Overview.
+  function FugSchedulerRuntime.overviewEventText(event)
+    if not event then return "—" end
+    local label = tostring(event.label or event.id or "Unnamed Event")
+    local dateText = FugSchedulerRuntime.formatDisplayDate(event.date or "", FugSchedulerRuntime.dateFormatPreference())
+    local timeText = tostring(event.time or "")
+    if dateText == "" then return label end
+    return string.format("%s (%s %s)", label, dateText, timeText)
+  end
+
+  -- Format the active resolution source and Day Pattern as one compact path.
+  function FugSchedulerRuntime.overviewPatternText(status)
+    if not status or not status.resolution then return "—" end
+    local source = tostring(status.resolution.source or "Pattern")
+    local separator = string.find(source, ": ", 1, true)
+    if separator then source = string.sub(source, separator + 2) end
+    local dayPattern = tostring(status.resolution.dayPatternLabel or "—")
+    return source .. " / " .. dayPattern
+  end
+
+  -- Format the next occurrence time compactly, retaining a day cue across midnight.
+  function FugSchedulerRuntime.overviewNextTime(event, resolvedFor)
+    if not event or not event.timestamp then return "—" end
+    local resolvedDate = type(resolvedFor) == "string" and string.sub(resolvedFor, 1, 10) or ""
+    if event.date == resolvedDate then return os.date("%H:%M", event.timestamp) end
+    return os.date("%a %H:%M", event.timestamp)
+  end
+
+  -- Return the persisted Scheduler represented by one row in the active Overview bank.
+  function FugSchedulerRuntime.overviewSchedulerForRow(rowIndex, schedule)
+    schedule = schedule or FugSchedulerRuntime.activeSchedule
+    if not schedule then return nil end
+    local schedulerIndex = (((FugSchedulerRuntime.overviewBank or 1) - 1) * FugSchedulerOverviewRows) + rowIndex
+    return schedule.schedulers[schedulerIndex]
+  end
+
+  -- Refresh the ten counted controls in the current operational Overview bank.
+  function FugSchedulerRuntime.refreshOverviewRows()
+    local statuses = FugSchedulerRuntime.globalStatus and FugSchedulerRuntime.globalStatus.schedulers or {}
+    local total = #statuses
+    local bankCount = math.max(1, math.ceil(total / FugSchedulerOverviewRows))
+    FugSchedulerRuntime.overviewBank = math.max(1, math.min(FugSchedulerRuntime.overviewBank or 1, bankCount))
+    local firstIndex = ((FugSchedulerRuntime.overviewBank - 1) * FugSchedulerOverviewRows) + 1
+    local lastIndex = math.min(total, firstIndex + FugSchedulerOverviewRows - 1)
+
+    if Controls.OverviewBankStatus then
+      Controls.OverviewBankStatus.String = total == 0 and "No Schedulers" or string.format(
+        "Page %d of %d (Total %d schedulers)",
+        FugSchedulerRuntime.overviewBank,
+        bankCount,
+        total
+      )
+    end
+    if Controls.OverviewPreviousBank then
+      Controls.OverviewPreviousBank.IsDisabled = FugSchedulerRuntime.overviewBank <= 1
+    end
+    if Controls.OverviewNextBank then
+      Controls.OverviewNextBank.IsDisabled = FugSchedulerRuntime.overviewBank >= bankCount
+    end
+
+    FugSchedulerRuntime.updatingOverviewControls = true
+    for rowIndex = 1, FugSchedulerOverviewRows do
+      local status = statuses[firstIndex + rowIndex - 1]
+      local labelControl = countedControl("OverviewSchedulerLabel", rowIndex)
+      local enabledControl = countedControl("OverviewSchedulerEnabled", rowIndex)
+      local pausedControl = countedControl("OverviewSchedulerPaused", rowIndex)
+      local patternControl = countedControl("OverviewCurrentPattern", rowIndex)
+      local currentControl = countedControl("OverviewCurrentEvent", rowIndex)
+      local nextControl = countedControl("OverviewNextEvent", rowIndex)
+      local nextTimeControl = countedControl("OverviewNextTime", rowIndex)
+      local hasStatus = status ~= nil
+
+      if labelControl then labelControl.String = hasStatus and tostring(status.label or status.id) or "" end
+      if enabledControl then
+        enabledControl.Boolean = hasStatus and status.enabled == true or false
+        enabledControl.IsDisabled = not hasStatus
+        enabledControl.IsInvisible = not hasStatus
+      end
+      if pausedControl then
+        pausedControl.Boolean = hasStatus and status.paused == true or false
+        pausedControl.IsDisabled = not hasStatus
+        pausedControl.IsInvisible = not hasStatus
+      end
+      if patternControl then patternControl.String = hasStatus and FugSchedulerRuntime.overviewPatternText(status) or "" end
+      if currentControl then currentControl.String = hasStatus and FugSchedulerRuntime.overviewEventText(status.currentEvent) or "" end
+      if nextControl then nextControl.String = hasStatus and FugSchedulerRuntime.overviewEventText(status.nextEvent) or "" end
+      if nextTimeControl then
+        nextTimeControl.String = hasStatus and FugSchedulerRuntime.overviewNextTime(
+          status.nextEvent,
+          FugSchedulerRuntime.globalStatus and FugSchedulerRuntime.globalStatus.resolvedFor
+        ) or ""
+      end
+    end
+    FugSchedulerRuntime.updatingOverviewControls = false
+  end
+
+  -- Refresh every selected-Scheduler view after a selector or Overview-row change.
+  function FugSchedulerRuntime.refreshSelectedSchedulerViews(message)
+    local scheduler = FugSchedulerRuntime.selectedScheduler()
+    if Controls.SchedulerSelect and scheduler then
+      Controls.SchedulerSelect.String = FugSchedulerRuntime.encodeChoice(scheduler.label, scheduler.id)
+    end
+    FugSchedulerRuntime.overrideDateBuffer = nil
+    local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
+    if scheduler and result then FugSchedulerRuntime.publishResolution(scheduler, result) end
+    local selectionMessage = message or ("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
+    FugSchedulerRuntime.refreshSchedulerEditor(selectionMessage)
+    FugSchedulerRuntime.refreshDayPatternEditor(selectionMessage)
+    FugSchedulerRuntime.refreshWeekPatternEditor(selectionMessage)
+    FugSchedulerRuntime.refreshOverrideEditor(selectionMessage)
+    FugSchedulerRuntime.refreshOverviewRows()
   end
 
   -- Refresh all controls in the visual Scheduler editor from the selected valid model.
@@ -5575,6 +5812,7 @@ if Controls then
     FugSchedulerRuntime.globalStatus = status
     FugSchedulerRuntime.setText("GlobalSchedulerStatus", FugSchedulerRuntime.encodeJson(status))
     FugSchedulerRuntime.setText("SchedulerCount", tostring(#schedulerStatuses))
+    FugSchedulerRuntime.refreshOverviewRows()
   end
 
   -- Publish live cached plan state after an execution/lifecycle transition without detached resolution.
@@ -5800,14 +6038,70 @@ if Controls then
     if Controls.SchedulerSelect then
       Controls.SchedulerSelect.EventHandler = function(control)
         FugSchedulerRuntime.selectedSchedulerId = FugSchedulerRuntime.choiceId(control.String)
-        FugSchedulerRuntime.overrideDateBuffer = nil
-        local scheduler = FugSchedulerRuntime.selectedScheduler()
-        local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
-        if scheduler and result then FugSchedulerRuntime.publishResolution(scheduler, result) end
-        FugSchedulerRuntime.refreshSchedulerEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
-        FugSchedulerRuntime.refreshDayPatternEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
-        FugSchedulerRuntime.refreshWeekPatternEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
-        FugSchedulerRuntime.refreshOverrideEditor("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
+        FugSchedulerRuntime.refreshSelectedSchedulerViews()
+      end
+    end
+
+    if Controls.OverviewPreviousBank then
+      Controls.OverviewPreviousBank.EventHandler = function(control)
+        if not control.Boolean then return end
+        FugSchedulerRuntime.overviewBank = math.max(1, (FugSchedulerRuntime.overviewBank or 1) - 1)
+        FugSchedulerRuntime.refreshOverviewRows()
+      end
+    end
+
+    if Controls.OverviewNextBank then
+      Controls.OverviewNextBank.EventHandler = function(control)
+        if not control.Boolean then return end
+        FugSchedulerRuntime.overviewBank = (FugSchedulerRuntime.overviewBank or 1) + 1
+        FugSchedulerRuntime.refreshOverviewRows()
+      end
+    end
+
+    for rowIndex = 1, FugSchedulerOverviewRows do
+      local capturedRowIndex = rowIndex
+      local enabledControl = countedControl("OverviewSchedulerEnabled", capturedRowIndex)
+      if enabledControl then
+        enabledControl.EventHandler = function(control)
+          if FugSchedulerRuntime.updatingOverviewControls then return end
+          local scheduler = FugSchedulerRuntime.overviewSchedulerForRow(capturedRowIndex)
+          if not scheduler then
+            FugSchedulerRuntime.refreshOverviewRows()
+            return
+          end
+          local schedulerId, schedulerLabel, enabled = scheduler.id, scheduler.label, control.Boolean
+          local committed = FugSchedulerRuntime.commitScheduleEdit(
+            "Overview Scheduler " .. schedulerLabel .. " enabled state updated",
+            function(candidate)
+              local candidateScheduler = FugSchedulerRuntime.itemById(candidate.schedulers, schedulerId)
+              if not candidateScheduler then return false, "Overview Scheduler no longer exists" end
+              candidateScheduler.enabled = enabled
+            end
+          )
+          if not committed then FugSchedulerRuntime.refreshOverviewRows() end
+        end
+      end
+
+      local pausedControl = countedControl("OverviewSchedulerPaused", capturedRowIndex)
+      if pausedControl then
+        pausedControl.EventHandler = function(control)
+          if FugSchedulerRuntime.updatingOverviewControls then return end
+          local scheduler = FugSchedulerRuntime.overviewSchedulerForRow(capturedRowIndex)
+          if not scheduler then
+            FugSchedulerRuntime.refreshOverviewRows()
+            return
+          end
+          local schedulerId, schedulerLabel, paused = scheduler.id, scheduler.label, control.Boolean
+          local committed = FugSchedulerRuntime.commitScheduleEdit(
+            "Overview Scheduler " .. schedulerLabel .. " paused state updated",
+            function(candidate)
+              local candidateScheduler = FugSchedulerRuntime.itemById(candidate.schedulers, schedulerId)
+              if not candidateScheduler then return false, "Overview Scheduler no longer exists" end
+              candidateScheduler.paused = paused
+            end
+          )
+          if not committed then FugSchedulerRuntime.refreshOverviewRows() end
+        end
       end
     end
 
@@ -6360,6 +6654,14 @@ if Controls then
       end
     end
 
+    if Controls.UseLiveTime then
+      Controls.UseLiveTime.EventHandler = function(control)
+        if not control.Boolean then return end
+        if Controls.TestDateTime then Controls.TestDateTime.String = "" end
+        FugSchedulerRuntime.resolveSelectedTime()
+      end
+    end
+
     if Controls.TestAction then
       Controls.TestAction.EventHandler = function(control)
         if control.Boolean then FugSchedulerRuntime.testSelectedAction() end
@@ -6369,6 +6671,12 @@ if Controls then
 
   -- Initialize sample persistence, registries, status, and the first resolution result.
   function FugSchedulerRuntime.initialize()
+    -- Master Execution is deliberately fail-safe and must be re-armed after every runtime start.
+    if Controls.AutomaticExecutionEnabled then
+      FugSchedulerRuntime.updatingExecutionControl = true
+      Controls.AutomaticExecutionEnabled.Boolean = false
+      FugSchedulerRuntime.updatingExecutionControl = false
+    end
     if Controls.ActionSelect then Controls.ActionSelect.Choices = {} end
     if Controls.SchedulerSelect then Controls.SchedulerSelect.Choices = {} end
     if Controls.SchedulerDefaultWeekPattern then Controls.SchedulerDefaultWeekPattern.Choices = {} end
@@ -6414,9 +6722,6 @@ if Controls then
       Controls.ScheduleData.String = FugSchedulerRuntime.encodeJson(FugSchedulerRuntime.sampleSchedule())
       FugSchedulerRuntime.refreshLineViewer("ScheduleDataViewer", Controls.ScheduleData.String)
       FugSchedulerRuntime.writingScheduleData = false
-    end
-    if Controls.TestDateTime and (Controls.TestDateTime.String or "") == "" then
-      Controls.TestDateTime.String = "2026-12-25 12:00"
     end
     if Controls.DateFormatPreference and (Controls.DateFormatPreference.String or "") == "" then
       Controls.DateFormatPreference.String = FugSchedulerRuntime.encodeChoice("yyyy-mm-dd", "ISO")

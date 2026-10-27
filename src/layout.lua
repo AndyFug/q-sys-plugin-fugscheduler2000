@@ -10,52 +10,67 @@ function GetControlLayout(props)
   ui:statusBar("Status")
 
   if page == "Overview" then
-    ui:group("Scheduler Resolution", ui:rect(10, 44, 570, 400))
-    ui:control("SchedulerSelect", "ComboBox", ui:rect(28, 70, 250, 26), {
-      PrettyName = "Schedules~Selected Scheduler"
+    local toolbar = FugUi.box(ui, ui:rect(10, 44, 880, 46), {padding = 6})
+    toolbar:group("", {Fill = ui:color("panel"), StrokeColor = ui:color("stroke"), CornerRadius = 5})
+    local master, execution = toolbar:splitRow({
+      {width = 178}, {grow = 1}
+    }, {gap = 6})
+    ui:button("AutomaticExecutionEnabled", master:fill(), {
+      ButtonStyle = "Toggle", Legend = "Master Execution", Color = ui:color("danger")
     })
-    ui:button("SchedulerEnabled", ui:rect(292, 70, 130, 26), {
-      ButtonStyle = "Toggle",
-      Legend = "Scheduler Enabled",
-      IsDisabled = true,
-      Color = ui:color("accent")
-    })
-    ui:button("ReloadSchedule", ui:rect(436, 70, 124, 26), {
-      ButtonStyle = "Momentary",
-      Legend = "Reload Schedule",
-      Color = ui:color("schedule")
+    ui:textControl("ExecutionStatus", execution:fill(), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+      HTextAlign = "Left", VTextAlign = "Center", FontSize = 9
     })
 
-    FugSchedulerUi.statusField(ui, "Action registry", "RegistryStatus", ui:rect(28, 108, 532, 22))
-    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(28, 136, 532, 22))
-    FugSchedulerUi.statusField(ui, "Resolution source", "ResolutionSource", ui:rect(28, 164, 532, 22))
-    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(28, 192, 532, 22))
-    FugSchedulerUi.statusField(ui, "Previous Event", "PreviousEvent", ui:rect(28, 220, 532, 22))
-    FugSchedulerUi.statusField(ui, "Current Event", "CurrentEvent", ui:rect(28, 248, 532, 22))
-    FugSchedulerUi.statusField(ui, "Current Actions", "CurrentEventActions", ui:rect(28, 276, 532, 22))
-    FugSchedulerUi.statusField(ui, "Next Event", "NextEvent", ui:rect(28, 304, 532, 22))
+    FugSchedulerUi.overviewHeader(ui, ui:rect(10, 96, 880, 22))
+    local overviewRows = ui:rows(ui:rect(10, 122, 880, 310), FugSchedulerOverviewRows, 3)
+    for rowIndex, rowRect in ipairs(overviewRows) do
+      FugSchedulerUi.overviewSchedulerRow(ui, rowRect, rowIndex)
+    end
+    ui:button("OverviewPreviousBank", ui:rect(582, 442, 28, 22), {
+      ButtonStyle = "Momentary", Legend = "◀", Color = ui:color("statusBackground"),
+      TextColor = {255, 255, 255}, FontSize = 9
+    })
+    ui:textControl("OverviewBankStatus", ui:rect(616, 442, 240, 22), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+      HTextAlign = "Center", VTextAlign = "Center", FontSize = 9
+    })
+    ui:button("OverviewNextBank", ui:rect(862, 442, 28, 22), {
+      ButtonStyle = "Momentary", Legend = "▶", Color = ui:color("statusBackground"),
+      TextColor = {255, 255, 255}, FontSize = 9
+    })
+
+  elseif page == "Inspector" then
+    ui:group("Selected Scheduler", ui:rect(10, 44, 570, 400))
+    ui:control("SchedulerSelect", "ComboBox", ui:rect(28, 70, 350, 26), {
+      PrettyName = "Inspector~Selected Scheduler"
+    })
+    ui:button("SchedulerEnabled", ui:rect(390, 70, 80, 26), {
+      ButtonStyle = "Toggle", Legend = "Enabled", IsDisabled = true, Color = ui:color("ok")
+    })
+    ui:button("SchedulerPaused", ui:rect(480, 70, 80, 26), {
+      ButtonStyle = "Toggle", Legend = "Paused", IsDisabled = true, Color = ui:color("warning")
+    })
+
+    FugSchedulerUi.statusField(ui, "Resolution source", "ResolutionSource", ui:rect(28, 116, 532, 22))
+    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(28, 148, 532, 22))
+    FugSchedulerUi.statusField(ui, "Previous Event", "PreviousEvent", ui:rect(28, 180, 532, 22))
+    FugSchedulerUi.statusField(ui, "Current Event", "CurrentEvent", ui:rect(28, 212, 532, 22))
+    FugSchedulerUi.statusField(ui, "Current Actions", "CurrentEventActions", ui:rect(28, 244, 532, 44))
+    FugSchedulerUi.statusField(ui, "Next Event", "NextEvent", ui:rect(28, 300, 532, 22))
     FugSchedulerUi.statusField(ui, "Next Event Time", "NextEventTime", ui:rect(28, 332, 532, 22))
-    FugSchedulerUi.statusField(ui, "Countdown", "Countdown", ui:rect(28, 360, 532, 22))
+    FugSchedulerUi.statusField(ui, "Countdown", "Countdown", ui:rect(28, 364, 532, 22))
 
-    ui:group("Execution Safety", ui:rect(590, 44, 300, 400))
-    ui:label("Automatic callbacks", ui:rect(610, 76, 260, 28), {
-      FontSize = 18,
-      IsBold = true,
-      Color = ui:color("text")
+    ui:group("Runtime Status", ui:rect(590, 44, 300, 400))
+    FugSchedulerUi.statusField(ui, "Execution", "ExecutionStatus", ui:rect(610, 76, 260, 58))
+    FugSchedulerUi.statusField(ui, "Action registry", "RegistryStatus", ui:rect(610, 154, 260, 44))
+    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(610, 218, 260, 58))
+    FugSchedulerUi.statusField(ui, "Schedulers", "SchedulerCount", ui:rect(610, 298, 260, 22))
+    FugSchedulerUi.statusField(ui, "Actions", "RegisteredActionCount", ui:rect(610, 330, 260, 22))
+    ui:button("ReloadSchedule", ui:rect(610, 374, 260, 28), {
+      ButtonStyle = "Momentary", Legend = "Validate / Reload Schedule", Color = ui:color("schedule")
     })
-    ui:button("AutomaticExecutionEnabled", ui:rect(610, 116, 260, 30), {
-      ButtonStyle = "Toggle",
-      Legend = "Automatic Execution Enabled",
-      Color = ui:color("danger")
-    })
-    ui:label("Defaults off. When enabled, only enabled and unpaused Schedulers may execute registered callbacks.", ui:rect(610, 158, 258, 66), {
-      VTextAlign = "Top",
-      WordWrap = true,
-      Color = ui:color("mutedText")
-    })
-    FugSchedulerUi.statusField(ui, "Execution", "ExecutionStatus", ui:rect(610, 242, 258, 44))
-    FugSchedulerUi.statusField(ui, "Schedulers", "SchedulerCount", ui:rect(610, 304, 258, 22))
-    FugSchedulerUi.statusField(ui, "Actions", "RegisteredActionCount", ui:rect(610, 332, 258, 22))
 
   elseif page == "Schedules" then
     ui:group("Scheduler Editor", ui:rect(10, 44, 570, 400))
@@ -108,29 +123,16 @@ function GetControlLayout(props)
       "Schedules~Editor Status"
     )
 
-    ui:group("Resolver / JSON", ui:rect(590, 44, 300, 400))
-    ui:label("Test date/time", ui:rect(610, 70, 260, 20), {Color = ui:color("mutedText")})
-    ui:textControl("TestDateTime", ui:rect(610, 92, 260, 26), {
-      PrettyName = "Schedule~Test Date Time"
+    ui:group("Schedule Data", ui:rect(590, 44, 300, 400))
+    ui:button("ReloadSchedule", ui:rect(610, 72, 260, 28), {
+      ButtonStyle = "Momentary", Legend = "Validate / Reload JSON", Color = ui:color("schedule")
     })
-    ui:button("ResolveTestTime", ui:rect(610, 128, 124, 26), {
-      ButtonStyle = "Momentary",
-      Legend = "Resolve All",
-      Color = ui:color("accent")
-    })
-    ui:button("ReloadSchedule", ui:rect(746, 128, 124, 26), {
-      ButtonStyle = "Momentary",
-      Legend = "Validate JSON",
-      Color = ui:color("schedule")
-    })
-    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(610, 166, 260, 22))
-    FugSchedulerUi.statusField(ui, "Source", "ResolutionSource", ui:rect(610, 194, 260, 22))
-    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(610, 222, 260, 22))
-    ui:label("Canonical ScheduleData", ui:rect(610, 258, 260, 20), {Color = ui:color("mutedText")})
+    FugSchedulerUi.statusField(ui, "Schedule", "ScheduleStatus", ui:rect(610, 116, 260, 50))
+    ui:label("Canonical ScheduleData", ui:rect(610, 182, 260, 20), {Color = ui:color("mutedText")})
     FugSchedulerUi.dataViewer(
       ui,
       "ScheduleDataViewer",
-      ui:rect(610, 280, 260, 134),
+      ui:rect(610, 206, 260, 208),
       "Schedule~JSON Data",
       false
     )
@@ -422,19 +424,34 @@ function GetControlLayout(props)
     FugSchedulerUi.editorStatus(ui, "PreferencesStatus", ui:rect(32, 326, 836, 40), "Preferences~Status")
 
   elseif page == "Diagnostics" then
-    ui:group("Diagnostics", ui:rect(10, 44, 430, 400))
+    ui:group("Resolution Preview", ui:rect(10, 44, 880, 92))
+    ui:label("Test date/time", ui:rect(28, 74, 96, 22), {Color = ui:color("mutedText")})
+    ui:textControl("TestDateTime", ui:rect(126, 70, 274, 28), {
+      PrettyName = "Diagnostics~Test Date Time"
+    })
+    ui:button("ResolveTestTime", ui:rect(414, 70, 138, 28), {
+      ButtonStyle = "Momentary", Legend = "Preview Test Time", Color = ui:color("accent")
+    })
+    ui:button("UseLiveTime", ui:rect(564, 70, 138, 28), {
+      ButtonStyle = "Momentary", Legend = "Use Live Time", Color = ui:color("schedule")
+    })
+    ui:label("Blank means live time. A test value pins Inspector and JSON status until Use Live Time is pressed.", ui:rect(714, 62, 158, 54), {
+      VTextAlign = "Top", WordWrap = true, FontSize = 9, Color = ui:color("mutedText")
+    })
+
+    ui:group("Diagnostics", ui:rect(10, 146, 430, 298))
     FugSchedulerUi.dataViewer(
       ui,
       "DiagnosticLogViewer",
-      ui:rect(28, 78, 394, 332),
+      ui:rect(28, 180, 394, 230),
       "Diagnostics~Log",
       true
     )
-    ui:group("Global Scheduler Status JSON", ui:rect(450, 44, 440, 400))
+    ui:group("Global Scheduler Status JSON", ui:rect(450, 146, 440, 298))
     FugSchedulerUi.dataViewer(
       ui,
       "GlobalSchedulerStatusViewer",
-      ui:rect(468, 78, 404, 332),
+      ui:rect(468, 180, 404, 230),
       "Diagnostics~Global Scheduler Status",
       true
     )

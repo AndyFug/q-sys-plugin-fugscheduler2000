@@ -231,12 +231,20 @@ Use the vendored FugUi framework and separate operator status from configuration
 
 ### Overview
 
-- aggregate multi-Scheduler health and action-registry status
+- compact operational table with ten Schedulers per bank
+- one fixed-bounds FugUi Box per Scheduler so the complete row can be moved or resized as one object while its local columns stay within the table width
+- bold Scheduler labels with no row selector; Overview remains a purely operational status page while Inspector owns selection
+- compact live Enable/Pause toggles that commit by stable Scheduler ID through the validated persistence transaction, plus equal-share wrapped columns for Current Pattern (`source / Day Pattern`) and Current/Next Events with preference-formatted occurrence date and time
+- compact grey previous/next controls below the table and status formatted as `Page N of M (Total X schedulers)`
+- prominent global Master Execution safety toggle and execution status
+
+### Inspector
+
 - selected Scheduler enabled/paused state
-- selected Scheduler, resolved Day Pattern, Event, and Event Actions
-- previous and next Events
-- next-action timestamp and live countdown
-- quick pause/resume and manual refresh controls
+- resolved Day Pattern and resolution source
+- Previous, Current, and Next Events
+- Current Event Actions, next-action timestamp, and live countdown
+- registry, schedule, execution, Scheduler-count, and Action-count status
 
 ### Schedulers
 
@@ -276,11 +284,10 @@ Use the vendored FugUi framework and separate operator status from configuration
 
 ### Diagnostics
 
-- current/previous/next resolved Events and timestamps
-- scheduler logs
-- callback errors
-- raw persisted configuration/export
-- code-source/registry generation status
+- advanced deterministic Test Date/Time preview, explicit Preview and Use Live Time actions, and a clear pinned-time warning
+- scheduler logs and callback errors
+- aggregate Global Scheduler Status JSON
+- raw persisted configuration/export and code-source/registry generation status
 
 Large lists should use banked editor rows with stable backing controls rather than dynamically changing control names.
 

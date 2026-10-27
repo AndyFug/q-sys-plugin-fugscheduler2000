@@ -140,4 +140,6 @@ Each Scheduler status includes its plan generation, configuration revision, stag
 
 ## Human-readable selected status
 
-The Overview and Schedules pages use `SchedulerSelect` to choose one Scheduler for the existing human-readable status controls such as `CurrentEvent`, `NextEvent`, and `Countdown`. This selection does not limit global resolution: every configured Scheduler is resolved and included in `GlobalSchedulerStatus`.
+The banked Overview displays ten entries from `GlobalSchedulerStatus.schedulers` at a time with bold Scheduler names. Each row provides live Enable/Pause toggles that update the represented Scheduler by stable ID through the same validated `ScheduleData` transaction used by the editors; Master Execution remains an independent global guard. The remaining columns show the current resolution source and Day Pattern plus Current/Next Event occurrence dates and times using `DateFormatPreference`. Inspector and the configuration editors own the shared stable-ID `SchedulerSelect`; Overview toggles do not change selection. Selection never limits global resolution: every configured Scheduler remains resolved and included in `GlobalSchedulerStatus`.
+
+`TestDateTime` is a Diagnostics-only commissioning aid. Blank means live time; a non-empty value deliberately pins Inspector and aggregate JSON output until the operator presses Use Live Time. It never changes live execution cursors.
