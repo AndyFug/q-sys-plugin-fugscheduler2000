@@ -229,8 +229,27 @@ def main() -> None:
         day_id = "qrc-execution-day"
         week_id = "qrc-execution-week"
         model["schedulers"].append(scheduler_fixture(scheduler_id, day_id, week_id, event_time))
-        set_value("ScheduleData", json.dumps(model, indent=2), delay=0.5)
+        set_value("ScheduleData", json.dumps(model, indent=2), delay=1.3)
         set_value("SchedulerSelect", choice(scheduler_id, "Execution QRC Test"))
+        time.sleep(1.2)
+        press("ResolveTestTime")
+        plan_status = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
+        scheduler_entries = {item["id"]: item for item in plan_status["schedulers"]}
+        timer_phases = [item["execution"]["timerPhaseSeconds"] for item in plan_status["schedulers"]]
+        check(plan_status["performance"]["schedulerCount"] == len(model["schedulers"]), "one runtime plan exists per configured Scheduler")
+        check(len(set(timer_phases)) == len(timer_phases), "Scheduler poll timers use distinct staggered phases")
+        check(
+            all(item["execution"]["performance"]["pollCount"] > 0 for item in plan_status["schedulers"]),
+            "independent Scheduler timers have each completed at least one poll",
+        )
+        check(
+            plan_status["performance"]["eventCount"] >= 1
+            and plan_status["performance"]["actionCount"] >= 2,
+            "runtime performance status publishes Scheduler, Event, and Action counts",
+        )
+        preserved_scheduler_id = model["schedulers"][0]["id"]
+        preserved_generation = scheduler_entries[preserved_scheduler_id]["execution"]["planGeneration"]
+        preserved_phase = scheduler_entries[preserved_scheduler_id]["execution"]["timerPhaseSeconds"]
 
         editor = controls(
             "EventActionEnabled", "EventActionMode", "EventActionFireOnStartup",
@@ -245,7 +264,7 @@ def main() -> None:
         )
         check(editor["EventActionRepeatSeconds"]["String"] == "2", "repeat interval is visible in the Event Action editor")
 
-        set_value("AutomaticExecutionEnabled", True, delay=0.5)
+        set_value("AutomaticExecutionEnabled", True, delay=1.3)
         startup = controls("ExecutionStatus", "Status")
         check(
             "Callback 1" in startup["ExecutionStatus"]["String"]
@@ -307,6 +326,18 @@ def main() -> None:
         })
         set_value("ScheduleData", json.dumps(changed_model, indent=2), delay=1.3)
         changed_to_b = controls("ExecutionStatus")["ExecutionStatus"]["String"]
+        changed_status = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
+        changed_entries = {item["id"]: item for item in changed_status["schedulers"]}
+        check(
+            changed_entries[preserved_scheduler_id]["execution"]["planGeneration"] == preserved_generation
+            and changed_entries[preserved_scheduler_id]["execution"]["timerPhaseSeconds"] == preserved_phase,
+            "a scoped Scheduler edit preserves an unrelated Scheduler plan and timer",
+        )
+        check(
+            changed_entries[scheduler_id]["execution"]["planGeneration"]
+            != scheduler_entries[scheduler_id]["execution"]["planGeneration"],
+            "the affected Scheduler receives a rebuilt plan generation",
+        )
         check("Callback 2" in changed_to_b and "schedule change" in changed_to_b, "a schedule edit immediately reconciles the newly current stateful Event B")
 
         moved_model = json.loads(current_schedule_text())
@@ -402,7 +433,7 @@ def main() -> None:
             }],
             "overrides": [],
         })
-        set_value("ScheduleData", json.dumps(edge_model, indent=2), delay=0.5)
+        set_value("ScheduleData", json.dumps(edge_model, indent=2), delay=1.3)
         set_value("SchedulerSelect", choice(edge_scheduler_id, "Scheduled Edge QRC Test"))
         before_edge_log = diagnostic_text()
         one_shot_success = (
@@ -415,20 +446,21 @@ def main() -> None:
         )
         check(count_fragment(before_edge_log, one_shot_success) == 0, "one-shot edge marker is absent before arming")
 
-        set_value("AutomaticExecutionEnabled", True, delay=0.4)
+        set_value("AutomaticExecutionEnabled", True, delay=1.3)
         wait_seconds = max(0.0, (edge_at - edge_now).total_seconds()) + 2.2
         check(wait_seconds <= 95, "real scheduled edge requires no more than a short deterministic wait")
         time.sleep(wait_seconds)
 
         after_edge_log = diagnostic_text()
         edge_delta = after_edge_log[len(before_edge_log):] if after_edge_log.startswith(before_edge_log) else after_edge_log
+        edge_prefix = f'Scheduler "Scheduled Edge QRC Test" [{edge_scheduler_id}] | '
         ordered_fragments = [
-            'Event "Shared Edge A" [qrc-edge-a] | Action "Callback 1" [Callback1] | action=1 | reason=scheduled edge | Executed successfully',
-            'Event "Shared Edge A" [qrc-edge-a] | Action [MissingAction] | action=2 | reason=scheduled edge | Action is unavailable; execution skipped',
-            'Event "Shared Edge A" [qrc-edge-a] | Action "Callback Fail" [CallbackFail] | action=3 | reason=scheduled edge | Callback failed:',
-            'Event "Shared Edge A" [qrc-edge-a] | Action "Callback 2" [Callback2] | action=4 | reason=scheduled edge | Executed successfully',
-            'Event "Shared Edge B" [qrc-edge-b] | Action "Callback One Shot" [CallbackOneShot] | action=1 | reason=scheduled edge | Executed successfully',
-            'Event "Shared Edge B" [qrc-edge-b] | Action "Callback Repeat" [CallbackRepeat] | action=2 | reason=scheduled edge | Executed successfully',
+            edge_prefix + 'Event "Shared Edge A" [qrc-edge-a] | Action "Callback 1" [Callback1] | action=1 | reason=scheduled edge | Executed successfully',
+            edge_prefix + 'Event "Shared Edge A" [qrc-edge-a] | Action [MissingAction] | action=2 | reason=scheduled edge | Action is unavailable; execution skipped',
+            edge_prefix + 'Event "Shared Edge A" [qrc-edge-a] | Action "Callback Fail" [CallbackFail] | action=3 | reason=scheduled edge | Callback failed:',
+            edge_prefix + 'Event "Shared Edge A" [qrc-edge-a] | Action "Callback 2" [Callback2] | action=4 | reason=scheduled edge | Executed successfully',
+            edge_prefix + 'Event "Shared Edge B" [qrc-edge-b] | Action "Callback One Shot" [CallbackOneShot] | action=1 | reason=scheduled edge | Executed successfully',
+            edge_prefix + 'Event "Shared Edge B" [qrc-edge-b] | Action "Callback Repeat" [CallbackRepeat] | action=2 | reason=scheduled edge | Executed successfully',
         ]
         positions = [edge_delta.find(fragment) for fragment in ordered_fragments]
         check(all(position >= 0 for position in positions), "real future edge executes all success, missing, failure, and later Actions")

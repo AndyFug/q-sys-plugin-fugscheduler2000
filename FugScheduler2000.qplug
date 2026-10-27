@@ -2063,6 +2063,17 @@ if Controls then
     {key = "Sun", label = "Sunday", controlName = "WeekPatternSun"}
   }
 
+  -- Stop retained timers from a prior hot-loaded runtime before replacing its global table.
+  local PreviousFugSchedulerRuntime = FugSchedulerRuntime
+  if type(PreviousFugSchedulerRuntime) == "table" then
+    if PreviousFugSchedulerRuntime.executionTimer then
+      pcall(function() PreviousFugSchedulerRuntime.executionTimer:Stop() end)
+    end
+    for _, previousPlan in pairs(PreviousFugSchedulerRuntime.runtimePlans or {}) do
+      if previousPlan.timer then pcall(function() previousPlan.timer:Stop() end) end
+    end
+  end
+
   -- Hold the latest aggregate runtime snapshot for internal and debug-runtime consumers.
   FugSchedulerStatus = nil
 
@@ -2105,10 +2116,13 @@ if Controls then
     selectedOverrideIds = {},
     selectedEventIds = {},
     selectedEventActionIndexes = {},
-    executionStates = {},
-    executionTimer = nil,
+    runtimePlans = {},
+    nextPlanGeneration = 0,
     executionPollSeconds = 1,
     normalEdgeMaxDelaySeconds = 90,
+    occurrenceSafetyHorizonDays = 400,
+    rollingFutureDateCount = 2,
+    deferredRefreshGeneration = 0,
     lastExecutionMessage = "Automatic execution is disabled",
     uuidCounter = 0,
     uuidSeeded = false
@@ -3094,59 +3108,281 @@ if Controls then
     return os.time({year = dateParts.year, month = dateParts.month, day = dateParts.day, hour = hour, min = minute, sec = 0})
   end
 
-  -- Collect and sort resolved Events around a target date for cross-midnight lookup.
-  function FugSchedulerRuntime.collectTimeline(scheduler, targetDate, radiusDays)
-    local timeline = {}
-    local sequence = 0
+  -- Compare persisted model fragments while ignoring runtime-only underscore keys.
+  function FugSchedulerRuntime.persistedEqual(first, second)
+    if type(first) ~= type(second) then return false end
+    if type(first) ~= "table" then return first == second end
+    for key, value in pairs(first) do
+      if type(key) ~= "string" or string.sub(key, 1, 1) ~= "_" then
+        if not FugSchedulerRuntime.persistedEqual(value, second[key]) then return false end
+      end
+    end
+    for key in pairs(second) do
+      if (type(key) ~= "string" or string.sub(key, 1, 1) ~= "_") and first[key] == nil then return false end
+    end
+    return true
+  end
 
-    for offset = -radiusDays, radiusDays do
-      local dateText = FugSchedulerRuntime.shiftDate(targetDate, offset)
-      local dayPattern = FugSchedulerRuntime.resolveDayPattern(scheduler, dateText)
-      for _, event in ipairs(dayPattern.events) do
-        sequence = sequence + 1
-        table.insert(timeline, {
-          timestamp = FugSchedulerRuntime.eventTimestamp(dateText, event.time),
-          date = dateText,
-          time = event.time,
+  -- Compile each Day Pattern once into stable chronological Event order.
+  function FugSchedulerRuntime.compileSchedulerEvents(scheduler)
+    local compiled = {}
+    local eventCount, actionCount = 0, 0
+    for _, dayPattern in ipairs(scheduler.dayPatterns or {}) do
+      local rows = {}
+      for persistedOrder, event in ipairs(dayPattern.events or {}) do
+        table.insert(rows, {
           event = event,
-          dayPattern = dayPattern,
-          sequence = sequence
+          minutes = event._minutes,
+          persistedOrder = persistedOrder
         })
+        eventCount = eventCount + 1
+        actionCount = actionCount + #(event.actions or {})
+      end
+      table.sort(rows, function(first, second)
+        if first.minutes == second.minutes then return first.persistedOrder < second.persistedOrder end
+        return first.minutes < second.minutes
+      end)
+      compiled[dayPattern.id] = rows
+    end
+    return compiled, eventCount, actionCount
+  end
+
+  -- Create a runtime-only Scheduler plan; callers decide whether to attach a timer.
+  function FugSchedulerRuntime.createRuntimePlan(scheduler, configurationRevision)
+    local started = Timer.Now()
+    FugSchedulerRuntime.nextPlanGeneration = FugSchedulerRuntime.nextPlanGeneration + 1
+    local compiledEvents, eventCount, actionCount = FugSchedulerRuntime.compileSchedulerEvents(scheduler)
+    local plan = {
+      schedulerId = scheduler.id,
+      scheduler = scheduler,
+      configurationRevision = configurationRevision,
+      generation = FugSchedulerRuntime.nextPlanGeneration,
+      compiledEventsByDayPatternId = compiledEvents,
+      dateCache = {},
+      windowDates = {},
+      occurrences = {},
+      previousIndex = nil,
+      currentIndex = nil,
+      nextIndex = nil,
+      previousOccurrence = nil,
+      currentOccurrence = nil,
+      nextOccurrence = nil,
+      initialized = false,
+      lastObservedTimestamp = nil,
+      activeOccurrenceKey = nil,
+      activeOccurrence = nil,
+      repeatDeadlines = {},
+      lastEnabled = nil,
+      lastPaused = nil,
+      lastAutomaticEnabled = nil,
+      lastTransitionReason = "Not initialized",
+      lastCallbackResult = "None",
+      timer = nil,
+      timerPhaseSeconds = nil,
+      timerPhasePending = false,
+      lastPollElapsedTime = nil,
+      forwardSearchLimitDate = nil,
+      metrics = {
+        schedulerCount = 1,
+        eventCount = eventCount,
+        actionCount = actionCount,
+        pollCount = 0,
+        totalPollDuration = 0,
+        maximumPollDuration = 0,
+        delayedPollCount = 0,
+        planRebuildDuration = 0
+      }
+    }
+    plan.metrics.planRebuildDuration = math.max(0, Timer.Now() - started)
+    return plan
+  end
+
+  -- Resolve and cache one local date, including its already-ordered Event occurrences.
+  function FugSchedulerRuntime.resolvePlanDate(plan, dateText)
+    local cached = plan.dateCache[dateText]
+    if cached then return cached end
+    local dayPattern, source, rule = FugSchedulerRuntime.resolveDayPattern(plan.scheduler, dateText)
+    local occurrences = {}
+    for _, compiled in ipairs(plan.compiledEventsByDayPatternId[dayPattern.id] or {}) do
+      table.insert(occurrences, {
+        timestamp = FugSchedulerRuntime.eventTimestamp(dateText, compiled.event.time),
+        date = dateText,
+        time = compiled.event.time,
+        event = compiled.event,
+        eventId = compiled.event.id,
+        dayPattern = dayPattern,
+        dayPatternId = dayPattern.id,
+        sequence = compiled.persistedOrder
+      })
+    end
+    cached = {
+      date = dateText,
+      dayPattern = dayPattern,
+      resolutionSource = source,
+      resolutionRule = rule,
+      occurrences = occurrences
+    }
+    plan.dateCache[dateText] = cached
+    return cached
+  end
+
+  -- Refresh authoritative Previous/Current/Next references from the current index.
+  function FugSchedulerRuntime.refreshPlanCursor(plan)
+    local count = #plan.occurrences
+    local currentIndex = plan.currentIndex
+    plan.previousIndex = currentIndex and currentIndex > 1 and (currentIndex - 1) or nil
+    plan.nextIndex = currentIndex and currentIndex < count and (currentIndex + 1) or (not currentIndex and count > 0 and 1 or nil)
+    plan.previousOccurrence = plan.previousIndex and plan.occurrences[plan.previousIndex] or nil
+    plan.currentOccurrence = currentIndex and plan.occurrences[currentIndex] or nil
+    plan.nextOccurrence = plan.nextIndex and plan.occurrences[plan.nextIndex] or nil
+  end
+
+  -- Rebuild the small ordered occurrence window around an arbitrary timestamp.
+  function FugSchedulerRuntime.positionPlanCursor(plan, timestamp)
+    local targetDate = os.date("%Y-%m-%d", timestamp)
+    if (plan.metrics.eventCount or 0) == 0 then
+      FugSchedulerRuntime.resolvePlanDate(plan, targetDate)
+      plan.windowDates = {targetDate}
+      plan.occurrences = {}
+      plan.currentIndex = nil
+      plan.forwardSearchLimitDate = FugSchedulerRuntime.shiftDate(targetDate, FugSchedulerRuntime.occurrenceSafetyHorizonDays)
+      FugSchedulerRuntime.refreshPlanCursor(plan)
+      return nil
+    end
+    local horizon = FugSchedulerRuntime.occurrenceSafetyHorizonDays
+    local minimumOffset, maximumOffset = 0, 0
+    local priorCount, nextFound = 0, false
+
+    for offset = 0, -horizon, -1 do
+      local entry = FugSchedulerRuntime.resolvePlanDate(plan, FugSchedulerRuntime.shiftDate(targetDate, offset))
+      for _, occurrence in ipairs(entry.occurrences) do
+        if occurrence.timestamp <= timestamp then priorCount = priorCount + 1 end
+      end
+      minimumOffset = offset
+      if priorCount >= 2 then break end
+    end
+
+    for offset = 0, horizon do
+      local entry = FugSchedulerRuntime.resolvePlanDate(plan, FugSchedulerRuntime.shiftDate(targetDate, offset))
+      for _, occurrence in ipairs(entry.occurrences) do
+        if occurrence.timestamp > timestamp then nextFound = true break end
+      end
+      maximumOffset = offset
+      if nextFound then
+        maximumOffset = math.min(horizon, offset + FugSchedulerRuntime.rollingFutureDateCount)
+        break
       end
     end
 
-    table.sort(timeline, function(first, second)
-      if first.timestamp == second.timestamp then return first.sequence < second.sequence end
-      return first.timestamp < second.timestamp
-    end)
-    return timeline
-  end
-
-  -- Resolve previous, current, and next Events for an explicit timestamp without executing Actions.
-  function FugSchedulerRuntime.resolveAt(scheduler, timestamp, radiusDays)
-    local targetDate = os.date("%Y-%m-%d", timestamp)
-    local resolvedDayPattern, resolutionSource, resolutionRule = FugSchedulerRuntime.resolveDayPattern(scheduler, targetDate)
-    local timeline = FugSchedulerRuntime.collectTimeline(scheduler, targetDate, radiusDays or 31)
-    local currentIndex = nil
-
-    for index, item in ipairs(timeline) do
-      if item.timestamp <= timestamp then currentIndex = index else break end
+    plan.windowDates = {}
+    plan.occurrences = {}
+    for offset = minimumOffset, maximumOffset do
+      local dateText = FugSchedulerRuntime.shiftDate(targetDate, offset)
+      local entry = FugSchedulerRuntime.resolvePlanDate(plan, dateText)
+      table.insert(plan.windowDates, dateText)
+      for _, occurrence in ipairs(entry.occurrences) do table.insert(plan.occurrences, occurrence) end
     end
 
-    local previous = currentIndex and timeline[currentIndex - 1] or nil
-    local current = currentIndex and timeline[currentIndex] or nil
-    local nextEvent = currentIndex and timeline[currentIndex + 1] or timeline[1]
+    plan.currentIndex = nil
+    for index, occurrence in ipairs(plan.occurrences) do
+      if occurrence.timestamp <= timestamp then plan.currentIndex = index else break end
+    end
+    FugSchedulerRuntime.refreshPlanCursor(plan)
+    plan.forwardSearchLimitDate = not plan.nextOccurrence and plan.windowDates[#plan.windowDates] or nil
+    return plan.currentOccurrence
+  end
 
+  -- Append dates incrementally until a future occurrence is available or the 400-day safety horizon is reached.
+  function FugSchedulerRuntime.extendPlanForward(plan)
+    if (plan.metrics.eventCount or 0) == 0 then return end
+    local lastDate = plan.windowDates[#plan.windowDates] or os.date("%Y-%m-%d", plan.lastObservedTimestamp or os.time())
+    if plan.forwardSearchLimitDate and lastDate >= plan.forwardSearchLimitDate then return end
+    local appended = 0
+    while not plan.nextOccurrence and appended < FugSchedulerRuntime.occurrenceSafetyHorizonDays do
+      lastDate = FugSchedulerRuntime.shiftDate(lastDate, 1)
+      local entry = FugSchedulerRuntime.resolvePlanDate(plan, lastDate)
+      table.insert(plan.windowDates, lastDate)
+      for _, occurrence in ipairs(entry.occurrences) do table.insert(plan.occurrences, occurrence) end
+      appended = appended + 1
+      FugSchedulerRuntime.refreshPlanCursor(plan)
+    end
+    if plan.nextOccurrence then
+      plan.forwardSearchLimitDate = nil
+      for _ = 1, FugSchedulerRuntime.rollingFutureDateCount do
+        lastDate = FugSchedulerRuntime.shiftDate(lastDate, 1)
+        local entry = FugSchedulerRuntime.resolvePlanDate(plan, lastDate)
+        table.insert(plan.windowDates, lastDate)
+        for _, occurrence in ipairs(entry.occurrences) do table.insert(plan.occurrences, occurrence) end
+      end
+      FugSchedulerRuntime.refreshPlanCursor(plan)
+    else
+      plan.forwardSearchLimitDate = lastDate
+    end
+  end
+
+  -- Drop obsolete occurrence history while retaining the authoritative Previous occurrence.
+  function FugSchedulerRuntime.trimPlanWindow(plan)
+    local keepFrom = plan.previousIndex or plan.currentIndex or 1
+    if keepFrom <= 1 then return end
+    local trimmed = {}
+    for index = keepFrom, #plan.occurrences do table.insert(trimmed, plan.occurrences[index]) end
+    plan.occurrences = trimmed
+    plan.currentIndex = plan.currentIndex and (plan.currentIndex - keepFrom + 1) or nil
+
+    local firstDate = trimmed[1] and trimmed[1].date or nil
+    if firstDate then
+      local dates = {}
+      for _, dateText in ipairs(plan.windowDates) do
+        if dateText >= firstDate then table.insert(dates, dateText) end
+      end
+      plan.windowDates = dates
+      for dateText in pairs(plan.dateCache) do
+        if dateText < firstDate then plan.dateCache[dateText] = nil end
+      end
+    end
+    FugSchedulerRuntime.refreshPlanCursor(plan)
+  end
+
+  -- Advance the cached cursor and return all genuinely crossed occurrences in order.
+  function FugSchedulerRuntime.advancePlanCursor(plan, fromTimestamp, toTimestamp)
+    local crossed = {}
+    if not plan.nextOccurrence and plan.forwardSearchLimitDate and
+        os.date("%Y-%m-%d", toTimestamp) >= plan.forwardSearchLimitDate then
+      plan.forwardSearchLimitDate = nil
+    end
+    if not plan.nextOccurrence then FugSchedulerRuntime.extendPlanForward(plan) end
+    while plan.nextOccurrence and plan.nextOccurrence.timestamp <= toTimestamp do
+      local occurrence = plan.nextOccurrence
+      if occurrence.timestamp > fromTimestamp then table.insert(crossed, occurrence) end
+      plan.currentIndex = plan.nextIndex
+      FugSchedulerRuntime.refreshPlanCursor(plan)
+      if not plan.nextOccurrence then FugSchedulerRuntime.extendPlanForward(plan) end
+    end
+    FugSchedulerRuntime.trimPlanWindow(plan)
+    return crossed
+  end
+
+  -- Build a resolver result from one positioned plan without changing live execution state.
+  function FugSchedulerRuntime.planResolutionResult(plan, timestamp)
+    local targetDate = os.date("%Y-%m-%d", timestamp)
+    local dateEntry = FugSchedulerRuntime.resolvePlanDate(plan, targetDate)
     return {
       timestamp = timestamp,
       targetDate = targetDate,
-      resolvedDayPattern = resolvedDayPattern,
-      resolutionSource = resolutionSource,
-      resolutionRule = resolutionRule,
-      previous = previous,
-      current = current,
-      next = nextEvent
+      resolvedDayPattern = dateEntry.dayPattern,
+      resolutionSource = dateEntry.resolutionSource,
+      resolutionRule = dateEntry.resolutionRule,
+      previous = plan.previousOccurrence,
+      current = plan.currentOccurrence,
+      next = plan.nextOccurrence
     }
+  end
+
+  -- Resolve an arbitrary timestamp incrementally without mutating the live Scheduler cursor.
+  function FugSchedulerRuntime.resolveAt(scheduler, timestamp)
+    local plan = FugSchedulerRuntime.createRuntimePlan(scheduler, nil)
+    FugSchedulerRuntime.positionPlanCursor(plan, timestamp)
+    return FugSchedulerRuntime.planResolutionResult(plan, timestamp)
   end
 
   -- Format an Event occurrence for compact status display.
@@ -3254,10 +3490,80 @@ if Controls then
     )
   end
 
+  -- Return Event and Event Action counts used to decide whether UI/status refresh should be deferred.
+  function FugSchedulerRuntime.scheduleWorkload(schedule)
+    local eventCount, actionCount = 0, 0
+    for _, scheduler in ipairs(schedule.schedulers or {}) do
+      for _, dayPattern in ipairs(scheduler.dayPatterns or {}) do
+        eventCount = eventCount + #(dayPattern.events or {})
+        for _, event in ipairs(dayPattern.events or {}) do actionCount = actionCount + #(event.actions or {}) end
+      end
+    end
+    return eventCount, actionCount
+  end
+
+  -- Refresh a large installed model in bounded Scheduler chunks and discard obsolete deferred work.
+  function FugSchedulerRuntime.deferInstalledScheduleRefresh(summary)
+    FugSchedulerRuntime.deferredRefreshGeneration = FugSchedulerRuntime.deferredRefreshGeneration + 1
+    local generation = FugSchedulerRuntime.deferredRefreshGeneration
+    local schedule = FugSchedulerRuntime.activeSchedule
+    Timer.CallAfter(function()
+      if generation ~= FugSchedulerRuntime.deferredRefreshGeneration or schedule ~= FugSchedulerRuntime.activeSchedule then return end
+      local requested = Controls.TestDateTime and Controls.TestDateTime.String or ""
+      local timestamp, parseError = FugSchedulerRuntime.parseDateTime(requested)
+      if not timestamp then
+        FugSchedulerRuntime.setText("ScheduleStatus", "Test date/time error: " .. tostring(parseError))
+        return
+      end
+      local state = {index = 1, statuses = {}, resultsById = {}, hasResolutionError = false}
+      local function step()
+        if generation ~= FugSchedulerRuntime.deferredRefreshGeneration or schedule ~= FugSchedulerRuntime.activeSchedule then return end
+        local lastIndex = math.min(#schedule.schedulers, state.index + 3)
+        for index = state.index, lastIndex do
+          local scheduler = schedule.schedulers[index]
+          local resolveOk, result = pcall(function()
+            local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
+            if requested == "" and plan and plan.currentOccurrence then
+              return FugSchedulerRuntime.planResolutionResult(plan, timestamp)
+            end
+            return FugSchedulerRuntime.resolveAt(scheduler, timestamp)
+          end)
+          if resolveOk then
+            state.resultsById[scheduler.id] = result
+            table.insert(state.statuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, nil))
+          else
+            state.hasResolutionError = true
+            table.insert(state.statuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, nil, result))
+          end
+        end
+        state.index = lastIndex + 1
+        if state.index <= #schedule.schedulers then
+          Timer.CallAfter(step, 0.02)
+          return
+        end
+        FugSchedulerRuntime.resolutionResultsById = state.resultsById
+        FugSchedulerRuntime.publishGlobalStatus(timestamp, state.statuses, state.hasResolutionError)
+        local selected = FugSchedulerRuntime.selectedScheduler()
+        local selectedResult = selected and state.resultsById[selected.id] or nil
+        if selected and selectedResult then FugSchedulerRuntime.publishResolution(selected, selectedResult) end
+        Timer.CallAfter(function()
+          if generation ~= FugSchedulerRuntime.deferredRefreshGeneration or schedule ~= FugSchedulerRuntime.activeSchedule then return end
+          FugSchedulerRuntime.refreshSchedulerEditor(summary)
+          FugSchedulerRuntime.refreshDayPatternEditor(summary)
+          FugSchedulerRuntime.refreshWeekPatternEditor(summary)
+          FugSchedulerRuntime.refreshOverrideEditor(summary)
+          FugSchedulerRuntime.refreshStatus()
+        end, 0.02)
+      end
+      step()
+    end, 2.1)
+  end
+
   -- Atomically install a completely validated model and rebuild every derived view.
   function FugSchedulerRuntime.installValidatedSchedule(validated, warnings, selectedId, statusPrefix)
     FugSchedulerRuntime.activeSchedule = validated
     FugSchedulerRuntime.scheduleWarnings = warnings or {}
+    FugSchedulerRuntime.synchronizeRuntimePlans(validated)
     FugSchedulerRuntime.selectedSchedulerId = selectedId
     FugSchedulerRuntime.refreshSchedulerChoices()
 
@@ -3268,12 +3574,20 @@ if Controls then
       FugSchedulerRuntime.logLine("Schedule warning: " .. warning)
     end
 
-    FugSchedulerRuntime.resolveSelectedTime()
-    FugSchedulerRuntime.refreshSchedulerEditor(summary)
-    FugSchedulerRuntime.refreshDayPatternEditor(summary)
-    FugSchedulerRuntime.refreshWeekPatternEditor(summary)
-    FugSchedulerRuntime.refreshOverrideEditor(summary)
-    FugSchedulerRuntime.refreshStatus()
+    local eventCount = FugSchedulerRuntime.scheduleWorkload(validated)
+    if #validated.schedulers > 10 or eventCount > 200 then
+      FugSchedulerRuntime.setText("ScheduleStatus", summary .. "; refreshing status asynchronously")
+      FugSchedulerRuntime.deferInstalledScheduleRefresh(summary)
+      FugSchedulerRuntime.refreshStatus()
+    else
+      FugSchedulerRuntime.deferredRefreshGeneration = FugSchedulerRuntime.deferredRefreshGeneration + 1
+      FugSchedulerRuntime.resolveSelectedTime()
+      FugSchedulerRuntime.refreshSchedulerEditor(summary)
+      FugSchedulerRuntime.refreshDayPatternEditor(summary)
+      FugSchedulerRuntime.refreshWeekPatternEditor(summary)
+      FugSchedulerRuntime.refreshOverrideEditor(summary)
+      FugSchedulerRuntime.refreshStatus()
+    end
   end
 
   -- Apply one editor mutation to a clean candidate, then validate, serialize, persist, and install it.
@@ -4708,29 +5022,21 @@ if Controls then
     return Controls.AutomaticExecutionEnabled and Controls.AutomaticExecutionEnabled.Boolean == true or false
   end
 
-  -- Build a stable runtime-only identity for one resolved Event occurrence.
+  -- Build a stable runtime-only identity for one dated, ordered Event occurrence.
   function FugSchedulerRuntime.occurrenceKey(item)
     if not item then return nil end
-    return tostring(item.timestamp) .. "\31" .. tostring(item.event.id)
+    return table.concat({
+      tostring(item.timestamp),
+      tostring(item.date),
+      tostring(item.dayPatternId or (item.dayPattern and item.dayPattern.id)),
+      tostring(item.eventId or (item.event and item.event.id)),
+      tostring(item.sequence)
+    }, "\31")
   end
 
-  -- Return or create one Scheduler's runtime execution state.
+  -- Return one Scheduler's compiled runtime plan.
   function FugSchedulerRuntime.executionState(schedulerId)
-    local state = FugSchedulerRuntime.executionStates[schedulerId]
-    if state then return state end
-    state = {
-      initialized = false,
-      lastObservedTimestamp = nil,
-      activeOccurrenceKey = nil,
-      activeOccurrence = nil,
-      repeatDeadlines = {},
-      lastEnabled = nil,
-      lastPaused = nil,
-      lastTransitionReason = "Not initialized",
-      lastCallbackResult = "None"
-    }
-    FugSchedulerRuntime.executionStates[schedulerId] = state
-    return state
+    return FugSchedulerRuntime.runtimePlans[schedulerId]
   end
 
   -- Publish the latest execution result and route it through the centralized logger.
@@ -4769,7 +5075,7 @@ if Controls then
         tostring(eventAction.actionId)
       )
       local state = FugSchedulerRuntime.executionState(scheduler.id)
-      state.lastCallbackResult = message
+      if state then state.lastCallbackResult = message end
       FugSchedulerRuntime.setExecutionMessage(message, LogLevel.ERROR, context, "Action is unavailable; execution skipped")
       return false
     end
@@ -4785,7 +5091,7 @@ if Controls then
         reason,
         actionIndex
       )
-      state.lastCallbackResult = message
+      if state then state.lastCallbackResult = message end
       local level = reason == "repeat" and LogLevel.DEBUG or LogLevel.INFO
       FugSchedulerRuntime.setExecutionMessage(message, level, context, "Executed successfully")
       return true
@@ -4798,7 +5104,7 @@ if Controls then
       action.id,
       tostring(callbackError)
     )
-    state.lastCallbackResult = message
+    if state then state.lastCallbackResult = message end
     FugSchedulerRuntime.setExecutionMessage(
       message,
       LogLevel.ERROR,
@@ -4856,19 +5162,6 @@ if Controls then
     FugSchedulerRuntime.scheduleRepeats(state, occurrence, now)
   end
 
-  -- Return every Event occurrence crossed during one ordinary polling interval.
-  function FugSchedulerRuntime.crossedOccurrences(scheduler, fromTimestamp, toTimestamp)
-    local targetDate = os.date("%Y-%m-%d", toTimestamp)
-    local timeline = FugSchedulerRuntime.collectTimeline(scheduler, targetDate, 2)
-    local crossed = {}
-    for _, occurrence in ipairs(timeline) do
-      if occurrence.timestamp > fromTimestamp and occurrence.timestamp <= toTimestamp then
-        table.insert(crossed, occurrence)
-      end
-    end
-    return crossed
-  end
-
   -- Run due repeats once and reschedule from now so delayed polls never create callback bursts.
   function FugSchedulerRuntime.processRepeats(scheduler, state, currentOccurrence, now)
     if not currentOccurrence or state.activeOccurrenceKey ~= FugSchedulerRuntime.occurrenceKey(currentOccurrence) then return end
@@ -4902,122 +5195,220 @@ if Controls then
     end
   end
 
-  -- Advance one Scheduler's live execution state while preserving resolver operation when blocked.
-  function FugSchedulerRuntime.processSchedulerExecution(scheduler, now)
-    local state = FugSchedulerRuntime.executionState(scheduler.id)
-    local result = FugSchedulerRuntime.resolveAt(scheduler, now, 2)
-    if not result.current then result = FugSchedulerRuntime.resolveAt(scheduler, now, 31) end
-    local currentOccurrence = result.current
-    local currentKey = FugSchedulerRuntime.occurrenceKey(currentOccurrence)
-    local allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler.enabled and not scheduler.paused
+  -- Process one Scheduler from its cached cursor; this is the only steady-state execution path.
+  function FugSchedulerRuntime.processSchedulerExecution(plan)
+    local scheduler = plan.scheduler
+    local now = os.time()
+    local automaticEnabled = FugSchedulerRuntime.automaticExecutionEnabled()
+    local allowed = automaticEnabled and scheduler.enabled and not scheduler.paused
 
-    if not state.initialized then
-      state.initialized = true
-      state.lastObservedTimestamp = now
-      state.lastEnabled = scheduler.enabled
-      state.lastPaused = scheduler.paused
-      state.activeOccurrence = currentOccurrence
-      state.activeOccurrenceKey = currentKey
-      state.lastTransitionReason = "Initialized"
+    if not plan.initialized then
+      FugSchedulerRuntime.positionPlanCursor(plan, now)
+      plan.initialized = true
+      plan.lastObservedTimestamp = now
+      plan.lastEnabled = scheduler.enabled
+      plan.lastPaused = scheduler.paused
+      plan.lastAutomaticEnabled = automaticEnabled
+      plan.activeOccurrence = plan.currentOccurrence
+      plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+      plan.lastTransitionReason = "Initialized"
       if allowed then
-        FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, state, currentOccurrence, "fireOnStartup", "startup", now)
+        FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "startup", now)
       end
       return
     end
 
-    local elapsed = now - state.lastObservedTimestamp
+    local elapsed = now - plan.lastObservedTimestamp
     if elapsed < 0 then
-      state.activeOccurrence = currentOccurrence
-      state.activeOccurrenceKey = currentKey
-      state.lastTransitionReason = "Clock moved backwards"
-      FugSchedulerRuntime.clearRepeats(state)
+      FugSchedulerRuntime.positionPlanCursor(plan, now)
+      plan.activeOccurrence = plan.currentOccurrence
+      plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+      plan.lastTransitionReason = "Clock moved backwards"
+      FugSchedulerRuntime.clearRepeats(plan)
       FugSchedulerRuntime.setExecutionMessage(
         "Clock moved backwards; execution state reset without replay",
         LogLevel.INFO,
         {schedulerLabel = scheduler.label, schedulerId = scheduler.id, reason = "clock moved backwards"}
       )
-    elseif not FugSchedulerRuntime.automaticExecutionEnabled() or not scheduler.enabled then
-      state.activeOccurrence = currentOccurrence
-      state.activeOccurrenceKey = currentKey
-      state.lastTransitionReason = not scheduler.enabled and "Scheduler disabled" or "Automatic execution disabled"
-      FugSchedulerRuntime.clearRepeats(state)
-    elseif scheduler.paused then
-      state.activeOccurrence = currentOccurrence
-      state.activeOccurrenceKey = currentKey
-      state.lastTransitionReason = "Scheduler paused"
-      FugSchedulerRuntime.clearRepeats(state)
-    elseif state.lastEnabled == false and scheduler.enabled then
-      FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, state, currentOccurrence, "fireOnStartup", "enabled", now)
-    elseif state.lastPaused == true and not scheduler.paused then
-      FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, state, currentOccurrence, "fireOnResume", "resume", now)
     elseif elapsed > FugSchedulerRuntime.normalEdgeMaxDelaySeconds then
-      FugSchedulerRuntime.restoreCurrentOccurrence(
-        scheduler,
-        state,
-        currentOccurrence,
-        "fireOnStartup",
-        "forward clock jump or delayed poll",
-        now
-      )
+      FugSchedulerRuntime.positionPlanCursor(plan, now)
+      plan.activeOccurrence = plan.currentOccurrence
+      plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+      FugSchedulerRuntime.clearRepeats(plan)
+      if allowed then
+        FugSchedulerRuntime.restoreCurrentOccurrence(
+          scheduler,
+          plan,
+          plan.currentOccurrence,
+          "fireOnStartup",
+          "forward clock jump or delayed poll",
+          now
+        )
+      else
+        plan.lastTransitionReason = "Forward clock jump while execution blocked"
+      end
       FugSchedulerRuntime.setExecutionMessage(
         string.format("%s skipped historical one-shots after a %d-second clock discontinuity", scheduler.label, elapsed),
         LogLevel.INFO,
         {schedulerLabel = scheduler.label, schedulerId = scheduler.id, reason = "clock discontinuity"}
       )
     else
-      local crossed = FugSchedulerRuntime.crossedOccurrences(scheduler, state.lastObservedTimestamp, now)
-      if #crossed > 0 then
+      local crossed = FugSchedulerRuntime.advancePlanCursor(plan, plan.lastObservedTimestamp, now)
+      if not automaticEnabled or not scheduler.enabled then
+        plan.activeOccurrence = plan.currentOccurrence
+        plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+        plan.lastTransitionReason = not scheduler.enabled and "Scheduler disabled" or "Automatic execution disabled"
+        FugSchedulerRuntime.clearRepeats(plan)
+      elseif scheduler.paused then
+        plan.activeOccurrence = plan.currentOccurrence
+        plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+        plan.lastTransitionReason = "Scheduler paused"
+        FugSchedulerRuntime.clearRepeats(plan)
+      elseif plan.lastAutomaticEnabled == false and automaticEnabled then
+        FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "startup", now)
+      elseif plan.lastEnabled == false and scheduler.enabled then
+        FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "enabled", now)
+      elseif plan.lastPaused == true and not scheduler.paused then
+        FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnResume", "resume", now)
+      else
         for _, occurrence in ipairs(crossed) do
-          FugSchedulerRuntime.executeOccurrence(scheduler, state, occurrence, "scheduled edge", now)
+          FugSchedulerRuntime.executeOccurrence(scheduler, plan, occurrence, "scheduled edge", now)
         end
-      elseif state.activeOccurrenceKey ~= currentKey then
-        FugSchedulerRuntime.restoreCurrentOccurrence(
-          scheduler,
-          state,
-          currentOccurrence,
-          nil,
-          "schedule change",
-          now
-        )
+        if #crossed == 0 then
+          plan.activeOccurrence = plan.currentOccurrence
+          plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+        end
+        FugSchedulerRuntime.processRepeats(scheduler, plan, plan.currentOccurrence, now)
       end
-      FugSchedulerRuntime.processRepeats(scheduler, state, currentOccurrence, now)
     end
 
-    state.lastObservedTimestamp = now
-    state.lastEnabled = scheduler.enabled
-    state.lastPaused = scheduler.paused
+    plan.lastObservedTimestamp = now
+    plan.lastEnabled = scheduler.enabled
+    plan.lastPaused = scheduler.paused
+    plan.lastAutomaticEnabled = automaticEnabled
   end
 
-  -- Poll every Scheduler independently so one resolver or callback failure cannot stop the others.
+  -- Measure and isolate one Scheduler timer callback without logging routine polls.
+  function FugSchedulerRuntime.pollRuntimePlan(schedulerId, generation)
+    local plan = FugSchedulerRuntime.runtimePlans[schedulerId]
+    if not plan or plan.generation ~= generation then return end
+    local started = Timer.Now()
+    local previousOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+    local previousTransitionReason = plan.lastTransitionReason
+    if plan.lastPollElapsedTime and started - plan.lastPollElapsedTime > FugSchedulerRuntime.executionPollSeconds * 1.5 then
+      plan.metrics.delayedPollCount = plan.metrics.delayedPollCount + 1
+    end
+    plan.lastPollElapsedTime = started
+
+    local processOk, processError = pcall(FugSchedulerRuntime.processSchedulerExecution, plan)
+    local duration = math.max(0, Timer.Now() - started)
+    plan.metrics.pollCount = plan.metrics.pollCount + 1
+    plan.metrics.totalPollDuration = plan.metrics.totalPollDuration + duration
+    if duration > plan.metrics.maximumPollDuration then plan.metrics.maximumPollDuration = duration end
+
+    if processOk and (previousOccurrenceKey ~= FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence) or
+        previousTransitionReason ~= plan.lastTransitionReason) then
+      FugSchedulerRuntime.publishLiveRuntimeStatus()
+    elseif not processOk then
+      plan.lastCallbackResult = "Execution error: " .. tostring(processError)
+      FugSchedulerRuntime.setExecutionMessage(
+        "Execution error for Scheduler " .. schedulerId .. ": " .. tostring(processError),
+        LogLevel.ERROR,
+        {schedulerLabel = plan.scheduler.label, schedulerId = schedulerId},
+        "Execution engine failed: " .. tostring(processError)
+      )
+    end
+  end
+
+  -- Keep orphaned callbacks from pre-plan hot loads harmless until their timer is collected.
   function FugSchedulerRuntime.executionPoll()
-    if not FugSchedulerRuntime.activeSchedule then return end
-    local now = os.time()
-    local existing = {}
-    for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
-      existing[scheduler.id] = true
-      local processOk, processError = pcall(FugSchedulerRuntime.processSchedulerExecution, scheduler, now)
-      if not processOk then
-        local state = FugSchedulerRuntime.executionState(scheduler.id)
-        state.lastCallbackResult = "Execution error: " .. tostring(processError)
-        FugSchedulerRuntime.setExecutionMessage(
-          "Execution error for Scheduler " .. scheduler.id .. ": " .. tostring(processError),
-          LogLevel.ERROR,
-          {schedulerLabel = scheduler.label, schedulerId = scheduler.id},
-          "Execution engine failed: " .. tostring(processError)
-        )
-      end
+  end
+
+  -- Start one retained timer with a deliberate first-phase offset, then poll every second.
+  function FugSchedulerRuntime.startPlanTimer(plan, schedulerIndex, schedulerCount)
+    local phase = 0.05 + (((schedulerIndex - 1) / math.max(1, schedulerCount)) * 0.90)
+    plan.timerPhaseSeconds = phase
+    plan.timerPhasePending = true
+    plan.timer = Timer.New()
+    local schedulerId, generation = plan.schedulerId, plan.generation
+    plan.timer.EventHandler = function()
+      FugSchedulerRuntime.pollRuntimePlan(schedulerId, generation)
     end
-    for schedulerId in pairs(FugSchedulerRuntime.executionStates) do
-      if not existing[schedulerId] then FugSchedulerRuntime.executionStates[schedulerId] = nil end
+    Timer.CallAfter(function()
+      local current = FugSchedulerRuntime.runtimePlans[schedulerId]
+      if not current or current.generation ~= generation or not current.timer then return end
+      current.timerPhasePending = false
+      current.timer:Start(FugSchedulerRuntime.executionPollSeconds)
+    end, phase)
+  end
+
+  -- Stop a replaced or deleted plan so its obsolete callback cannot process configuration.
+  function FugSchedulerRuntime.stopRuntimePlan(plan)
+    if plan and plan.timer then plan.timer:Stop() end
+    if plan then plan.timer = nil end
+  end
+
+  -- Reconcile a rebuilt plan against its prior Current occurrence without replaying one-shots.
+  function FugSchedulerRuntime.reconcileRuntimePlan(plan, previousPlan, now)
+    if not previousPlan then return end
+    FugSchedulerRuntime.positionPlanCursor(plan, now)
+
+    plan.initialized = previousPlan.initialized
+    plan.lastObservedTimestamp = now
+    plan.lastEnabled = previousPlan.lastEnabled
+    plan.lastPaused = previousPlan.lastPaused
+    plan.lastAutomaticEnabled = previousPlan.lastAutomaticEnabled
+    plan.lastCallbackResult = previousPlan.lastCallbackResult
+    plan.activeOccurrence = plan.currentOccurrence
+    plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+    if not previousPlan.initialized then return end
+
+    local scheduler = plan.scheduler
+    local allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler.enabled and not scheduler.paused
+    local previousKey = FugSchedulerRuntime.occurrenceKey(previousPlan.currentOccurrence)
+    local currentKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+    if not allowed then
+      FugSchedulerRuntime.clearRepeats(plan)
+      plan.lastTransitionReason = scheduler.paused and "Scheduler paused" or "Execution blocked after plan rebuild"
+    elseif previousPlan.scheduler.enabled == false and scheduler.enabled then
+      FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "enabled", now)
+    elseif previousPlan.scheduler.paused == true and not scheduler.paused then
+      FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnResume", "resume", now)
+    elseif previousKey ~= currentKey then
+      FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, nil, "schedule change", now)
+    else
+      plan.lastTransitionReason = "Plan rebuilt; Current occurrence unchanged"
+      FugSchedulerRuntime.scheduleRepeats(plan, plan.currentOccurrence, now)
     end
   end
 
-  -- Create and retain the Q-SYS timer that drives live edge detection and repeats.
-  function FugSchedulerRuntime.startExecutionTimer()
-    if FugSchedulerRuntime.executionTimer then return end
-    FugSchedulerRuntime.executionTimer = Timer.New()
-    FugSchedulerRuntime.executionTimer.EventHandler = function() FugSchedulerRuntime.executionPoll() end
-    FugSchedulerRuntime.executionTimer:Start(FugSchedulerRuntime.executionPollSeconds)
+  -- Reuse unchanged plans and replace only changed, added, or deleted Scheduler plans.
+  function FugSchedulerRuntime.synchronizeRuntimePlans(schedule)
+    local existing = FugSchedulerRuntime.runtimePlans
+    local nextPlans = {}
+    local now = os.time()
+    local schedulerCount = #schedule.schedulers
+
+    for schedulerIndex, scheduler in ipairs(schedule.schedulers) do
+      local previousPlan = existing[scheduler.id]
+      if previousPlan and FugSchedulerRuntime.persistedEqual(previousPlan.scheduler, scheduler) then
+        previousPlan.scheduler = scheduler
+        previousPlan.configurationRevision = schedule.revision
+        nextPlans[scheduler.id] = previousPlan
+      else
+        local plan = FugSchedulerRuntime.createRuntimePlan(scheduler, schedule.revision)
+        nextPlans[scheduler.id] = plan
+        FugSchedulerRuntime.runtimePlans = nextPlans
+        FugSchedulerRuntime.reconcileRuntimePlan(plan, previousPlan, now)
+        if previousPlan then FugSchedulerRuntime.stopRuntimePlan(previousPlan) end
+        FugSchedulerRuntime.startPlanTimer(plan, schedulerIndex, schedulerCount)
+      end
+    end
+
+    for schedulerId, plan in pairs(existing) do
+      if not nextPlans[schedulerId] then FugSchedulerRuntime.stopRuntimePlan(plan) end
+    end
+    FugSchedulerRuntime.runtimePlans = nextPlans
   end
 
   -- Convert one Event occurrence into the stable machine-readable status contract.
@@ -5083,7 +5474,10 @@ if Controls then
     local nextTimestamp = result.next and result.next.timestamp or nil
     local executionState = FugSchedulerRuntime.executionState(scheduler.id)
     local repeatCount = 0
-    for _ in pairs(executionState.repeatDeadlines or {}) do repeatCount = repeatCount + 1 end
+    for _ in pairs(executionState and executionState.repeatDeadlines or {}) do repeatCount = repeatCount + 1 end
+    local metrics = executionState and executionState.metrics or {}
+    local averagePollDuration = metrics.pollCount and metrics.pollCount > 0 and
+      (metrics.totalPollDuration / metrics.pollCount) or 0
     return {
       id = scheduler.id,
       label = scheduler.label,
@@ -5101,13 +5495,25 @@ if Controls then
       resolvedDayPattern = FugSchedulerRuntime.dayPatternStatus(result.resolvedDayPattern),
       execution = {
         allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler.enabled and not scheduler.paused,
-        initialized = executionState.initialized,
-        activeOccurrence = FugSchedulerRuntime.eventStatus(executionState.activeOccurrence),
+        initialized = executionState and executionState.initialized or false,
+        activeOccurrence = FugSchedulerRuntime.eventStatus(executionState and executionState.activeOccurrence or nil),
         activeRepeatCount = repeatCount,
-        lastObservedTime = executionState.lastObservedTimestamp and
+        lastObservedTime = executionState and executionState.lastObservedTimestamp and
           os.date("%Y-%m-%d %H:%M:%S", executionState.lastObservedTimestamp) or nil,
-        lastTransitionReason = executionState.lastTransitionReason,
-        lastCallbackResult = executionState.lastCallbackResult
+        lastTransitionReason = executionState and executionState.lastTransitionReason or "No runtime plan",
+        lastCallbackResult = executionState and executionState.lastCallbackResult or "None",
+        planGeneration = executionState and executionState.generation or nil,
+        configurationRevision = executionState and executionState.configurationRevision or nil,
+        timerPhaseSeconds = executionState and executionState.timerPhaseSeconds or nil,
+        performance = {
+          pollCount = metrics.pollCount or 0,
+          averagePollDurationSeconds = averagePollDuration,
+          maximumPollDurationSeconds = metrics.maximumPollDuration or 0,
+          delayedPollCount = metrics.delayedPollCount or 0,
+          planRebuildDurationSeconds = metrics.planRebuildDuration or 0,
+          eventCount = metrics.eventCount or 0,
+          actionCount = metrics.actionCount or 0
+        }
       },
       previousEvent = FugSchedulerRuntime.eventStatus(result.previous),
       currentEvent = FugSchedulerRuntime.eventStatus(result.current),
@@ -5119,6 +5525,36 @@ if Controls then
 
   -- Publish the complete multi-Scheduler status snapshot for third-party integrations.
   function FugSchedulerRuntime.publishGlobalStatus(timestamp, schedulerStatuses, hasResolutionError)
+    local performance = {
+      schedulerCount = 0,
+      eventCount = 0,
+      actionCount = 0,
+      pollCount = 0,
+      averagePollDurationSeconds = 0,
+      maximumPollDurationSeconds = 0,
+      delayedPollCount = 0,
+      totalPlanRebuildDurationSeconds = 0
+    }
+    local totalPollDuration = 0
+    for _, plan in pairs(FugSchedulerRuntime.runtimePlans) do
+      local metrics = plan.metrics or {}
+      performance.schedulerCount = performance.schedulerCount + 1
+      performance.eventCount = performance.eventCount + (metrics.eventCount or 0)
+      performance.actionCount = performance.actionCount + (metrics.actionCount or 0)
+      performance.pollCount = performance.pollCount + (metrics.pollCount or 0)
+      totalPollDuration = totalPollDuration + (metrics.totalPollDuration or 0)
+      performance.maximumPollDurationSeconds = math.max(
+        performance.maximumPollDurationSeconds,
+        metrics.maximumPollDuration or 0
+      )
+      performance.delayedPollCount = performance.delayedPollCount + (metrics.delayedPollCount or 0)
+      performance.totalPlanRebuildDurationSeconds = performance.totalPlanRebuildDurationSeconds +
+        (metrics.planRebuildDuration or 0)
+    end
+    if performance.pollCount > 0 then
+      performance.averagePollDurationSeconds = totalPollDuration / performance.pollCount
+    end
+
     local status = {
       schemaVersion = 1,
       generatedAt = os.date("%Y-%m-%d %H:%M:%S"),
@@ -5131,6 +5567,7 @@ if Controls then
         warningCount = #FugSchedulerRuntime.scheduleWarnings
       },
       automaticExecutionEnabled = Controls.AutomaticExecutionEnabled and Controls.AutomaticExecutionEnabled.Boolean == true or false,
+      performance = performance,
       schedulers = schedulerStatuses
     }
 
@@ -5138,6 +5575,26 @@ if Controls then
     FugSchedulerRuntime.globalStatus = status
     FugSchedulerRuntime.setText("GlobalSchedulerStatus", FugSchedulerRuntime.encodeJson(status))
     FugSchedulerRuntime.setText("SchedulerCount", tostring(#schedulerStatuses))
+  end
+
+  -- Publish live cached plan state after an execution/lifecycle transition without detached resolution.
+  function FugSchedulerRuntime.publishLiveRuntimeStatus()
+    if not FugSchedulerRuntime.activeSchedule then return end
+    if Controls.TestDateTime and (Controls.TestDateTime.String or "") ~= "" then return end
+    local schedulerStatuses = {}
+    local selectedScheduler, selectedResult = FugSchedulerRuntime.selectedScheduler(), nil
+    local resolvedTimestamp = os.time()
+    for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
+      local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
+      if plan then
+        local timestamp = plan.lastObservedTimestamp or resolvedTimestamp
+        local result = FugSchedulerRuntime.planResolutionResult(plan, timestamp)
+        table.insert(schedulerStatuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, nil))
+        if selectedScheduler and selectedScheduler.id == scheduler.id then selectedResult = result end
+      end
+    end
+    FugSchedulerRuntime.publishGlobalStatus(resolvedTimestamp, schedulerStatuses, false)
+    if selectedScheduler and selectedResult then FugSchedulerRuntime.publishResolution(selectedScheduler, selectedResult) end
   end
 
   -- Publish the selected Scheduler's resolver result to human-readable status controls.
@@ -5174,7 +5631,13 @@ if Controls then
     local schedulerStatuses = {}
     local hasResolutionError = false
     for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
-      local resolveOk, result = pcall(FugSchedulerRuntime.resolveAt, scheduler, timestamp)
+      local resolveOk, result = pcall(function()
+        local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
+        if requested == "" and plan and plan.currentOccurrence then
+          return FugSchedulerRuntime.planResolutionResult(plan, timestamp)
+        end
+        return FugSchedulerRuntime.resolveAt(scheduler, timestamp)
+      end)
       if resolveOk then
         resultsById[scheduler.id] = result
         table.insert(schedulerStatuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, nil))
@@ -5314,12 +5777,11 @@ if Controls then
     if Controls.AutomaticExecutionEnabled then
       Controls.AutomaticExecutionEnabled.EventHandler = function(control)
         if FugSchedulerRuntime.updatingExecutionControl then return end
-        FugSchedulerRuntime.executionStates = {}
         if control.Boolean then
-          FugSchedulerRuntime.setExecutionMessage("Automatic execution armed; initializing live Scheduler state")
-          FugSchedulerRuntime.executionPoll()
+          FugSchedulerRuntime.setExecutionMessage("Automatic execution armed; staggered Scheduler timers are initializing live state")
         else
           FugSchedulerRuntime.setExecutionMessage("Automatic execution disabled; callbacks and repeats are blocked")
+          for _, plan in pairs(FugSchedulerRuntime.runtimePlans) do FugSchedulerRuntime.clearRepeats(plan) end
         end
         FugSchedulerRuntime.refreshStatus()
         FugSchedulerRuntime.resolveSelectedTime()
@@ -5971,7 +6433,6 @@ if Controls then
     FugSchedulerRuntime.reloadActions()
     FugSchedulerRuntime.scheduleInitialized = true
     FugSchedulerRuntime.reloadSchedule()
-    FugSchedulerRuntime.startExecutionTimer()
   end
 
   FugSchedulerRuntime.attachHandlers()

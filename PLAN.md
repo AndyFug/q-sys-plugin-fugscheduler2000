@@ -284,6 +284,28 @@ Use the vendored FugUi framework and separate operator status from configuration
 
 Large lists should use banked editor rows with stable backing controls rather than dynamically changing control names.
 
+## Scalable live execution architecture
+
+The accepted Phase 2 execution design uses reference-style stateful Scheduler cursors without rebuilding multi-day timelines during each one-second poll.
+
+Each validated Scheduler owns one runtime-only compiled plan containing:
+
+- the configuration revision and a runtime generation token
+- each Day Pattern's Events sorted once by normalized time with persisted array order as the equal-time tie-break
+- cached date-to-Day-Pattern resolution and resolved occurrence lists
+- a rolling ordered occurrence window with authoritative Previous, Current, and Next indexes/references
+- the last observed Core-local wall-clock timestamp, active occurrence identity, repeat deadlines, lifecycle state, and latest callback result
+- one retained Q-SYS poll timer, deliberately phase-staggered across the one-second interval
+- non-spamming `Timer.Now()` measurements for rebuild, average/maximum poll duration, delayed polls, and configured Event/Action counts
+
+An occurrence is identified by its absolute Core-local timestamp, date, Event ID/reference, Day Pattern ID/reference, and persisted Event sequence. Normal polls advance the cached cursor through `lastObservedTimestamp < occurrence.timestamp <= now`; they do not parse JSON, validate the schema, sort Events, rebuild broad timelines, refresh unrelated editors, or log routine activity.
+
+The rolling resolver extends dates only as the cursor approaches its cached boundary, retains the Previous occurrence for status, and prunes obsolete history. Re-anchoring and arbitrary `TestDateTime` resolution search incrementally with a documented 400-calendar-day safety horizon per direction rather than eagerly expanding a fixed ±31-day timeline. Empty Schedulers are handled without scanning the horizon. `TestDateTime` uses a detached resolver plan and never mutates live execution cursors.
+
+Configuration installation compares Scheduler-scoped persisted models. Unchanged Schedulers retain their plan, cursor, generation, timer, phase, metrics, and runtime status. Added or changed Schedulers receive new generation-tokened plans; replaced/deleted timers are stopped, and obsolete callbacks verify the current generation before doing work. When a changed plan's Current occurrence changes, only eligible stateful Actions reconcile; one-shots remain edge-only and repeats restart from reconciliation time.
+
+Backward wall-clock movement repositions the cursor and clears repeat state without replay. Forward discontinuities or delayed runtime beyond the ordinary-edge threshold re-anchor directly, skip historical one-shots, restore only eligible Current stateful Actions under the existing startup policy, and restart repeats without catch-up bursts. `Timer.Now()` is used only for elapsed performance measurements; `os.time()` remains the Core-local scheduling clock.
+
 ## Deferred Stage and Commit model
 
 A persistent staged-versus-running structural configuration model with separate live Scheduler and Override operational controls is proposed in `DRAFT_PUBLISH_MODEL.md`. It is intentionally deferred until the basic editor, resolver, persistence, and execution behavior is sufficiently complete. It must not be partially introduced into the current immediate-commit transaction architecture.

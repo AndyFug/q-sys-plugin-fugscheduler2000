@@ -390,6 +390,44 @@ Validated against the active `fugscheduler2000_test` Designer emulator:
 - Final state: Debug Output Info, Event Log Off, automatic execution false, and both `AndyFugFugScheduler2000` and `SchedulerRuntimeProvider` at script status `OK` with zero errors.
 - Preferences layout follow-up moved the shared status control out of the two side-by-side groups into a separate full-width Preference Status group. A second refinement reduced that group to 92 pixels and the status box to 40 pixels, matching the compact status treatment on other pages. The final deployed artifact hash is `0acf1bf6f8d7b26ab3e6e0152c479bbbb5728dff79ccf0a0d4e95e27b63e3130`; after restart the component fingerprint changed to `1d37cadc2a3f0132a3906d8149e7cb66`, with both scripts healthy and automatic execution false.
 
+## Scalable Scheduler execution-plan refactor
+
+Implemented and QRC-validated in source:
+
+- [x] Replaced timeline reconstruction/sorting in the one-second execution path with compiled per-Scheduler plans and a rolling Previous/Current/Next occurrence cursor.
+- [x] Added cached date resolution, persisted-order equal-time Event compilation, incremental forward extension, Previous-history retention, and a documented 400-day safety horizon.
+- [x] Added one retained generation-checked timer per Scheduler with deliberate phase staggering; unchanged Scheduler plans/timers are reused and replaced/deleted timers are stopped.
+- [x] Preserved ordered Event/Action execution, callback `pcall` isolation, startup/enable/resume/schedule-change policy, one-shot suppression, repeat deadlines, and discontinuity re-anchoring.
+- [x] Added root and per-Scheduler non-spamming performance diagnostics using `Timer.Now()` only for elapsed measurements.
+- [x] Extended `tests/qrc/validate_execution.py` to inspect plan count, independent timer polls, stagger phases, performance counts, affected generation replacement, and unrelated plan/timer preservation.
+- [x] Local include compilation succeeds and the generated artifact contains no unresolved include directives.
+- [x] Run the expanded execution, plan lifecycle, detached resolver, scale, editor-regression, and logging QRC suites after the emulator is restarted into a clean script state.
+- [x] Restart emulation with the restored baseline and confirm schedule persistence, safe guard state, momentary reset, and all three script-health results.
+- [x] Record final assertion counts, measured poll/rebuild durations, tested scale, restoration, and all three script-health results.
+
+Development finding:
+
+- The first hot-deployed draft synchronously searched a long safety horizon for an Event-free Scheduler and caused `Max execution limits exceeded`. The implementation now detects Event-free plans without horizon scanning and prevents repeated empty-window extension.
+- A first 20 × 20 scale probe exposed a second execution-budget defect while synchronously positioning every newly added plan and rebuilding all status/editor views in the `ScheduleData` handler. New plans now position on their staggered timer, and large installed models use delayed four-Scheduler status chunks plus a generation token so obsolete deferred work cannot overwrite newer state. The corrected 20 × 20 run remained healthy.
+- The optional 50 × 20 probe still exceeded the Q-SYS transaction budget before the install summary, during the synchronous external `ScheduleData` decode/complete-schema validation path. The original JSON was restored byte-for-byte, but Designer required a stop/start to clear the resulting `Compromised` state. This is recorded as a large-transaction limitation rather than partially introducing staged/deferred configuration validation without approval.
+- After an execution-limit fault, QRC script reload/stop controls did not return the plugin to `OK`; a Designer stop/start was required. Automatic execution remained false. No design-time declarations changed, so the `.qplug` did not require deployment for recovery.
+
+Final QRC findings against the active `fugscheduler2000_test` emulator:
+
+- `tests/qrc/validate_execution.py` completed 62 assertions. It validated real future edge execution, equal-time Event and Event Action ordering, missing/callback failure isolation, Info/Debug logging, startup/enable/resume/schedule-change one-shot suppression, repeat restart without catch-up, independent Scheduler timers, unique stagger phases, affected-plan generation replacement, unrelated plan/timer preservation, runtime-state exclusion, byte-for-byte restoration, and final health.
+- `tests/qrc/validate_execution_plan_lifecycle.py` completed 24 assertions. It explicitly added and removed a Scheduler, confirmed the new timer polled, waited through multiple former timer periods after deletion, and verified that an unaffected plan retained its generation and phase while continuing to poll. Persistent controls were restored and both scripts finished healthy.
+- `tests/qrc/validate_execution_resolution.py` completed 21 assertions. It validated Previous/Current/Next identity across midnight, an inclusive Day Pattern Override boundary, a 121-day empty range with Current before and Next after the gap, detached `TestDateTime` resolution, runtime-state exclusion, byte-for-byte restoration, and final health.
+- `tests/qrc/validate_execution_scale.py` completed 25 normal assertions with restoration. At 5 Schedulers × 10 Events/Actions, measured average poll duration was `0.000699997 s`, maximum `0.003999710 s`, delayed polls `0`, and measured total rebuild duration `0`. At 20 × 20, average was `0.000350046 s`, maximum `0.003000259 s`, delayed polls `0`, and measured total rebuild duration `0.002000809 s`. Each Scheduler timer polled independently and every phase was unique.
+- The QRC wall-clock fixture-install measurements were approximately `4.03 s` because the test deliberately waits four seconds for staggered timers and deferred status completion; they are not plan-rebuild CPU durations.
+- The optional 50 × 20 probe reached the external-write/schema-validation transaction limit before plan installation and is excluded from normal acceptance. The test harness supports retrying it explicitly with `FUGSCHEDULER_SCALE_50=1` after a future approved large-transaction design.
+- The post-refactor editor regressions also passed: Week Patterns `42`, Overrides `48`, and Override Dates `54` assertions, each with restoration and healthy scripts.
+- `tests/qrc/validate_logging.py` completed 18 assertions after the execution refactor and confirmed unchanged destination filtering and bounded DiagnosticLog behavior.
+- `tests/qrc/validate_execution_midnight.py` completed 23 assertions across a genuine wall-clock midnight. It validated pre-midnight polling and cursor state, the live 23:59 and 00:00 callbacks, Previous advancing with its prior-date identity, Current advancing to 00:00 on the new date, Next extending to the new date's 00:01 Event, persisted callback order, byte-for-byte restoration, and final health for all three scripts.
+- During detached-resolver test development, live transition status briefly overwrote explicit `TestDateTime` output. Live cached status publication is now suppressed whenever `TestDateTime` is non-empty; the final resolver test passed.
+- Every completed acceptance test restored its changed persistent controls byte-for-byte. Automatic execution finished false. Final observed logging preferences were Debug Output `Info` and Event Log `Info`, matching the values present at test start.
+- Final post-test restart retained revision `79`, the expected four Scheduler IDs and `2/4` enabled state, `TestDateTime = 2030-01-02 12:00`, Info/Info logging preferences, no temporary `qrc-...` Scheduler, no serialized runtime fields, false momentaries, and automatic execution off. `AndyFugFugScheduler2000`, `SchedulerRuntimeProvider`, and `ActionProvider` all restarted `OK` with zero errors.
+- Deterministic backward/forward live clock-discontinuity injection remains blocked exactly as before; no host, emulator, or Core clock was changed and no unsupported Q-SYS clock API or test seam was introduced.
+
 ## Build validation
 
 - [x] Run `python3 scripts/compile_plugin.py` successfully.

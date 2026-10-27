@@ -58,7 +58,19 @@ Each configured Scheduler receives an independent entry:
     "activeRepeatCount": 0,
     "lastObservedTime": "2026-12-25 12:00:00",
     "lastTransitionReason": "Automatic execution disabled",
-    "lastCallbackResult": "None"
+    "lastCallbackResult": "None",
+    "planGeneration": 12,
+    "configurationRevision": 42,
+    "timerPhaseSeconds": 0.35,
+    "performance": {
+      "pollCount": 1200,
+      "averagePollDurationSeconds": 0.0004,
+      "maximumPollDurationSeconds": 0.003,
+      "delayedPollCount": 0,
+      "planRebuildDurationSeconds": 0.002,
+      "eventCount": 10,
+      "actionCount": 14
+    }
   },
   "resolvedDayPattern": {
     "id": "closed",
@@ -122,7 +134,9 @@ Event Actions remain ordered and report whether their registered Action is curre
 
 These fields reflect the explicit persisted Event Action values. New assignments copy validated Action defaults once when attached; later Action Registry reloads do not rewrite schedule configuration.
 
-The root status also reports whether the plugin-wide automatic-execution safety control is enabled. Each Scheduler status may include runtime execution state such as its active occurrence, last transition reason, and most recent callback result. Resolver status remains available while execution is disabled, while a Scheduler is disabled, and while it is paused.
+The root status also reports whether the plugin-wide automatic-execution safety control is enabled and a `performance` summary containing Scheduler/Event/Action counts, total poll count, average and maximum measured poll duration, delayed-poll count, and total plan-rebuild duration. `Timer.Now()` supplies elapsed measurements only; these values are diagnostics rather than scheduling timestamps.
+
+Each Scheduler status includes its plan generation, configuration revision, stagger phase, per-plan performance counters, active occurrence, last transition reason, and most recent callback result. Plan generations and timer phases are runtime diagnostics and are not stable integration identity. Resolver status remains available while execution is disabled, while a Scheduler is disabled, and while it is paused.
 
 ## Human-readable selected status
 

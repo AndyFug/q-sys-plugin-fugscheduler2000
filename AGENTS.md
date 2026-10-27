@@ -48,6 +48,7 @@ python3 scripts/compile_plugin.py --deploy
 - Keep generic UI behavior in vendored `src/fug_ui.lua`; scheduler-specific widgets belong in `src/ui.lua` and page composition in `src/layout.lua`.
 - The vendored FugUi file must remain self-contained; release builds must not include workspace-relative paths.
 - Record Q-SYS Designer findings and any deviations from the plan in project documentation before relying on them.
+- Keep live execution on one retained, phase-staggered timer per Scheduler with a generation-checked compiled occurrence plan and authoritative Previous/Current/Next cursor. Ordinary polls must advance cached occurrences rather than parse, validate, sort, or rebuild broad timelines.
 
 ## Logging strategy
 

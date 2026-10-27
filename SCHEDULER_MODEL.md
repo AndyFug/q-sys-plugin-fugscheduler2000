@@ -216,6 +216,16 @@ Resolution crosses midnight. Before today's first Event, the Current Event may c
 
 If multiple Events share the same time, they retain their persisted array order as the deterministic tie-break order. The editor permits this configuration but warns the operator and recommends combining simultaneous operations into one Event with ordered Event Actions where practical. Scheduled execution must process every Event at the shared edge in that same order.
 
+## Runtime occurrence cursor
+
+Live execution compiles each validated Scheduler into runtime-only Event order and date-resolution caches. The authoritative cursor retains Previous, Current, and Next occurrences rather than rebuilding and sorting a multi-day timeline on every poll.
+
+Each occurrence includes its Core-local timestamp, calendar date, configured time, stable Event and Day Pattern references/IDs, and persisted Event ordering sequence. When positioned around a timestamp, Current is the final occurrence at or before that timestamp, Previous is immediately before Current, and Next is the first occurrence after Current. Equal-time Events therefore advance one-by-one in persisted Event array order.
+
+The occurrence window grows date-by-date near its future boundary and discards obsolete history while retaining Previous for status. Empty dates and long gaps are resolved incrementally. Re-anchor and detached resolver searches use a 400-calendar-day safety horizon in each direction; a live cursor with no Event inside that horizon extends the search by another horizon as wall time reaches the cached boundary. A Scheduler with no configured Events bypasses horizon scanning entirely.
+
+Compiled Event order, date caches, occurrence windows/indexes, timer objects, generation tokens, callback functions, repeat deadlines, performance counters, and lifecycle state are runtime-only and never enter `ScheduleData`.
+
 ## Event execution
 
 When time crosses an Event's scheduled edge:
@@ -276,11 +286,16 @@ Runtime-only data includes:
 
 - callback functions
 - Action Registry generation
+- compiled per-Day-Pattern Event order
+- date-resolution caches and rolling occurrence windows
+- previous/current/next occurrence indexes and references
+- per-Scheduler timer objects, phases, and plan generation tokens
 - resolved Day Pattern
 - current, previous, and next Events
 - timestamps and countdowns
 - last-observed timestamps and active occurrence keys
 - active repeat deadlines
+- poll/rebuild performance measurements
 - validation and callback errors
 
 Automatic execution is additionally protected by a persistent plugin-wide safety toggle that defaults off. A Scheduler must be enabled, unpaused, and covered by that master toggle before callbacks can execute.
