@@ -3,7 +3,7 @@ FugSchedulerUi = FugSchedulerUi or {}
 -- Return the retained-container column specifications for Scheduler Slot rows.
 function FugSchedulerUi.slotColumnSpecs()
   return {
-    {width = 34}, {width = 180}, {width = 42}, {width = 42},
+    {width = 34}, {width = 180}, {width = 58}, {width = 42},
     {grow = 1}, {grow = 1}, {grow = 1}
   }
 end
@@ -12,7 +12,7 @@ end
 function FugSchedulerUi.slotHeader(ui, rect)
   local row = FugUi.box(ui, rect, {padding = 2})
   local cells = {row:splitRow(FugSchedulerUi.slotColumnSpecs(), {gap = 4})}
-  local labels = {"Slot", "Scheduler Definition", "On", "Pause", "Current Pattern", "Current Event", "Next Event"}
+  local labels = {"Slot", "Scheduler Definition", "Enable", "Pause", "Current Pattern", "Current Event", "Next Event"}
   for index, cell in ipairs(cells) do
     ui:label(labels[index], cell:fill(), {
       Color = ui:color("mutedText"), FontSize = 9, IsBold = true,
@@ -43,7 +43,7 @@ function FugSchedulerUi.slotRow(ui, rect, slotNumber)
     ButtonStyle = "Toggle", Legend = "", Color = ui:color("ok")
   })
   ui:button(countedControlName("SchedulerSlotPaused", slotNumber), ui:center(pauseCell, 30, pauseCell.h), {
-    ButtonStyle = "Toggle", Legend = "", Color = ui:color("warning")
+    ButtonStyle = "Toggle", Legend = "M", Color = ui:color("warning")
   })
   ui:textControl(countedControlName("SchedulerSlotCurrentPattern", slotNumber), cells[5]:fill(), {
     IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
@@ -60,18 +60,35 @@ function FugSchedulerUi.slotRow(ui, rect, slotNumber)
   return row
 end
 
--- Draw a label and read-only Text control as one status row.
-function FugSchedulerUi.statusField(ui, label, controlName, rect)
-  local labelWidth = 150
+-- Draw a label and read-only Text control as one status row with optional sizing/text overrides.
+function FugSchedulerUi.statusField(ui, label, controlName, rect, options)
+  options = options or {}
+  local labelWidth = options.labelWidth or 150
   ui:label(label, ui:rect(rect.x, rect.y, labelWidth, rect.h), {
-    Color = ui:color("mutedText")
+    Color = ui:color("mutedText"),
+    FontSize = options.labelFontSize
   })
   ui:textControl(controlName, ui:rect(rect.x + labelWidth, rect.y, rect.w - labelWidth, rect.h), {
     IsReadOnly = true,
     TextBoxStyle = "NoBackground",
     TextColor = ui:color("controlText"),
     HTextAlign = "Left",
-    PrettyName = "Status~" .. label
+    VTextAlign = options.VTextAlign or "Center",
+    PrettyName = "Status~" .. label,
+    IsBold = options.IsBold,
+    FontSize = options.FontSize,
+    WordWrap = options.WordWrap
+  })
+end
+
+-- Draw a compact scrollable read-only Event Action list inside an Inspector group.
+function FugSchedulerUi.actionViewer(ui, controlName, rect, prettyName)
+  ui:control(controlName, "ListBox", rect, {
+    Color = ui:color("statusBackground"),
+    TextColor = ui:color("statusText"),
+    HTextAlign = "Left",
+    FontSize = 8,
+    PrettyName = prettyName
   })
 end
 

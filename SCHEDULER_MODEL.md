@@ -268,13 +268,25 @@ Examples include playing an announcement or sending a pulse. A one-shot Event Ac
 
 While paused, the Scheduler continues resolving dates, Day Patterns, Events, and status, but it does not execute scheduled callbacks. Event edges crossed during the pause are missed rather than queued.
 
-On resume:
+Each Scheduler Slot stores one configured pause mode:
+
+- **Manual** — remain paused until the Pause control is cleared.
+- **Next Event** — resume immediately before the resolved target Event so that Event executes normally, including eligible one-shot Actions.
+- **Duration** — resume after a configured whole number of minutes.
+- **Until Time** — resume at a configured Core-local `YYYY-MM-DD HH:MM` timestamp.
+- **Through Day** — ignore the remaining Events on the request date and resume at the first Event on or after the following calendar date.
+
+The Slot persists the configured mode and an active `pauseIntent` containing its request timestamp plus the applicable absolute expiry, calendar boundary, or dated Event target. This preserves the operator's intent across plugin, design, or Core restarts. Event-targeted intents are re-resolved when schedule edits change the affected Scheduler; target metadata updates without searching the schedule during every poll.
+
+On a manual or time-based resume:
 
 - execute current non-one-shot Event Actions whose `fireOnResume` option is enabled
 - never replay missed one-shot Event Actions
 - restart repeat intervals from the resume time without catch-up bursts
 
-The initial pause remains active until manually cleared. Planned operational extensions include pause until the next Event, pause for a duration or until a date/time, and a later next-day convenience policy.
+When Next Event or Through Day reaches its target, the engine clears the pause before processing that occurrence. The target Event therefore executes as a normal scheduled edge. If an automatic target passed while the Core or execution engine was unavailable, the pause expires without replaying historical one-shots; eligible current state may restore according to resume policy.
+
+Changing the configured mode, duration, or until-time while paused immediately creates a new intent from the edit time. The ordinary Slot Pause toggle always activates whichever mode is currently configured.
 
 ## Persisted versus runtime data
 
@@ -283,7 +295,7 @@ Persisted configuration is a versioned root containing an ordered `schedulers` S
 Persisted configuration includes:
 
 - Scheduler Definition settings
-- Scheduler Slot assignments and enabled/paused state
+- Scheduler Slot assignments, enabled state, configured pause mode/options, and active pause intent
 - Day Patterns
 - Events
 - Event Action assignments and options
@@ -303,6 +315,7 @@ Runtime-only data includes:
 - current, previous, and next Events
 - timestamps and countdowns
 - last-observed timestamps and active occurrence keys
+- compiled pause-target comparison keys and deferred operational refresh state
 - active repeat deadlines
 - poll/rebuild performance measurements
 - validation and callback errors

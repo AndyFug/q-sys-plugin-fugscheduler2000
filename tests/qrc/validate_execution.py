@@ -160,6 +160,7 @@ def main() -> None:
         "EventActionEnabled", "EventActionMode", "EventActionFireOnStartup", "EventActionFireOnResume",
         "EventActionRepeatSeconds", "AddEventAction", "DeleteEventAction",
         "ActionSelect", "RegisteredActionCount", "GlobalSchedulerSlotStatus", "DiagnosticLog", "Status",
+        "CurrentEventActions", "CurrentEventActionsViewer", "NextEventActions", "NextEventActionsViewer", "Countdown",
         "DebugLogLevel", "EventLogLevel", "ActionSource", "ReloadActions",
         "script.status", "script.error.count",
     ]
@@ -257,6 +258,25 @@ def main() -> None:
             and plan_status["performance"]["actionCount"] >= 2,
             "runtime performance status publishes Scheduler, Event, and Action counts",
         )
+        inspector_actions = controls(
+            "CurrentEventActions", "CurrentEventActionsViewer",
+            "NextEventActions", "NextEventActionsViewer", "Countdown",
+        )
+        check(
+            "Stateful · Repeat 2s" in inspector_actions["CurrentEventActions"]["String"]
+            and "One Shot" in inspector_actions["CurrentEventActions"]["String"]
+            and "Stateful · Repeat 2s" in inspector_actions["NextEventActions"]["String"],
+            "Inspector Current and Next Event outputs publish concise Event Action types",
+        )
+        check(
+            len(inspector_actions["CurrentEventActionsViewer"].get("Choices", [])) == 2
+            and len(inspector_actions["NextEventActionsViewer"].get("Choices", [])) == 2,
+            "Inspector Action viewers publish one scrollable row per Event Action",
+        )
+        first_countdown = inspector_actions["Countdown"]["String"]
+        time.sleep(2.2)
+        second_countdown = controls("Countdown")["Countdown"]["String"]
+        check(first_countdown != second_countdown, "selected Slot Inspector countdown updates every second")
         preserved_generation = scheduler_entries[preserved_scheduler_id]["execution"]["planGeneration"]
         preserved_phase = scheduler_entries[preserved_scheduler_id]["execution"]["timerPhaseSeconds"]
 

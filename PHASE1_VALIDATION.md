@@ -34,7 +34,7 @@ Use this checklist in Q-SYS Designer before relying on the external callback arc
 
 ## Persistence spike
 
-- [x] Confirm `ScheduleData` and `TestDateTime` Text control values survive design save/reload.
+- [x] Confirm `ScheduleData` survives design save/reload. `TestDateTime` remains a persistent control value in Designer but is now deliberately cleared by runtime start before operational status is published.
 - [x] Confirm the sample JSON containing Day Patterns, Events, Event Actions, Week Patterns, and Overrides persists in `ScheduleData` after saving and reopening the design.
 - [x] Confirm the schema-version-1 sample containing two Schedulers persists and reloads intact.
 - [x] Confirm at least the 3.4 KB sample JSON persists and reloads intact; further UI editing and maximum-length testing remain optional.
@@ -446,9 +446,9 @@ Final QRC findings against the active `fugscheduler2000_test` emulator:
 - The post-refactor editor regressions also passed: Week Patterns `42`, Overrides `48`, and Override Dates `54` assertions, each with restoration and healthy scripts.
 - `tests/qrc/validate_logging.py` completed 18 assertions after the execution refactor and confirmed unchanged destination filtering and bounded DiagnosticLog behavior.
 - `tests/qrc/validate_execution_midnight.py` completed 23 assertions across a genuine wall-clock midnight. It validated pre-midnight polling and cursor state, the live 23:59 and 00:00 callbacks, Previous advancing with its prior-date identity, Current advancing to 00:00 on the new date, Next extending to the new date's 00:01 Event, persisted callback order, byte-for-byte restoration, and final health for all three scripts.
-- During detached-resolver test development, live transition status briefly overwrote explicit `TestDateTime` output. Live cached status publication is now suppressed whenever `TestDateTime` is non-empty; the final resolver test passed.
+- During detached-resolver test development, live transition status briefly overwrote explicit `TestDateTime` output. Live cached status publication is suppressed whenever `TestDateTime` is non-empty; runtime start, Master Enable, and Slot enable now clear the developer-only preview before normal operation.
 - Every completed acceptance test restored its changed persistent controls byte-for-byte. Automatic execution finished false. Final observed logging preferences were Debug Output `Info` and Event Log `Info`, matching the values present at test start.
-- Final post-test restart retained revision `79`, the expected four Scheduler IDs and `2/4` enabled state, `TestDateTime = 2030-01-02 12:00`, Info/Info logging preferences, no temporary `qrc-...` Scheduler, no serialized runtime fields, false momentaries, and automatic execution off. `AndyFugFugScheduler2000`, `SchedulerRuntimeProvider`, and `ActionProvider` all restarted `OK` with zero errors.
+- The historical post-test restart retained revision `79`, the expected four Scheduler IDs and `2/4` enabled state, and `TestDateTime = 2030-01-02 12:00`. The runtime now deliberately clears that developer-only preview on start; schedule, logging preferences, runtime-field exclusion, false momentaries, and automatic execution safety remain unchanged. `AndyFugFugScheduler2000`, `SchedulerRuntimeProvider`, and `ActionProvider` all restarted `OK` with zero errors.
 - Deterministic backward/forward live clock-discontinuity injection remains blocked exactly as before; no host, emulator, or Core clock was changed and no unsupported Q-SYS clock API or test seam was introduced.
 
 ## Banked Overview and Inspector refactor
@@ -499,6 +499,39 @@ Designer/QRC findings:
 - Empty aggregate Slot status now serializes as `"slots": []` rather than an empty JSON object.
 - Execution regression found that moving an unchanged Definition between Slots could preserve an old timer phase and collide with a newly assigned Slot. Plans now retain their Slot number and derive a stable unique phase from that Slot; affected plans rebuild on Slot movement while unrelated Slot plans retain generation and phase.
 - Completed suites: Week Patterns 42, Overrides 48, Override Dates 54, Scheduler Slots 26, Execution 70, Plan Lifecycle 24, Resolution 21, Scale 25, and Logging 18 assertions.
+
+## Scheduler Slot pause transport
+
+Implemented in source; Designer deployment and QRC acceptance remain pending:
+
+- [x] Added persistent Manual, Next Event, Duration, Until Time, and Through Day modes to each fixed Scheduler Slot.
+- [x] Added a persisted active `pauseIntent` with request time plus absolute expiry, next-calendar-date boundary, or dated Event target.
+- [x] Kept steady-state evaluation inside the existing staggered one-second Slot poll with constant-time comparisons and no additional pause timers.
+- [x] Deferred the one-time persistence/UI refresh for automatic expiry outside the execution callback.
+- [x] Made Next Event and Through Day clear pause before the target occurrence so eligible one-shot and stateful Actions execute normally.
+- [x] Kept manual/time resume on `fireOnResume`, skipped historical one-shots after unavailable runtime, and restarted repeats without catch-up.
+- [x] Re-armed active intent immediately when mode/configuration changes and re-resolved Event targets after affected schedule edits.
+- [x] Added stable per-Slot mode, duration, until-time, active Pause, and status controls/pins with dynamic `M`, `NE`, `DUR`, `UT`, and `TD` button legends.
+- [x] Refactored Slot Inspector into stacked controls on the left and full-height live status on the right.
+- [x] Added `tests/qrc/validate_pause_modes.py` for all five modes, re-arming, target updates, persistence, aggregate status, and guaranteed restoration.
+- [x] Deploy the changed design-time controls while emulation is stopped and restart the expected test design.
+- [x] Validate mode-dependent control availability, automatic expiry, Event-target retargeting, Through Day calendar behavior, and persisted intent reload.
+- [x] Run pause, overview, execution, scale, and logging regressions and record assertion counts, restoration, performance, and script health.
+
+Designer/QRC findings:
+
+- The first reloaded plugin component fingerprint changed to `f40ba539b09a827c7526ea9283f66e1f` and exposed the new Inspector plus stable per-Slot pause controls. After the final layout, pinned-status, and UK-English message refinements, the component fingerprint changed to `c365454cc18aabe7bd6dad0c43c50fdc`.
+- Slot Inspector uses a compact left-side Pause Controls section and full-height right-side Live Status section. Current and Next Event details are grouped side by side with bold Event names, scrollable one-row-per-Action type summaries, and selected-Slot countdowns refreshed by the existing one-second poll. The Inspector Pause button remains labelled `Pause`; compact Scheduler Slot Pause buttons use `M`, `NE`, `DUR`, `UT`, and `TD` legends. Slot Enable buttons are blank beneath the `Enable` table heading, while the Inspector button remains labelled `Enable` and uses illumination for state.
+- `tests/qrc/validate_pause_modes.py` completed 17 assertions. It validated all five modes, active-intent clearing, deferred automatic expiry while Master Enable was off, Duration and Until Time absolute expiry, immediate active re-arming, Next Event target persistence and schedule-edit retargeting, Through Day's next-calendar-date boundary, persisted intent reload, aggregate status, stable per-Slot controls, byte-for-byte restoration, and final health.
+- The first pause run exposed stale aggregate pause JSON while `TestDateTime` was pinned. Operational refresh now re-runs pinned resolution instead of suppressing status publication; the corrected pause suite passed.
+- `tests/qrc/validate_overview.py` completed 26 assertions, including manual pause-intent mirroring and restoration.
+- `tests/qrc/validate_execution.py` completed 70 assertions. Existing pause/resume, repeat, one-shot, plan-reuse, schedule-change, and real scheduled-edge behavior remained intact.
+- The refined Slot Inspector build deployed as artifact `de2bb50612302f9f6c3d8b684d5f479645dda81bb250820b63e2012df0556e9d` and reloaded with component fingerprint `66f72a182a40abeb7a9935f1c151da19`. Current and Next Event names are bold; each group uses a scrollable one-row-per-Action viewer; Previous Event is no longer laid out in the Current Event group but its output pin remains available. `validate_overview.py` completed 27 assertions and `validate_execution.py` completed 73 assertions, including Action viewer rows and once-per-second countdown movement. Both suites restored persistent controls byte-for-byte and all three scripts finished `OK` with zero errors.
+- `tests/qrc/validate_execution_scale.py` completed 25 assertions. At 5 × 10, average/maximum poll duration was `0.001300049`/`0.004999161` seconds with zero delayed polls. At 8 × 20, average/maximum was `0.000624895`/`0.003999710` seconds with zero delayed polls.
+- `tests/qrc/validate_logging.py` completed 18 assertions with unchanged destination filtering and bounded diagnostics.
+- Every suite restored changed persistent controls byte-for-byte. Master Enable finished off, and the plugin, runtime provider, and Action provider all finished `OK` with zero errors.
+- The final pinned-status and UK-English runtime corrections were deployed in both the bundled `.qplug` and `SchedulerRuntimeProvider`. The generated/deployed artifact SHA-256 matched `670dc6346904f9cfef7e762874b7a303288379c964d8d8788ac5e5ce30919a04`; the plugin, runtime provider, and Action provider restarted `OK` with zero errors and Master Enable off.
+- Build `0.1.0.27` deployed as SHA-256 `43539394450550147ccb194031ca164306921ea15edb18eae8852e8b1c6acff2`. The final Inspector presents Scheduler, bold Enable status, resolution, Day Pattern, pause details, aligned Current/Next groups, typed scrollable Action rows, and live countdowns. Final QRC regression counts were Week Patterns 42, Overrides 48, Override Dates 54, Scheduler Slots/Inspector 29, Pause Modes 17, Execution 73, Plan Lifecycle 24, Resolution 21, Scale 25, and Logging 18 assertions; all completed suites restored their fixtures and finished with scripts `OK` and zero errors. The live midnight-edge suite restored safely but was not executed because the emulator time was outside its required 25-minute pre-midnight window.
 
 ## Build validation
 

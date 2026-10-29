@@ -2,14 +2,14 @@
   "schemaVersion": 2,
   "revision": 1,
   "schedulerSlots": [
-    {"slot": 1, "enabled": false, "paused": false},
-    {"slot": 2, "enabled": false, "paused": false},
-    {"slot": 3, "enabled": false, "paused": false},
-    {"slot": 4, "enabled": false, "paused": false},
-    {"slot": 5, "enabled": false, "paused": false},
-    {"slot": 6, "enabled": false, "paused": false},
-    {"slot": 7, "enabled": false, "paused": false},
-    {"slot": 8, "enabled": false, "paused": false}
+    {"slot": 1, "enabled": false, "paused": false, "pauseMode": "Manual", "pauseDurationMinutes": 60, "pauseUntilTime": ""},
+    {"slot": 2, "enabled": false, "paused": false, "pauseMode": "Manual", "pauseDurationMinutes": 60, "pauseUntilTime": ""},
+    {"slot": 3, "enabled": false, "paused": false, "pauseMode": "Manual", "pauseDurationMinutes": 60, "pauseUntilTime": ""},
+    {"slot": 4, "enabled": false, "paused": false, "pauseMode": "Manual", "pauseDurationMinutes": 60, "pauseUntilTime": ""},
+    {"slot": 5, "enabled": false, "paused": false, "pauseMode": "Manual", "pauseDurationMinutes": 60, "pauseUntilTime": ""},
+    {"slot": 6, "enabled": false, "paused": false, "pauseMode": "Manual", "pauseDurationMinutes": 60, "pauseUntilTime": ""},
+    {"slot": 7, "enabled": false, "paused": false, "pauseMode": "Manual", "pauseDurationMinutes": 60, "pauseUntilTime": ""},
+    {"slot": 8, "enabled": false, "paused": false, "pauseMode": "Manual", "pauseDurationMinutes": 60, "pauseUntilTime": ""}
   ],
   "schedulers": [
     {

@@ -83,19 +83,25 @@ def ensure_design() -> None:
 
 def main() -> None:
     ensure_design()
-    required = ["ScheduleData", "AutomaticExecutionEnabled", "SchedulerSlotsPreviousBank",
+    required = ["ScheduleData", "TestDateTime", "AutomaticExecutionEnabled", "SchedulerSlotsPreviousBank",
                 "SchedulerSlotsNextBank", "SchedulerSlotsBankStatus", "SchedulerDefinitionSelect",
                 "SchedulerDefinitionAssignedSlot", "UnassignSchedulerDefinition", "DeleteSchedulerDefinition",
-                "InspectorSlotSelect", "InspectorSlotEnabled", "InspectorSlotPaused",
+                "InspectorSlotSelect", "InspectorSchedulerName", "InspectorEnableStatus", "InspectorSlotEnabled", "InspectorSlotPaused", "InspectorPauseMode",
+                "InspectorPauseDurationMinutes", "InspectorPauseUntilTime", "InspectorPauseStatus",
+                "InspectorPauseRequested", "InspectorPauseTarget", "InspectorPauseRemaining",
+                "CurrentEventActionsViewer", "NextEventActions", "NextEventActionsViewer",
                 "AssignedSchedulerSlotCount", "GlobalSchedulerSlotStatus"]
     for slot in range(1, 9):
         required += [f"SchedulerSlotDefinition {slot}", f"SchedulerSlotAssignedId {slot}",
-                     f"SchedulerSlotEnabled {slot}", f"SchedulerSlotPaused {slot}"]
+                     f"SchedulerSlotEnabled {slot}", f"SchedulerSlotPaused {slot}",
+                     f"SchedulerSlotPauseMode {slot}", f"SchedulerSlotPauseDurationMinutes {slot}",
+                     f"SchedulerSlotPauseUntilTime {slot}", f"SchedulerSlotPauseStatus {slot}"]
     initial = controls(*required)
     check(all(name in initial for name in required), "all stable Slot, Inspector, and Definition controls exist")
     check(initial["AutomaticExecutionEnabled"]["Value"] < 0.5, "Master Enable starts off")
 
     original_schedule = initial["ScheduleData"]["String"]
+    original_test_time = initial["TestDateTime"]["String"]
     fixture = {
         "schemaVersion": 2,
         "revision": 1,
@@ -156,17 +162,26 @@ def main() -> None:
               "forced delete reports the assignment guard")
 
         set_value("InspectorSlotSelect", choice(1, "Slot 1 — Slot Test A"), 0.7)
+        set_value("TestDateTime", "2030-01-02 12:00", 0.2)
         set_value("InspectorSlotEnabled", True, 0.8)
         set_value("InspectorSlotPaused", True, 0.8)
-        inspector = controls("ScheduleData", "SchedulerSlotEnabled 1", "SchedulerSlotPaused 1",
-                             "InspectorSlotEnabled", "InspectorSlotPaused")
+        inspector = controls("ScheduleData", "TestDateTime", "SchedulerSlotEnabled 1", "SchedulerSlotPaused 1",
+                             "InspectorSchedulerName", "InspectorEnableStatus", "InspectorSlotEnabled", "InspectorSlotPaused")
         inspector_model = json.loads(inspector["ScheduleData"]["String"])
         check(inspector_model["schedulerSlots"][0]["enabled"] is True and
-              inspector_model["schedulerSlots"][0]["paused"] is True,
-              "Inspector runtime toggles persist against the selected Slot")
+              inspector_model["schedulerSlots"][0]["paused"] is True and
+              inspector_model["schedulerSlots"][0]["pauseMode"] == "Manual" and
+              inspector_model["schedulerSlots"][0]["pauseIntent"]["mode"] == "Manual",
+              "Inspector runtime toggles persist a manual pause intent against the selected Slot")
+        check(inspector["InspectorSchedulerName"]["String"] == "Slot Test A",
+              "Inspector Live Status begins with the selected Scheduler name")
+        check(inspector["InspectorEnableStatus"]["String"] == "Inhibited — Master Enable off",
+              "Inspector distinguishes an enabled Slot inhibited by Master Enable")
         check(inspector["SchedulerSlotEnabled 1"]["Value"] > 0.5 and
               inspector["SchedulerSlotPaused 1"]["Value"] > 0.5,
               "Scheduler Slots page mirrors Inspector runtime state")
+        check(inspector["TestDateTime"]["String"] == "",
+              "enabling a Scheduler Slot clears the developer-only diagnostic Test Date/Time")
 
         press("UnassignSchedulerDefinition", 1.0)
         unassigned = controls("ScheduleData", "SchedulerSlotAssignedId 1", "SchedulerSlotEnabled 1",
@@ -181,12 +196,14 @@ def main() -> None:
               "unassigned Definition returns helper controls to idle state")
     finally:
         set_value("ScheduleData", original_schedule, 1.2)
+        set_value("TestDateTime", original_test_time, 0.2)
         for name in ["DeleteSchedulerDefinition", "UnassignSchedulerDefinition",
                      "SchedulerSlotsPreviousBank", "SchedulerSlotsNextBank"]:
             set_value(name, False, 0.05)
-        final = controls("ScheduleData", "AutomaticExecutionEnabled", "DeleteSchedulerDefinition",
+        final = controls("ScheduleData", "TestDateTime", "AutomaticExecutionEnabled", "DeleteSchedulerDefinition",
                          "UnassignSchedulerDefinition", "SchedulerSlotsPreviousBank", "SchedulerSlotsNextBank")
-        restored = final["ScheduleData"]["String"] == original_schedule
+        restored = final["ScheduleData"]["String"] == original_schedule and \
+            final["TestDateTime"]["String"] == original_test_time
         idle = final["AutomaticExecutionEnabled"]["Value"] < 0.5 and all(
             final[name]["Value"] < 0.5 for name in ["DeleteSchedulerDefinition", "UnassignSchedulerDefinition",
                                                     "SchedulerSlotsPreviousBank", "SchedulerSlotsNextBank"])

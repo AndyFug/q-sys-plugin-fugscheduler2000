@@ -16,6 +16,7 @@ python3 tests/qrc/validate_week_patterns.py
 python3 tests/qrc/validate_overrides.py
 python3 tests/qrc/validate_override_dates.py
 python3 tests/qrc/validate_overview.py
+python3 tests/qrc/validate_pause_modes.py
 python3 tests/qrc/validate_execution.py
 python3 tests/qrc/validate_execution_plan_lifecycle.py
 python3 tests/qrc/validate_execution_resolution.py
@@ -39,13 +40,15 @@ The execution test also inspects runtime-plan diagnostics in `GlobalSchedulerSlo
 
 `validate_overview.py` validates eight stable Slot rows, filtered and forced-duplicate assignment behavior, unassigned Slot behavior, stable Slot Enable/Pause controls, Slot Inspector mirroring, the Unassign helper, and both visual and forced deletion guards.
 
+`validate_pause_modes.py` keeps Master Enable off while validating Manual, Duration, Until Time, Next Event, and Through Day configuration; immediate active-intent re-arming; persisted target snapshots; schedule-edit retargeting; stable per-Slot controls; aggregate pause status; reload persistence; and byte-for-byte restoration.
+
 `validate_execution_plan_lifecycle.py` explicitly assigns and removes a Scheduler Slot plan, verifies that its independent timer polls, waits through multiple former timer periods after deletion, and confirms that an unaffected plan retains its generation and timer phase while continuing to poll.
 
 `validate_execution_resolution.py` keeps execution disabled while exercising detached `TestDateTime` resolution across midnight, an inclusive Override boundary, and a 121-day empty Day Pattern range. It verifies dated occurrence identity and restores both changed persistent controls byte-for-byte.
 
 `validate_execution_midnight.py` is a long-running acceptance test that must start 20 seconds to 25 minutes before the emulator's local midnight. It installs one safe temporary Scheduler, arms execution, and waits for genuine 23:59 and 00:00 Events without changing any clock. Do not interrupt it after fixture installation; if the harness is forcibly killed, immediately disable `AutomaticExecutionEnabled` and restore the saved fixture controls before any further testing.
 
-`TestDateTime` affects deterministic resolver display only; live execution polling uses Core-local `os.time()`. The current design has no validated clock-discontinuity injection mechanism. Do not change the host/emulator/Core clock to test jumps. Backward and forward discontinuity acceptance remains blocked unless a dedicated test seam is proposed and approved.
+`TestDateTime` is a developer-only deterministic resolver preview; live execution polling uses Core-local `os.time()`. Runtime start, Master Enable, and Scheduler Slot enable clear it before normal operational status is shown. The current design has no validated clock-discontinuity injection mechanism. Do not change the host/emulator/Core clock to test jumps. Backward and forward discontinuity acceptance remains blocked unless a dedicated test seam is proposed and approved.
 
 `validate_logging.py` checks normalized numeric preference IDs, basic Debug Output filtering through `log.history`, unconditional bounded DiagnosticLog routing, and preference handlers. Core Event Log visibility still requires a brief Designer observation because the current test design does not expose an Event Log component through QRC.
 

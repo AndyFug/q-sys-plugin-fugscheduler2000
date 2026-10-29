@@ -137,8 +137,14 @@ ScheduleData = {
   schemaVersion = 2,
   revision = 1,
   schedulerSlots = {
-    {slot = 1, schedulerId = "site-music", enabled = true, paused = false},
-    {slot = 2, enabled = false, paused = false}
+    {
+      slot = 1, schedulerId = "site-music", enabled = true, paused = false,
+      pauseMode = "Manual", pauseDurationMinutes = 60, pauseUntilTime = ""
+    },
+    {
+      slot = 2, enabled = false, paused = false,
+      pauseMode = "Manual", pauseDurationMinutes = 60, pauseUntilTime = ""
+    }
   },
   schedulers = {
     {
@@ -286,7 +292,7 @@ Use the vendored FugUi framework and separate operator status from configuration
 
 ### Diagnostics
 
-- advanced deterministic Test Date/Time preview, explicit Preview and Use Live Time actions, and a clear pinned-time warning
+- developer-only deterministic Test Date/Time preview, explicit Preview and Use Live Time actions, a clear pinned-time warning, and automatic clearing on runtime start or execution enable
 - scheduler logs and callback errors
 - aggregate Global Scheduler Status JSON
 - raw persisted configuration/export and code-source/registry generation status
@@ -394,7 +400,7 @@ Before completing the engine, document and test:
 - ordered execution and failure isolation when one Event contains multiple Actions
 - validate immediate stateful reconciliation when schedule edits change the current Event; one-shots remain edge-only and repeats restart from the edit time
 - pause/resume behavior for repeat timers and missed one-shots
-- pause expiry modes: manual, next Event, duration/until time, and a defined next-day policy
+- validate persisted Manual, Next Event, Duration, Until Time, and Through Day pause modes across restart, schedule edits, expiry, and Event-edge execution
 - advancing immediately to the next scheduled Event, including occurrence consumption and restart persistence
 - whether manual action tests affect current scheduler state
 
@@ -448,9 +454,13 @@ Exit criterion: multiple Schedulers can resolve concurrently and one selected Sc
 
 ### Phase 2 follow-up — operational transport controls
 
-- Add Pause Until Next Event, timed/until-time pause, and a documented next-day pause policy.
-- Add Advance to Next Event as an explicit runtime transition that executes the next occurrence once, makes it current, and suppresses its later scheduled edge.
-- Decide whether pause expiry and advanced occurrence state survive runtime or Core restart, then persist operational state if required.
+- [x] Add persistent Manual, Next Event, Duration, Until Time, and Through Day Slot pause modes.
+- [x] Preserve active pause intent across runtime/Core restart with request, expiry, calendar-boundary, and Event-target metadata.
+- [x] Resume Next Event and Through Day immediately before the target occurrence so it executes normally; missed historical one-shots remain suppressed.
+- [x] Re-resolve Event-targeted pause intent after affected schedule edits without adding per-pause timers or broad searches to the one-second poll.
+- [x] Expose advanced pause configuration through Slot Inspector and stable per-Slot controls/pins.
+- [x] Complete Designer/QRC acceptance for all pause modes, restart persistence, target updates, automatic expiry, and execution-budget health.
+- [ ] Add Advance to Next Event as an explicit runtime transition that executes the next occurrence once, makes it current, and suppresses its later scheduled edge.
 - Keep Action testing separate from Scheduler transport state.
 
 ### Phase 3 — scalable editing

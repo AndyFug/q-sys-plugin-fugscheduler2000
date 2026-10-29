@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-10-29T12:59:35Z",
-  BuildTimestamp = 1793278775
+  BuildDate = "2026-10-29T15:27:08Z",
+  BuildTimestamp = 1793287628
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -39,6 +39,16 @@ local LogLevel = {
 
 FugSchedulerSlotRowsPerBank = FugSchedulerSlotRowsPerBank or 8
 
+-- Keep persisted pause-mode IDs stable across UI choices, control pins, and runtime status.
+local PauseModes = {
+  Manual = {label = "Manual", abbreviation = "M"},
+  NextEvent = {label = "Next Event", abbreviation = "NE"},
+  Duration = {label = "Duration", abbreviation = "DUR"},
+  UntilTime = {label = "Until Time", abbreviation = "UT"},
+  ThroughDay = {label = "Through Day", abbreviation = "TD"}
+}
+local PauseModeOrder = {"Manual", "NextEvent", "Duration", "UntilTime", "ThroughDay"}
+
 -- Resolve counted controls in both embedded-plugin and hot-deployed runtime environments.
 countedControlName = countedControlName or function(baseName, index)
   return baseName .. " " .. tostring(index)
@@ -74,6 +84,7 @@ FugSchedulerRuntime = {
   updatingSchedulerEditor = false,
   updatingSlotControls = false,
   updatingInspectorControls = false,
+  updatingPauseControls = false,
   updatingDayPatternEditor = false,
   updatingWeekPatternEditor = false,
   updatingOverrideEditor = false,
@@ -253,7 +264,15 @@ end
 function FugSchedulerRuntime.sampleSchedule()
   local slots = {}
   for slotNumber = 1, FugSchedulerRuntime.slotCount() do
-    table.insert(slots, {slot = slotNumber, schedulerId = nil, enabled = false, paused = false})
+    table.insert(slots, {
+      slot = slotNumber,
+      schedulerId = nil,
+      enabled = false,
+      paused = false,
+      pauseMode = "Manual",
+      pauseDurationMinutes = 60,
+      pauseUntilTime = ""
+    })
   end
   return {
     schemaVersion = 2,
@@ -821,6 +840,145 @@ function FugSchedulerRuntime.shiftDate(dateText, dayOffset)
   return os.date("%Y-%m-%d", os.time(parts))
 end
 
+-- Return structured pause-mode choices in the fixed public order.
+function FugSchedulerRuntime.pauseModeChoices()
+  local choices = {}
+  for _, modeId in ipairs(PauseModeOrder) do
+    table.insert(choices, {Text = PauseModes[modeId].label, Id = modeId})
+  end
+  return choices
+end
+
+-- Return the compact legend used by Slot pause buttons.
+function FugSchedulerRuntime.pauseModeAbbreviation(modeId)
+  return PauseModes[modeId] and PauseModes[modeId].abbreviation or "M"
+end
+
+-- Format one Core-local timestamp for operator-facing pause status.
+function FugSchedulerRuntime.formatPauseTimestamp(timestamp)
+  timestamp = tonumber(timestamp)
+  if not timestamp then return "N/A" end
+  return os.date("%Y-%m-%d %H:%M:%S", timestamp)
+end
+
+-- Return a detached or live positioned plan suitable for resolving a pause target once.
+function FugSchedulerRuntime.pauseResolverPlan(scheduler, now)
+  local live = scheduler and FugSchedulerRuntime.runtimePlans[scheduler.id] or nil
+  if live and live.initialized and live.lastObservedTimestamp then return live end
+  if not scheduler then return nil end
+  local plan = FugSchedulerRuntime.createRuntimePlan(scheduler, nil)
+  FugSchedulerRuntime.positionPlanCursor(plan, now)
+  return plan
+end
+
+-- Return the first occurrence on or after one calendar date without changing the live cursor.
+function FugSchedulerRuntime.firstOccurrenceOnOrAfterDate(plan, minimumDate)
+  if not plan or (plan.metrics.eventCount or 0) == 0 then return nil end
+  for dayOffset = 0, FugSchedulerRuntime.occurrenceSafetyHorizonDays do
+    local dateText = FugSchedulerRuntime.shiftDate(minimumDate, dayOffset)
+    local entry = FugSchedulerRuntime.resolvePlanDate(plan, dateText)
+    if entry.occurrences[1] then return entry.occurrences[1] end
+  end
+  return nil
+end
+
+-- Copy the stable fields needed to preserve and diagnose a pause target across restarts.
+function FugSchedulerRuntime.pauseTargetSnapshot(occurrence)
+  if not occurrence then return nil end
+  return {
+    timestamp = occurrence.timestamp,
+    date = occurrence.date,
+    time = occurrence.time,
+    dayPatternId = occurrence.dayPatternId,
+    eventId = occurrence.eventId,
+    sequence = occurrence.sequence
+  }
+end
+
+-- Resolve the configured target for a Next Event or Through Day pause.
+function FugSchedulerRuntime.resolvePauseTarget(scheduler, modeId, now, notBeforeDate)
+  local plan = FugSchedulerRuntime.pauseResolverPlan(scheduler, now)
+  if not plan then return nil, "Scheduler runtime plan is unavailable" end
+  local occurrence
+  if modeId == "NextEvent" then
+    occurrence = plan.nextOccurrence
+    if not occurrence or occurrence.timestamp <= now then
+      local detached = FugSchedulerRuntime.createRuntimePlan(scheduler, nil)
+      FugSchedulerRuntime.positionPlanCursor(detached, now)
+      occurrence = detached.nextOccurrence
+    end
+  elseif modeId == "ThroughDay" then
+    occurrence = FugSchedulerRuntime.firstOccurrenceOnOrAfterDate(plan, notBeforeDate)
+  end
+  if not occurrence then return nil, "No eligible future Event was found within the search horizon" end
+  return FugSchedulerRuntime.pauseTargetSnapshot(occurrence), nil
+end
+
+-- Build one complete active pause intent from a Slot's saved configuration.
+function FugSchedulerRuntime.buildPauseIntent(slot, scheduler, now)
+  local modeId = slot.pauseMode or "Manual"
+  if not PauseModes[modeId] then return nil, "Unknown pause mode" end
+  local intent = {mode = modeId, requestedAt = now}
+  if modeId == "Duration" then
+    local minutes = tonumber(slot.pauseDurationMinutes)
+    if not minutes or minutes < 1 or minutes % 1 ~= 0 then return nil, "Duration must be a positive whole number of minutes" end
+    intent.expiresAt = now + (minutes * 60)
+  elseif modeId == "UntilTime" then
+    local expiresAt, parseError = FugSchedulerRuntime.parseDateTime(slot.pauseUntilTime)
+    if not expiresAt then return nil, "Until Time: " .. tostring(parseError) end
+    if expiresAt <= now then return nil, "Until Time must be in the future" end
+    intent.expiresAt = expiresAt
+  elseif modeId == "NextEvent" then
+    local target, targetError = FugSchedulerRuntime.resolvePauseTarget(scheduler, modeId, now)
+    if not target then return nil, targetError end
+    intent.target = target
+  elseif modeId == "ThroughDay" then
+    intent.notBeforeDate = FugSchedulerRuntime.shiftDate(os.date("%Y-%m-%d", now), 1)
+    local target, targetError = FugSchedulerRuntime.resolvePauseTarget(scheduler, modeId, now, intent.notBeforeDate)
+    if not target then return nil, targetError end
+    intent.target = target
+  end
+  return intent, nil
+end
+
+-- Return the active pause target as concise operator-facing text.
+function FugSchedulerRuntime.pauseTargetText(slot)
+  local intent = slot and slot.pauseIntent or nil
+  if not slot or not slot.paused or not intent then return "None" end
+  if intent.mode == "Manual" then return "Manual resume" end
+  if intent.mode == "Duration" or intent.mode == "UntilTime" then
+    return FugSchedulerRuntime.formatPauseTimestamp(intent.expiresAt)
+  end
+  local target = intent.target
+  if not target then return "Waiting for a future Event" end
+  local scheduler = slot.schedulerId and FugSchedulerRuntime.activeSchedule and
+    FugSchedulerRuntime.activeSchedule._schedulersById[slot.schedulerId] or nil
+  local eventLabel = target.eventId
+  if scheduler then
+    for _, dayPattern in ipairs(scheduler.dayPatterns or {}) do
+      local event = dayPattern._eventsById and dayPattern._eventsById[target.eventId] or nil
+      if event then eventLabel = event.label break end
+    end
+  end
+  return string.format("%s [%s %s]", tostring(eventLabel or "Event"), tostring(target.date or ""), tostring(target.time or ""))
+end
+
+-- Return a compact human-readable summary for one Slot pause pin and Inspector status.
+function FugSchedulerRuntime.pauseStatusText(slot)
+  if not slot or not slot.schedulerId then return "Unassigned" end
+  local mode = PauseModes[slot.pauseMode] or PauseModes.Manual
+  if not slot.paused then return "Ready — " .. mode.label end
+  return "Paused — " .. mode.label
+end
+
+-- Describe the Slot and Master Enable gates independently from pause state.
+function FugSchedulerRuntime.inspectorEnableStatus(slot, scheduler)
+  if not slot or not scheduler then return "Unassigned" end
+  if slot.enabled ~= true then return "Disabled — Slot Enable off" end
+  if not FugSchedulerRuntime.automaticExecutionEnabled() then return "Inhibited — Master Enable off" end
+  return "Enabled — Master Enable on"
+end
+
 -- Return the inclusive number of calendar dates in one valid canonical range.
 function FugSchedulerRuntime.inclusiveRangeDays(startDate, endDate)
   local difference = FugSchedulerRuntime.calendarDayDifference(startDate, endDate)
@@ -1046,12 +1204,33 @@ function FugSchedulerRuntime.validateSchedule(root)
   end
   while #root.schedulerSlots < expectedSlotCount do
     local slotNumber = #root.schedulerSlots + 1
-    table.insert(root.schedulerSlots, {slot = slotNumber, schedulerId = nil, enabled = false, paused = false})
+    table.insert(root.schedulerSlots, {
+      slot = slotNumber,
+      schedulerId = nil,
+      enabled = false,
+      paused = false,
+      pauseMode = "Manual",
+      pauseDurationMinutes = 60,
+      pauseUntilTime = ""
+    })
   end
   local slotsByNumber, assignedSchedulerIds = {}, {}
   for slotIndex, slot in ipairs(root.schedulerSlots) do
     if type(slot) ~= "table" then return nil, nil, "Scheduler Slot " .. slotIndex .. " must be an object" end
     if slot.slot ~= slotIndex then return nil, nil, "Scheduler Slot entries must be ordered and numbered from 1" end
+    slot.pauseMode = slot.pauseMode or "Manual"
+    if not PauseModes[slot.pauseMode] then
+      return nil, nil, "Scheduler Slot " .. slotIndex .. " has invalid pauseMode"
+    end
+    slot.pauseDurationMinutes = tonumber(slot.pauseDurationMinutes) or 60
+    if slot.pauseDurationMinutes < 1 or slot.pauseDurationMinutes > 525600 or
+        slot.pauseDurationMinutes % 1 ~= 0 then
+      return nil, nil, "Scheduler Slot " .. slotIndex .. " pauseDurationMinutes must be a whole number from 1 to 525600"
+    end
+    slot.pauseUntilTime = type(slot.pauseUntilTime) == "string" and slot.pauseUntilTime or ""
+    if slot.pauseIntent ~= nil and type(slot.pauseIntent) ~= "table" then
+      return nil, nil, "Scheduler Slot " .. slotIndex .. " pauseIntent must be an object"
+    end
     if slot.schedulerId ~= nil and slot.schedulerId ~= "" then
       if type(slot.schedulerId) ~= "string" or not schedulersById[slot.schedulerId] then
         return nil, nil, "Scheduler Slot " .. slotIndex .. " references a missing Scheduler Definition"
@@ -1064,10 +1243,33 @@ function FugSchedulerRuntime.validateSchedule(root)
       scheduler._slotNumber = slotIndex
       scheduler._enabled = slot.enabled == true
       scheduler._paused = slot.paused == true
+      scheduler._pauseSlot = slot
+      if slot.paused then
+        slot.pauseIntent = slot.pauseIntent or {mode = "Manual", requestedAt = os.time()}
+        slot.pauseIntent.mode = PauseModes[slot.pauseIntent.mode] and slot.pauseIntent.mode or slot.pauseMode
+        slot.pauseIntent.requestedAt = tonumber(slot.pauseIntent.requestedAt) or os.time()
+        if slot.pauseIntent.mode ~= slot.pauseMode then slot.pauseIntent.mode = slot.pauseMode end
+        if slot.pauseIntent.mode == "Duration" then
+          slot.pauseIntent.expiresAt = tonumber(slot.pauseIntent.expiresAt) or
+            (slot.pauseIntent.requestedAt + (slot.pauseDurationMinutes * 60))
+        elseif slot.pauseIntent.mode == "UntilTime" then
+          local configuredExpiry = FugSchedulerRuntime.parseDateTime(slot.pauseUntilTime)
+          slot.pauseIntent.expiresAt = tonumber(slot.pauseIntent.expiresAt) or configuredExpiry
+          if not slot.pauseIntent.expiresAt then
+            return nil, nil, "Scheduler Slot " .. slotIndex .. " active Until Time pause has no valid expiry"
+          end
+        elseif slot.pauseIntent.mode == "ThroughDay" then
+          slot.pauseIntent.notBeforeDate = slot.pauseIntent.notBeforeDate or
+            FugSchedulerRuntime.shiftDate(os.date("%Y-%m-%d", slot.pauseIntent.requestedAt), 1)
+        end
+      else
+        slot.pauseIntent = nil
+      end
     else
       slot.schedulerId = nil
       slot.enabled = false
       slot.paused = false
+      slot.pauseIntent = nil
     end
     slot.enabled = slot.enabled == true
     slot.paused = slot.paused == true
@@ -1185,7 +1387,7 @@ function FugSchedulerRuntime.createRuntimePlan(scheduler, configurationRevision)
     lastEnabled = nil,
     lastPaused = nil,
     lastAutomaticEnabled = nil,
-    lastTransitionReason = "Not initialized",
+    lastTransitionReason = "Not initialised",
     lastCallbackResult = "None",
     timer = nil,
     timerPhaseSeconds = nil,
@@ -1401,15 +1603,41 @@ function FugSchedulerRuntime.formatEvent(item)
   return item.event.label .. " [" .. item.date .. " " .. item.time .. "]"
 end
 
--- Format the ordered Action IDs attached to an Event occurrence.
-function FugSchedulerRuntime.formatEventActions(item)
-  if not item or type(item.event.actions) ~= "table" or #item.event.actions == 0 then return "None" end
-  local labels = {}
-  for _, eventAction in ipairs(item.event.actions) do
-    local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
-    table.insert(labels, action and action.label or (eventAction.actionId .. " (unavailable)"))
+-- Format one Event Action as a concise label and execution-type summary.
+function FugSchedulerRuntime.formatEventAction(eventAction)
+  local action = FugSchedulerRuntime.actionsById[eventAction.actionId]
+  local label = action and action.label or eventAction.actionId
+  local actionType
+  if eventAction.oneShot then
+    actionType = "One Shot"
+  elseif eventAction.repeatSeconds then
+    actionType = "Stateful · Repeat " .. tostring(eventAction.repeatSeconds) .. "s"
+  else
+    actionType = "Stateful"
   end
-  return table.concat(labels, " -> ")
+  if eventAction.enabled == false then actionType = "Disabled " .. actionType end
+  if not action then actionType = actionType .. " · Unavailable" end
+  return label .. " — " .. actionType
+end
+
+-- Return one display row per Event Action for Inspector ListBox viewers.
+function FugSchedulerRuntime.formatEventActionLines(item)
+  if not item or type(item.event.actions) ~= "table" or #item.event.actions == 0 then return {"None"} end
+  local lines = {}
+  for _, eventAction in ipairs(item.event.actions) do
+    table.insert(lines, FugSchedulerRuntime.formatEventAction(eventAction))
+  end
+  return lines
+end
+
+-- Format ordered Event Actions as a concise comma-separated output-pin summary.
+function FugSchedulerRuntime.formatEventActions(item)
+  return table.concat(FugSchedulerRuntime.formatEventActionLines(item), ", ")
+end
+
+-- Populate a scrollable Inspector Action viewer with one Action per row.
+function FugSchedulerRuntime.refreshEventActionViewer(viewerName, item)
+  FugSchedulerRuntime.refreshLineViewer(viewerName, table.concat(FugSchedulerRuntime.formatEventActionLines(item), "\n"))
 end
 
 -- Format a non-negative countdown from the resolved timestamp to the next Event.
@@ -1422,6 +1650,24 @@ function FugSchedulerRuntime.formatCountdown(fromTimestamp, nextTimestamp)
   local remainingSeconds = seconds % 60
   if days > 0 then return string.format("%d days %02d:%02d:%02d", days, hours, minutes, remainingSeconds) end
   return string.format("%02d:%02d:%02d", hours, minutes, remainingSeconds)
+end
+
+-- Refresh the selected Slot Inspector countdowns from its live cursor without rebuilding status.
+function FugSchedulerRuntime.refreshInspectorLiveCountdowns(plan, timestamp)
+  if not plan or tonumber(FugSchedulerRuntime.selectedSlotNumber) ~= plan.slotNumber then return end
+  if Controls.TestDateTime and (Controls.TestDateTime.String or "") ~= "" then return end
+  local now = tonumber(timestamp) or os.time()
+  FugSchedulerRuntime.setText(
+    "Countdown",
+    FugSchedulerRuntime.formatCountdown(now, plan.nextOccurrence and plan.nextOccurrence.timestamp or nil)
+  )
+  local slot = plan.scheduler and plan.scheduler._pauseSlot or nil
+  local intent = slot and slot.paused and slot.pauseIntent or nil
+  local remainingTimestamp = intent and (intent.expiresAt or (intent.target and intent.target.timestamp)) or nil
+  FugSchedulerRuntime.setText(
+    "InspectorPauseRemaining",
+    slot and slot.paused and FugSchedulerRuntime.formatCountdown(now, remainingTimestamp) or "N/A"
+  )
 end
 
 -- Return the selected Scheduler Definition, falling back to the first library entry.
@@ -1514,6 +1760,10 @@ function FugSchedulerRuntime.refreshSlotControls()
     local idControl = countedControl("SchedulerSlotAssignedId", slotNumber)
     local enabledControl = countedControl("SchedulerSlotEnabled", slotNumber)
     local pausedControl = countedControl("SchedulerSlotPaused", slotNumber)
+    local pauseModeControl = countedControl("SchedulerSlotPauseMode", slotNumber)
+    local pauseDurationControl = countedControl("SchedulerSlotPauseDurationMinutes", slotNumber)
+    local pauseUntilControl = countedControl("SchedulerSlotPauseUntilTime", slotNumber)
+    local pauseStatusControl = countedControl("SchedulerSlotPauseStatus", slotNumber)
     local patternControl = countedControl("SchedulerSlotCurrentPattern", slotNumber)
     local currentControl = countedControl("SchedulerSlotCurrentEvent", slotNumber)
     local nextControl = countedControl("SchedulerSlotNextEvent", slotNumber)
@@ -1530,11 +1780,30 @@ function FugSchedulerRuntime.refreshSlotControls()
     if enabledControl then
       enabledControl.Boolean = slot and slot.enabled == true or false
       enabledControl.IsDisabled = scheduler == nil
+      enabledControl.Legend = ""
     end
     if pausedControl then
       pausedControl.Boolean = slot and slot.paused == true or false
       pausedControl.IsDisabled = scheduler == nil
+      pausedControl.Legend = FugSchedulerRuntime.pauseModeAbbreviation(slot and slot.pauseMode or "Manual")
     end
+    if pauseModeControl then
+      pauseModeControl.Choices = FugSchedulerRuntime.pauseModeChoices()
+      pauseModeControl.String = FugSchedulerRuntime.encodeChoice(
+        PauseModes[slot and slot.pauseMode or "Manual"].label,
+        slot and slot.pauseMode or "Manual"
+      )
+      pauseModeControl.IsDisabled = scheduler == nil
+    end
+    if pauseDurationControl then
+      pauseDurationControl.String = tostring(slot and slot.pauseDurationMinutes or 60)
+      pauseDurationControl.IsDisabled = scheduler == nil or slot.pauseMode ~= "Duration"
+    end
+    if pauseUntilControl then
+      pauseUntilControl.String = slot and slot.pauseUntilTime or ""
+      pauseUntilControl.IsDisabled = scheduler == nil or slot.pauseMode ~= "UntilTime"
+    end
+    if pauseStatusControl then pauseStatusControl.String = FugSchedulerRuntime.pauseStatusText(slot) end
     if patternControl then patternControl.String = scheduler and FugSchedulerRuntime.overviewPatternText(status) or "—" end
     if currentControl then currentControl.String = scheduler and FugSchedulerRuntime.overviewEventText(status and status.currentEvent) or "—" end
     if nextControl then nextControl.String = scheduler and FugSchedulerRuntime.overviewEventText(status and status.nextEvent) or "—" end
@@ -1562,18 +1831,48 @@ function FugSchedulerRuntime.refreshInspector()
   if Controls.InspectorSlotEnabled then
     Controls.InspectorSlotEnabled.Boolean = slot and slot.enabled == true or false
     Controls.InspectorSlotEnabled.IsDisabled = scheduler == nil
+    Controls.InspectorSlotEnabled.Legend = "Enable"
   end
   if Controls.InspectorSlotPaused then
     Controls.InspectorSlotPaused.Boolean = slot and slot.paused == true or false
     Controls.InspectorSlotPaused.IsDisabled = scheduler == nil
+    Controls.InspectorSlotPaused.Legend = "Pause"
+  end
+  if Controls.InspectorPauseMode then
+    Controls.InspectorPauseMode.Choices = FugSchedulerRuntime.pauseModeChoices()
+    local modeId = slot and slot.pauseMode or "Manual"
+    Controls.InspectorPauseMode.String = FugSchedulerRuntime.encodeChoice(PauseModes[modeId].label, modeId)
+    Controls.InspectorPauseMode.IsDisabled = scheduler == nil
+  end
+  if Controls.InspectorPauseDurationMinutes then
+    Controls.InspectorPauseDurationMinutes.String = tostring(slot and slot.pauseDurationMinutes or 60)
+    Controls.InspectorPauseDurationMinutes.IsDisabled = scheduler == nil or slot.pauseMode ~= "Duration"
+  end
+  if Controls.InspectorPauseUntilTime then
+    Controls.InspectorPauseUntilTime.String = slot and slot.pauseUntilTime or ""
+    Controls.InspectorPauseUntilTime.IsDisabled = scheduler == nil or slot.pauseMode ~= "UntilTime"
   end
   FugSchedulerRuntime.updatingInspectorControls = false
+  local intent = slot and slot.pauseIntent or nil
+  FugSchedulerRuntime.setText("InspectorSchedulerName", scheduler and scheduler.label or "Unassigned")
+  FugSchedulerRuntime.setText("InspectorEnableStatus", FugSchedulerRuntime.inspectorEnableStatus(slot, scheduler))
+  FugSchedulerRuntime.setText("InspectorPauseStatus", FugSchedulerRuntime.pauseStatusText(slot))
+  FugSchedulerRuntime.setText("InspectorPauseRequested",
+    intent and FugSchedulerRuntime.formatPauseTimestamp(intent.requestedAt) or "None")
+  FugSchedulerRuntime.setText("InspectorPauseTarget", FugSchedulerRuntime.pauseTargetText(slot))
+  local remainingTimestamp = intent and (intent.expiresAt or (intent.target and intent.target.timestamp)) or nil
+  FugSchedulerRuntime.setText("InspectorPauseRemaining",
+    slot and slot.paused and FugSchedulerRuntime.formatCountdown(os.time(), remainingTimestamp) or "N/A")
   local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
   if scheduler and result then
     FugSchedulerRuntime.publishResolution(scheduler, result)
   else
     for _, name in ipairs({"ResolutionSource", "ResolvedDayPattern", "PreviousEvent", "CurrentEvent",
-      "CurrentEventActions", "NextEvent", "NextEventTime", "Countdown"}) do FugSchedulerRuntime.setText(name, "Unassigned") end
+      "CurrentEventActions", "NextEvent", "NextEventActions", "NextEventTime", "Countdown"}) do
+      FugSchedulerRuntime.setText(name, "Unassigned")
+    end
+    FugSchedulerRuntime.refreshLineViewer("CurrentEventActionsViewer", "Unassigned")
+    FugSchedulerRuntime.refreshLineViewer("NextEventActionsViewer", "Unassigned")
   end
 end
 
@@ -3199,6 +3498,10 @@ function FugSchedulerRuntime.assignSlot(slotNumber, definitionId)
     slot.schedulerId = definitionId
     slot.enabled = false
     slot.paused = false
+    slot.pauseMode = slot.pauseMode or "Manual"
+    slot.pauseDurationMinutes = slot.pauseDurationMinutes or 60
+    slot.pauseUntilTime = slot.pauseUntilTime or ""
+    slot.pauseIntent = nil
   end, FugSchedulerRuntime.selectedSchedulerId, "SchedulerDefinitionEditorStatus")
 end
 
@@ -3213,13 +3516,192 @@ function FugSchedulerRuntime.unassignSelectedDefinition()
   return FugSchedulerRuntime.assignSlot(slotNumber, nil)
 end
 
--- Change one assigned slot's immediate enabled or paused operational state.
+-- Persist the current validated model without changing its revision or rebuilding runtime plans.
+function FugSchedulerRuntime.persistActiveScheduleSnapshot()
+  if not FugSchedulerRuntime.activeSchedule or not Controls.ScheduleData then return false end
+  local persisted = FugSchedulerRuntime.copyPersisted(FugSchedulerRuntime.activeSchedule)
+  FugSchedulerRuntime.normalizeScheduleArrays(persisted)
+  local serialized = FugSchedulerRuntime.encodeJson(persisted)
+  if serialized == "" then return false end
+  FugSchedulerRuntime.writingScheduleData = true
+  local writeOk = pcall(function() Controls.ScheduleData.String = serialized end)
+  FugSchedulerRuntime.writingScheduleData = false
+  if writeOk then FugSchedulerRuntime.refreshLineViewer("ScheduleDataViewer", serialized) end
+  return writeOk
+end
+
+-- Persist one known-safe Slot operational mutation without rebuilding its compiled execution plan.
+function FugSchedulerRuntime.updateSlotOperationalState(slotNumber, description, mutate, deferRefresh)
+  local schedule = FugSchedulerRuntime.activeSchedule
+  local slot = schedule and schedule.schedulerSlots[slotNumber] or nil
+  local scheduler = slot and slot.schedulerId and schedule._schedulersById[slot.schedulerId] or nil
+  if not slot or not scheduler then
+    FugSchedulerRuntime.logLine(description .. " rejected: Scheduler Slot is unassigned", LogLevel.ERROR)
+    FugSchedulerRuntime.refreshSlotControls()
+    FugSchedulerRuntime.refreshInspector()
+    return false
+  end
+
+  local previousSlot = FugSchedulerRuntime.copyPersisted(slot)
+  local previousRevision = schedule.revision
+  local mutateOk, mutateResult, mutateError = pcall(mutate, slot, scheduler)
+  if not mutateOk or mutateResult == false then
+    local message = description .. " rejected: " .. tostring(mutateOk and mutateError or mutateResult)
+    FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
+    FugSchedulerRuntime.refreshSlotControls()
+    FugSchedulerRuntime.refreshInspector()
+    return false
+  end
+
+  schedule.revision = (tonumber(schedule.revision) or 0) + 1
+  scheduler._enabled = slot.enabled == true
+  scheduler._paused = slot.paused == true
+  scheduler._pauseSlot = slot
+  local persisted = FugSchedulerRuntime.copyPersisted(schedule)
+  FugSchedulerRuntime.normalizeScheduleArrays(persisted)
+  local serialized = FugSchedulerRuntime.encodeJson(persisted)
+  if serialized == "" then
+    schedule.schedulerSlots[slotNumber] = previousSlot
+    schedule._slotsByNumber[slotNumber] = previousSlot
+    schedule.revision = previousRevision
+    scheduler._enabled = previousSlot.enabled == true
+    scheduler._paused = previousSlot.paused == true
+    scheduler._pauseSlot = previousSlot
+    return false
+  end
+
+  FugSchedulerRuntime.writingScheduleData = true
+  local writeOk, writeError = pcall(function() Controls.ScheduleData.String = serialized end)
+  FugSchedulerRuntime.writingScheduleData = false
+  if not writeOk then
+    schedule.schedulerSlots[slotNumber] = previousSlot
+    schedule._slotsByNumber[slotNumber] = previousSlot
+    schedule.revision = previousRevision
+    scheduler._enabled = previousSlot.enabled == true
+    scheduler._paused = previousSlot.paused == true
+    scheduler._pauseSlot = previousSlot
+    FugSchedulerRuntime.logLine(description .. " rejected: " .. tostring(writeError), LogLevel.ERROR)
+    return false
+  end
+  FugSchedulerRuntime.refreshLineViewer("ScheduleDataViewer", serialized)
+  local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
+  if plan then
+    plan.scheduler = scheduler
+    plan.configurationRevision = schedule.revision
+  end
+
+  local function refreshOperationalViews()
+    FugSchedulerRuntime.refreshSlotControls()
+    FugSchedulerRuntime.refreshInspector()
+    FugSchedulerRuntime.refreshStatus()
+    if Controls.TestDateTime and (Controls.TestDateTime.String or "") ~= "" then
+      FugSchedulerRuntime.resolveSelectedTime()
+    else
+      FugSchedulerRuntime.publishLiveRuntimeStatus()
+    end
+  end
+  if deferRefresh then Timer.CallAfter(refreshOperationalViews, 0.02) else refreshOperationalViews() end
+  FugSchedulerRuntime.logLine(description .. " committed at revision " .. schedule.revision, LogLevel.INFO, {
+    schedulerLabel = scheduler.label,
+    schedulerId = scheduler.id,
+    reason = "pause transport"
+  })
+  return true
+end
+
+-- Clear the developer-only deterministic preview before entering normal live operation.
+function FugSchedulerRuntime.clearDiagnosticTestTime(reason, shouldLog)
+  if not Controls.TestDateTime or (Controls.TestDateTime.String or "") == "" then return false end
+  Controls.TestDateTime.String = ""
+  if shouldLog then
+    FugSchedulerRuntime.logLine("Diagnostic Test Date/Time cleared: " .. tostring(reason), LogLevel.INFO)
+  end
+  return true
+end
+
+-- Change one assigned Slot's immediate enabled state while preserving its execution cursor.
 function FugSchedulerRuntime.setSlotState(slotNumber, field, value)
-  return FugSchedulerRuntime.commitScheduleEdit("Scheduler Slot " .. slotNumber .. " " .. field .. " state updated", function(candidate)
-    local slot = candidate.schedulerSlots[slotNumber]
-    if not slot or not slot.schedulerId then return false, "Scheduler Slot is unassigned" end
-    slot[field] = value == true
-  end, FugSchedulerRuntime.selectedSchedulerId, "SchedulerDefinitionEditorStatus")
+  if field == "paused" then return FugSchedulerRuntime.setSlotPaused(slotNumber, value) end
+  if field == "enabled" and value == true then
+    FugSchedulerRuntime.clearDiagnosticTestTime("Scheduler Slot " .. slotNumber .. " enabled", true)
+  end
+  return FugSchedulerRuntime.updateSlotOperationalState(slotNumber,
+    "Scheduler Slot " .. slotNumber .. " " .. field .. " state updated",
+    function(slot) slot[field] = value == true end)
+end
+
+-- Change one Slot's saved pause mode or configuration and re-arm an active pause immediately.
+function FugSchedulerRuntime.setSlotPauseConfiguration(slotNumber, field, value)
+  local slot, scheduler = FugSchedulerRuntime.slotAssignment(slotNumber)
+  if not slot or not scheduler then return false end
+  local candidate = FugSchedulerRuntime.copyPersisted(slot)
+  if field == "pauseMode" then
+    if not PauseModes[value] then
+      FugSchedulerRuntime.refreshSlotControls()
+      FugSchedulerRuntime.refreshInspector()
+      FugSchedulerRuntime.setText("InspectorPauseStatus", "Pause edit rejected: invalid pause mode")
+      return false
+    end
+    candidate.pauseMode = value
+  elseif field == "pauseDurationMinutes" then
+    local minutes = tonumber(value)
+    if not minutes or minutes < 1 or minutes > 525600 or minutes % 1 ~= 0 then
+      FugSchedulerRuntime.refreshSlotControls()
+      FugSchedulerRuntime.refreshInspector()
+      FugSchedulerRuntime.setText("InspectorPauseStatus", "Pause edit rejected: duration must be 1-525600 whole minutes")
+      return false
+    end
+    candidate.pauseDurationMinutes = minutes
+  elseif field == "pauseUntilTime" then
+    candidate.pauseUntilTime = tostring(value or "")
+  else
+    return false
+  end
+
+  local rearmedIntent
+  if slot.paused then
+    local intent, intentError = FugSchedulerRuntime.buildPauseIntent(candidate, scheduler, os.time())
+    if not intent then
+      FugSchedulerRuntime.refreshSlotControls()
+      FugSchedulerRuntime.refreshInspector()
+      FugSchedulerRuntime.setText("InspectorPauseStatus", "Pause edit rejected: " .. tostring(intentError))
+      return false
+    end
+    rearmedIntent = intent
+  end
+  return FugSchedulerRuntime.updateSlotOperationalState(slotNumber,
+    "Scheduler Slot " .. slotNumber .. " pause configuration updated",
+    function(activeSlot)
+      activeSlot.pauseMode = candidate.pauseMode
+      activeSlot.pauseDurationMinutes = candidate.pauseDurationMinutes
+      activeSlot.pauseUntilTime = candidate.pauseUntilTime
+      if activeSlot.paused then activeSlot.pauseIntent = rearmedIntent end
+    end)
+end
+
+-- Activate or clear the configured pause intent for one assigned Slot.
+function FugSchedulerRuntime.setSlotPaused(slotNumber, paused, reason, deferRefresh)
+  local slot, scheduler = FugSchedulerRuntime.slotAssignment(slotNumber)
+  if not slot or not scheduler then return false end
+  local intent
+  if paused then
+    local intentError
+    intent, intentError = FugSchedulerRuntime.buildPauseIntent(slot, scheduler, os.time())
+    if not intent then
+      FugSchedulerRuntime.refreshSlotControls()
+      FugSchedulerRuntime.refreshInspector()
+      FugSchedulerRuntime.setText("InspectorPauseStatus", "Pause rejected: " .. tostring(intentError))
+      return false
+    end
+  end
+  local description = reason or (paused and "pause activated" or "pause cleared")
+  return FugSchedulerRuntime.updateSlotOperationalState(slotNumber,
+    "Scheduler Slot " .. slotNumber .. " " .. description,
+    function(activeSlot)
+      activeSlot.paused = paused == true
+      activeSlot.pauseIntent = paused and intent or nil
+    end,
+    deferRefresh)
 end
 
 -- Return whether the plugin-wide automatic execution safety control is armed.
@@ -3400,26 +3882,83 @@ function FugSchedulerRuntime.processRepeats(scheduler, state, currentOccurrence,
   end
 end
 
+-- Return how an active automatic pause expires during this poll, if at all.
+function FugSchedulerRuntime.pauseExpiryForPoll(plan, crossed, now)
+  local slot = plan.scheduler and plan.scheduler._pauseSlot or nil
+  local intent = slot and slot.paused and slot.pauseIntent or nil
+  if not intent or intent.mode == "Manual" then return nil end
+  if intent.mode == "Duration" or intent.mode == "UntilTime" then
+    local expiresAt = tonumber(intent.expiresAt)
+    if not expiresAt or now < expiresAt then return nil end
+    local resumeIndex
+    for index, occurrence in ipairs(crossed or {}) do
+      if occurrence.timestamp >= expiresAt then resumeIndex = index break end
+    end
+    return {reason = "automatic timed pause expired", resumeIndex = resumeIndex}
+  end
+  local target = intent.target
+  if not target or not tonumber(target.timestamp) then return nil end
+  local targetKey = table.concat({
+    tostring(target.timestamp), tostring(target.date), tostring(target.dayPatternId),
+    tostring(target.eventId), tostring(target.sequence)
+  }, "\31")
+  for index, occurrence in ipairs(crossed or {}) do
+    if FugSchedulerRuntime.occurrenceKey(occurrence) == targetKey then
+      return {reason = "automatic " .. PauseModes[intent.mode].label .. " pause expired", resumeIndex = index}
+    end
+  end
+  if now >= target.timestamp then
+    return {reason = "automatic pause target passed while execution was unavailable", overdue = true}
+  end
+  return nil
+end
+
+-- Clear an automatically expired pause immediately, then persist it outside the timer callback.
+function FugSchedulerRuntime.expirePlanPause(plan, reason)
+  local slot = plan.scheduler and plan.scheduler._pauseSlot or nil
+  if not slot or not slot.paused then return false end
+  slot.paused = false
+  slot.pauseIntent = nil
+  plan.scheduler._paused = false
+  Timer.CallAfter(function()
+    local activeSlot = FugSchedulerRuntime.activeSchedule and
+      FugSchedulerRuntime.activeSchedule.schedulerSlots[plan.slotNumber] or nil
+    if not activeSlot or activeSlot.paused then return end
+    FugSchedulerRuntime.updateSlotOperationalState(plan.slotNumber,
+      "Scheduler Slot " .. plan.slotNumber .. " " .. tostring(reason),
+      function(persistedSlot)
+        persistedSlot.paused = false
+        persistedSlot.pauseIntent = nil
+      end,
+      true)
+  end, 0.02)
+  return true
+end
+
 -- Process one Scheduler from its cached cursor; this is the only steady-state execution path.
 function FugSchedulerRuntime.processSchedulerExecution(plan)
   local scheduler = plan.scheduler
   local now = os.time()
   local automaticEnabled = FugSchedulerRuntime.automaticExecutionEnabled()
-  local allowed = automaticEnabled and scheduler._enabled and not scheduler._paused
 
   if not plan.initialized then
     FugSchedulerRuntime.positionPlanCursor(plan, now)
     plan.initialized = true
     plan.lastObservedTimestamp = now
+    plan.activeOccurrence = plan.currentOccurrence
+    plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+    plan.lastTransitionReason = "Initialised"
+    local expiry = FugSchedulerRuntime.pauseExpiryForPoll(plan, {}, now)
+    if expiry then FugSchedulerRuntime.expirePlanPause(plan, expiry.reason) end
+    local allowed = automaticEnabled and scheduler._enabled and not scheduler._paused
+    if allowed then
+      local optionName = expiry and "fireOnResume" or "fireOnStartup"
+      local reason = expiry and "pause expired during startup" or "startup"
+      FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, optionName, reason, now)
+    end
     plan.lastEnabled = scheduler._enabled
     plan.lastPaused = scheduler._paused
     plan.lastAutomaticEnabled = automaticEnabled
-    plan.activeOccurrence = plan.currentOccurrence
-    plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
-    plan.lastTransitionReason = "Initialized"
-    if allowed then
-      FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "startup", now)
-    end
     return
   end
 
@@ -3440,13 +3979,16 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
     plan.activeOccurrence = plan.currentOccurrence
     plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
     FugSchedulerRuntime.clearRepeats(plan)
+    local expiry = FugSchedulerRuntime.pauseExpiryForPoll(plan, {}, now)
+    if expiry then FugSchedulerRuntime.expirePlanPause(plan, expiry.reason) end
+    local allowed = automaticEnabled and scheduler._enabled and not scheduler._paused
     if allowed then
       FugSchedulerRuntime.restoreCurrentOccurrence(
         scheduler,
         plan,
         plan.currentOccurrence,
-        "fireOnStartup",
-        "forward clock jump or delayed poll",
+        expiry and "fireOnResume" or "fireOnStartup",
+        expiry and "pause expired after clock discontinuity" or "forward clock jump or delayed poll",
         now
       )
     else
@@ -3459,6 +4001,9 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
     )
   else
     local crossed = FugSchedulerRuntime.advancePlanCursor(plan, plan.lastObservedTimestamp, now)
+    local expiry = FugSchedulerRuntime.pauseExpiryForPoll(plan, crossed, now)
+    if expiry then FugSchedulerRuntime.expirePlanPause(plan, expiry.reason) end
+
     if not automaticEnabled or not scheduler._enabled then
       plan.activeOccurrence = plan.currentOccurrence
       plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
@@ -3469,6 +4014,21 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
       plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
       plan.lastTransitionReason = "Scheduler paused"
       FugSchedulerRuntime.clearRepeats(plan)
+    elseif expiry then
+      if expiry.resumeIndex then
+        for index = expiry.resumeIndex, #crossed do
+          FugSchedulerRuntime.executeOccurrence(scheduler, plan, crossed[index], "scheduled edge after pause", now)
+        end
+      else
+        FugSchedulerRuntime.restoreCurrentOccurrence(
+          scheduler,
+          plan,
+          plan.currentOccurrence,
+          "fireOnResume",
+          "automatic pause resume",
+          now
+        )
+      end
     elseif plan.lastAutomaticEnabled == false and automaticEnabled then
       FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "startup", now)
     elseif plan.lastEnabled == false and scheduler._enabled then
@@ -3511,6 +4071,9 @@ function FugSchedulerRuntime.pollRuntimePlan(schedulerId, generation)
   plan.metrics.totalPollDuration = plan.metrics.totalPollDuration + duration
   if duration > plan.metrics.maximumPollDuration then plan.metrics.maximumPollDuration = duration end
 
+  if processOk then
+    FugSchedulerRuntime.refreshInspectorLiveCountdowns(plan, plan.lastObservedTimestamp)
+  end
   if processOk and (previousOccurrenceKey ~= FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence) or
       previousTransitionReason ~= plan.lastTransitionReason) then
     FugSchedulerRuntime.publishLiveRuntimeStatus()
@@ -3587,6 +4150,36 @@ function FugSchedulerRuntime.reconcileRuntimePlan(plan, previousPlan, now)
   end
 end
 
+-- Re-resolve one active Event-targeted pause after its Scheduler configuration changes.
+function FugSchedulerRuntime.refreshPlanPauseTarget(plan, now)
+  local slot = plan and plan.scheduler and plan.scheduler._pauseSlot or nil
+  local intent = slot and slot.paused and slot.pauseIntent or nil
+  if not intent or (intent.mode ~= "NextEvent" and intent.mode ~= "ThroughDay") then return false end
+  if intent.target and tonumber(intent.target.timestamp) and intent.target.timestamp <= now then return false end
+  local target, targetError = FugSchedulerRuntime.resolvePauseTarget(
+    plan.scheduler,
+    intent.mode,
+    now,
+    intent.notBeforeDate
+  )
+  if not target then
+    plan.lastTransitionReason = "Pause target unavailable: " .. tostring(targetError)
+    return false
+  end
+  local previousKey = intent.target and table.concat({
+    tostring(intent.target.timestamp), tostring(intent.target.date), tostring(intent.target.dayPatternId),
+    tostring(intent.target.eventId), tostring(intent.target.sequence)
+  }, "\31") or nil
+  local targetKey = table.concat({
+    tostring(target.timestamp), tostring(target.date), tostring(target.dayPatternId),
+    tostring(target.eventId), tostring(target.sequence)
+  }, "\31")
+  if previousKey == targetKey then return false end
+  intent.target = target
+  plan.lastTransitionReason = "Active pause target updated after schedule change"
+  return true
+end
+
 -- Reuse unchanged plans and create timers only for assigned runnable Scheduler Slots.
 function FugSchedulerRuntime.synchronizeRuntimePlans(schedule)
   local existing, nextPlans, assigned = FugSchedulerRuntime.runtimePlans, {}, {}
@@ -3614,6 +4207,20 @@ function FugSchedulerRuntime.synchronizeRuntimePlans(schedule)
     if not nextPlans[schedulerId] then FugSchedulerRuntime.stopRuntimePlan(plan) end
   end
   FugSchedulerRuntime.runtimePlans = nextPlans
+  local pauseTargetChanged = false
+  for _, plan in pairs(nextPlans) do
+    if FugSchedulerRuntime.refreshPlanPauseTarget(plan, now) then pauseTargetChanged = true end
+  end
+  if pauseTargetChanged then
+    local scheduleSnapshot = schedule
+    Timer.CallAfter(function()
+      if FugSchedulerRuntime.activeSchedule == scheduleSnapshot then
+        FugSchedulerRuntime.persistActiveScheduleSnapshot()
+        FugSchedulerRuntime.refreshSlotControls()
+        FugSchedulerRuntime.refreshInspector()
+      end
+    end, 0.02)
+  end
 end
 
 -- Convert one Event occurrence into the stable machine-readable status contract.
@@ -3673,6 +4280,11 @@ function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveErro
       label = scheduler.label,
       enabled = scheduler._enabled,
       paused = scheduler._paused,
+      pause = {
+        mode = scheduler._pauseSlot and scheduler._pauseSlot.pauseMode or "Manual",
+        active = scheduler._paused,
+        intent = scheduler._pauseSlot and FugSchedulerRuntime.copyPersisted(scheduler._pauseSlot.pauseIntent) or nil
+      },
       health = {state = "Error", message = tostring(resolveError)}
     }
   end
@@ -3690,6 +4302,19 @@ function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveErro
     label = scheduler.label,
     enabled = scheduler._enabled,
     paused = scheduler._paused,
+    pause = {
+      mode = scheduler._pauseSlot and scheduler._pauseSlot.pauseMode or "Manual",
+      modeLabel = PauseModes[scheduler._pauseSlot and scheduler._pauseSlot.pauseMode or "Manual"].label,
+      abbreviation = FugSchedulerRuntime.pauseModeAbbreviation(
+        scheduler._pauseSlot and scheduler._pauseSlot.pauseMode or "Manual"
+      ),
+      active = scheduler._paused,
+      durationMinutes = scheduler._pauseSlot and scheduler._pauseSlot.pauseDurationMinutes or 60,
+      untilTime = scheduler._pauseSlot and scheduler._pauseSlot.pauseUntilTime or "",
+      intent = scheduler._pauseSlot and FugSchedulerRuntime.copyPersisted(scheduler._pauseSlot.pauseIntent) or nil,
+      status = FugSchedulerRuntime.pauseStatusText(scheduler._pauseSlot),
+      target = FugSchedulerRuntime.pauseTargetText(scheduler._pauseSlot)
+    },
     health = {state = "OK", message = ""},
     resolution = {
       date = result.targetDate,
@@ -3815,7 +4440,10 @@ function FugSchedulerRuntime.publishResolution(scheduler, result)
   FugSchedulerRuntime.setText("PreviousEvent", FugSchedulerRuntime.formatEvent(result.previous))
   FugSchedulerRuntime.setText("CurrentEvent", FugSchedulerRuntime.formatEvent(result.current))
   FugSchedulerRuntime.setText("CurrentEventActions", FugSchedulerRuntime.formatEventActions(result.current))
+  FugSchedulerRuntime.refreshEventActionViewer("CurrentEventActionsViewer", result.current)
   FugSchedulerRuntime.setText("NextEvent", FugSchedulerRuntime.formatEvent(result.next))
+  FugSchedulerRuntime.setText("NextEventActions", FugSchedulerRuntime.formatEventActions(result.next))
+  FugSchedulerRuntime.refreshEventActionViewer("NextEventActionsViewer", result.next)
   FugSchedulerRuntime.setText("NextEventTime", result.next and os.date("%Y-%m-%d %H:%M", result.next.timestamp) or "N/A")
   FugSchedulerRuntime.setText("Countdown", FugSchedulerRuntime.formatCountdown(result.timestamp, result.next and result.next.timestamp or nil))
 end
@@ -3992,7 +4620,8 @@ function FugSchedulerRuntime.attachHandlers()
     Controls.AutomaticExecutionEnabled.EventHandler = function(control)
       if FugSchedulerRuntime.updatingExecutionControl then return end
       if control.Boolean then
-        FugSchedulerRuntime.setExecutionMessage("Master Enable is on; staggered Scheduler timers are initializing live state")
+        FugSchedulerRuntime.clearDiagnosticTestTime("Master Enable turned on", true)
+        FugSchedulerRuntime.setExecutionMessage("Master Enable is on; Scheduler initialising live state.")
       else
         FugSchedulerRuntime.setExecutionMessage("Master Enable is off; callbacks and repeats are blocked")
         for _, plan in pairs(FugSchedulerRuntime.runtimePlans) do FugSchedulerRuntime.clearRepeats(plan) end
@@ -4058,7 +4687,32 @@ function FugSchedulerRuntime.attachHandlers()
     if pausedControl then
       pausedControl.EventHandler = function(control)
         if FugSchedulerRuntime.updatingSlotControls then return end
-        FugSchedulerRuntime.setSlotState(capturedSlotNumber, "paused", control.Boolean)
+        FugSchedulerRuntime.setSlotPaused(capturedSlotNumber, control.Boolean)
+      end
+    end
+    local pauseModeControl = countedControl("SchedulerSlotPauseMode", capturedSlotNumber)
+    if pauseModeControl then
+      pauseModeControl.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingSlotControls then return end
+        FugSchedulerRuntime.setSlotPauseConfiguration(
+          capturedSlotNumber,
+          "pauseMode",
+          FugSchedulerRuntime.choiceId(control.String)
+        )
+      end
+    end
+    local pauseDurationControl = countedControl("SchedulerSlotPauseDurationMinutes", capturedSlotNumber)
+    if pauseDurationControl then
+      pauseDurationControl.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingSlotControls then return end
+        FugSchedulerRuntime.setSlotPauseConfiguration(capturedSlotNumber, "pauseDurationMinutes", control.String)
+      end
+    end
+    local pauseUntilControl = countedControl("SchedulerSlotPauseUntilTime", capturedSlotNumber)
+    if pauseUntilControl then
+      pauseUntilControl.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingSlotControls then return end
+        FugSchedulerRuntime.setSlotPauseConfiguration(capturedSlotNumber, "pauseUntilTime", control.String)
       end
     end
   end
@@ -4072,7 +4726,37 @@ function FugSchedulerRuntime.attachHandlers()
   if Controls.InspectorSlotPaused then
     Controls.InspectorSlotPaused.EventHandler = function(control)
       if FugSchedulerRuntime.updatingInspectorControls then return end
-      FugSchedulerRuntime.setSlotState(FugSchedulerRuntime.selectedSlotNumber, "paused", control.Boolean)
+      FugSchedulerRuntime.setSlotPaused(FugSchedulerRuntime.selectedSlotNumber, control.Boolean)
+    end
+  end
+  if Controls.InspectorPauseMode then
+    Controls.InspectorPauseMode.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingInspectorControls then return end
+      FugSchedulerRuntime.setSlotPauseConfiguration(
+        FugSchedulerRuntime.selectedSlotNumber,
+        "pauseMode",
+        FugSchedulerRuntime.choiceId(control.String)
+      )
+    end
+  end
+  if Controls.InspectorPauseDurationMinutes then
+    Controls.InspectorPauseDurationMinutes.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingInspectorControls then return end
+      FugSchedulerRuntime.setSlotPauseConfiguration(
+        FugSchedulerRuntime.selectedSlotNumber,
+        "pauseDurationMinutes",
+        control.String
+      )
+    end
+  end
+  if Controls.InspectorPauseUntilTime then
+    Controls.InspectorPauseUntilTime.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingInspectorControls then return end
+      FugSchedulerRuntime.setSlotPauseConfiguration(
+        FugSchedulerRuntime.selectedSlotNumber,
+        "pauseUntilTime",
+        control.String
+      )
     end
   end
 
@@ -4633,6 +5317,8 @@ end
 
 -- Initialize sample persistence, registries, status, and the first resolution result.
 function FugSchedulerRuntime.initialize()
+  -- Deterministic preview is developer-only and must never survive into a new runtime session.
+  FugSchedulerRuntime.clearDiagnosticTestTime("plugin runtime started", false)
   -- Master Enable is deliberately fail-safe and must be turned on after every runtime start.
   if Controls.AutomaticExecutionEnabled then
     FugSchedulerRuntime.updatingExecutionControl = true
@@ -4643,6 +5329,11 @@ function FugSchedulerRuntime.initialize()
   if Controls.SchedulerDefinitionSelect then Controls.SchedulerDefinitionSelect.Choices = {} end
   if Controls.SchedulerDefinitionDefaultWeekPattern then Controls.SchedulerDefinitionDefaultWeekPattern.Choices = {} end
   if Controls.InspectorSlotSelect then Controls.InspectorSlotSelect.Choices = {} end
+  if Controls.InspectorPauseMode then Controls.InspectorPauseMode.Choices = {} end
+  for slotNumber = 1, FugSchedulerRuntime.slotCount() do
+    local pauseModeControl = countedControl("SchedulerSlotPauseMode", slotNumber)
+    if pauseModeControl then pauseModeControl.Choices = {} end
+  end
   if Controls.DayPatternSelect then Controls.DayPatternSelect.Choices = {} end
   if Controls.EventSelect then Controls.EventSelect.Choices = {} end
   if Controls.EventActionSelect then Controls.EventActionSelect.Choices = {} end
@@ -4661,6 +5352,8 @@ function FugSchedulerRuntime.initialize()
   if Controls.ScheduleDataViewer then Controls.ScheduleDataViewer.Choices = {} end
   if Controls.GlobalSchedulerSlotStatusViewer then Controls.GlobalSchedulerSlotStatusViewer.Choices = {} end
   if Controls.DiagnosticLogViewer then Controls.DiagnosticLogViewer.Choices = {} end
+  if Controls.CurrentEventActionsViewer then Controls.CurrentEventActionsViewer.Choices = {} end
+  if Controls.NextEventActionsViewer then Controls.NextEventActionsViewer.Choices = {} end
   FugSchedulerRuntime.setText("RegistryStatus", "Checking ActionSource evaluator support")
   FugSchedulerRuntime.setText("RegisteredActionCount", "0")
   FugSchedulerRuntime.setText("AssignedSchedulerSlotCount", "0")
@@ -4668,7 +5361,7 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.setText(
     "ExecutionStatus",
     FugSchedulerRuntime.automaticExecutionEnabled() and
-      "Master Enable is on; waiting for live initialization" or
+      "Master Enable is on; waiting for live initialisation" or
       "Master Enable is off"
   )
   FugSchedulerRuntime.setText("ScheduleStatus", "Checking persisted ScheduleData")
@@ -4696,7 +5389,7 @@ function FugSchedulerRuntime.initialize()
     Controls.EventLogLevel.String = FugSchedulerRuntime.encodeChoice("Off", LogLevel.OFF)
   end
   FugSchedulerRuntime.refreshPreferences()
-  FugSchedulerRuntime.logLine("FugScheduler 2000 scheduler runtime initialized.")
+  FugSchedulerRuntime.logLine("FugScheduler 2000 scheduler runtime initialised.")
 
   FugSchedulerRuntime.reloadActions()
   FugSchedulerRuntime.scheduleInitialized = true

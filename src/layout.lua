@@ -42,25 +42,72 @@ function GetControlLayout(props)
     })
 
   elseif page == "Slot Inspector" then
-    ui:group("Selected Scheduler Slot", ui:rect(10, 44, 880, 400))
-    ui:control("InspectorSlotSelect", "ComboBox", ui:rect(28, 70, 560, 26), {
+    ui:label("Slot", ui:rect(18, 50, 40, 20), {Color = ui:color("mutedText")})
+    ui:control("InspectorSlotSelect", "ComboBox", ui:rect(64, 46, 214, 26), {
       PrettyName = "Slot Inspector~Selected Scheduler Slot"
     })
-    ui:button("InspectorSlotEnabled", ui:rect(604, 70, 128, 26), {
-      ButtonStyle = "Toggle", Legend = "Enabled", Color = ui:color("ok")
-    })
-    ui:button("InspectorSlotPaused", ui:rect(744, 70, 128, 26), {
-      ButtonStyle = "Toggle", Legend = "Paused", Color = ui:color("warning")
+    ui:button("InspectorSlotEnabled", ui:rect(286, 46, 54, 26), {
+      ButtonStyle = "Toggle", Legend = "Enable", Color = ui:color("ok")
     })
 
-    FugSchedulerUi.statusField(ui, "Resolution source", "ResolutionSource", ui:rect(28, 116, 844, 22))
-    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(28, 148, 844, 22))
-    FugSchedulerUi.statusField(ui, "Previous Event", "PreviousEvent", ui:rect(28, 180, 844, 22))
-    FugSchedulerUi.statusField(ui, "Current Event", "CurrentEvent", ui:rect(28, 212, 844, 22))
-    FugSchedulerUi.statusField(ui, "Current Actions", "CurrentEventActions", ui:rect(28, 244, 844, 44))
-    FugSchedulerUi.statusField(ui, "Next Event", "NextEvent", ui:rect(28, 300, 844, 22))
-    FugSchedulerUi.statusField(ui, "Next Event Time", "NextEventTime", ui:rect(28, 332, 844, 22))
-    FugSchedulerUi.statusField(ui, "Countdown", "Countdown", ui:rect(28, 364, 844, 22))
+    ui:group("Pause Controls", ui:rect(10, 82, 330, 362))
+    ui:label("Paused", ui:rect(28, 112, 82, 22), {Color = ui:color("mutedText")})
+    ui:button("InspectorSlotPaused", ui:rect(112, 108, 76, 26), {
+      ButtonStyle = "Toggle", Legend = "Pause", Color = ui:color("warning")
+    })
+    ui:label("Mode", ui:rect(28, 150, 82, 22), {Color = ui:color("mutedText")})
+    ui:control("InspectorPauseMode", "ComboBox", ui:rect(112, 146, 160, 26), {
+      PrettyName = "Slot Inspector~Pause Mode"
+    })
+    ui:label("Duration", ui:rect(28, 188, 82, 22), {Color = ui:color("mutedText")})
+    ui:textControl("InspectorPauseDurationMinutes", ui:rect(112, 184, 72, 26), {
+      PrettyName = "Slot Inspector~Pause Duration Minutes"
+    })
+    ui:label("minutes", ui:rect(190, 188, 64, 22), {Color = ui:color("mutedText")})
+    ui:label("Until", ui:rect(28, 226, 82, 22), {Color = ui:color("mutedText")})
+    ui:textControl("InspectorPauseUntilTime", ui:rect(112, 222, 190, 26), {
+      PrettyName = "Slot Inspector~Pause Until Time"
+    })
+    ui:label("Use Core-local YYYY-MM-DD HH:MM. Editing an active pause re-arms it immediately.",
+      ui:rect(28, 264, 274, 54), {Color = ui:color("mutedText"), WordWrap = true, VTextAlign = "Top"})
+
+    ui:group("Live Status", ui:rect(350, 44, 540, 400))
+    FugSchedulerUi.statusField(ui, "Scheduler", "InspectorSchedulerName", ui:rect(368, 68, 504, 18))
+    FugSchedulerUi.statusField(ui, "Enable status", "InspectorEnableStatus", ui:rect(368, 90, 504, 18), {
+      IsBold = true
+    })
+    FugSchedulerUi.statusField(ui, "Resolution source", "ResolutionSource", ui:rect(368, 112, 504, 18))
+    FugSchedulerUi.statusField(ui, "Day Pattern", "ResolvedDayPattern", ui:rect(368, 134, 504, 18))
+    FugSchedulerUi.statusField(ui, "Pause status", "InspectorPauseStatus", ui:rect(368, 156, 504, 18))
+    FugSchedulerUi.statusField(ui, "Pause request at", "InspectorPauseRequested", ui:rect(368, 178, 504, 18))
+    FugSchedulerUi.statusField(ui, "Pause target", "InspectorPauseTarget", ui:rect(368, 200, 504, 18))
+    FugSchedulerUi.statusField(ui, "Pause remaining", "InspectorPauseRemaining", ui:rect(368, 222, 504, 18))
+
+    ui:group("Current Event", ui:rect(362, 250, 250, 190))
+    ui:textControl("CurrentEvent", ui:rect(374, 274, 226, 22), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+      HTextAlign = "Left", VTextAlign = "Center", IsBold = true, FontSize = 9, WordWrap = true,
+      PrettyName = "Slot Inspector~Current Event"
+    })
+    ui:label("Actions", ui:rect(374, 302, 226, 16), {Color = ui:color("mutedText"), FontSize = 8})
+    FugSchedulerUi.actionViewer(ui, "CurrentEventActionsViewer", ui:rect(374, 320, 226, 64),
+      "Slot Inspector~Current Event Actions")
+
+    ui:group("Next Event", ui:rect(618, 250, 260, 190))
+    ui:textControl("NextEvent", ui:rect(630, 274, 236, 22), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
+      HTextAlign = "Left", VTextAlign = "Center", IsBold = true, FontSize = 9, WordWrap = true,
+      PrettyName = "Slot Inspector~Next Event"
+    })
+    ui:label("Actions", ui:rect(630, 302, 236, 16), {Color = ui:color("mutedText"), FontSize = 8})
+    FugSchedulerUi.actionViewer(ui, "NextEventActionsViewer", ui:rect(630, 320, 236, 64),
+      "Slot Inspector~Next Event Actions")
+    FugSchedulerUi.statusField(ui, "Starts", "NextEventTime", ui:rect(630, 390, 236, 18), {
+      labelWidth = 70, FontSize = 8
+    })
+    FugSchedulerUi.statusField(ui, "Time until", "Countdown", ui:rect(630, 414, 236, 18), {
+      labelWidth = 70, IsBold = true, FontSize = 9
+    })
 
   elseif page == "Scheduler Definitions" then
     ui:group("Scheduler Definition Editor", ui:rect(10, 44, 570, 400))

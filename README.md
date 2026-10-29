@@ -42,7 +42,7 @@ Initial boilerplate includes:
 - a Phase 1 Action Registry that compiles trusted source, calls `GetFugSchedulerActions()`, validates Actions, and provides guarded callback execution
 - versioned persistent `ScheduleData` JSON separating an ordered Scheduler Definition library from fixed numbered Scheduler Slots, with a documented sample in `references/sample_schedule.json`
 - independent validation and read-only resolution for every Scheduler's Day Patterns, Week Patterns, Overrides, and previous/current/next Events
-- deterministic `TestDateTime` resolution retained as a Diagnostics-only commissioning tool, plus a guarded execution engine whose Scheduler Slots-level Master Enable safety toggle defaults off
+- deterministic `TestDateTime` resolution retained as a developer-only Diagnostics tool that is cleared on runtime start, Master Enable, or Slot enable, plus a guarded execution engine whose Scheduler Slots-level Master Enable safety toggle defaults off
 - aggregate `GlobalSchedulerSlotStatus` JSON plus a selected-Slot status view for third-party integrations and UI inspection
 - a validated configuration transaction layer that strips runtime indexes, commits only complete schema-v1 candidates, preserves the previous valid model on failure, and avoids recursive `ScheduleData` handling
 - a Scheduler Definition editor with label-based structured selectors, Default Week Pattern selection, add/duplicate, assignment readout, an Unassign from Slot helper, and deletion guarded while assigned
@@ -52,6 +52,7 @@ Initial boilerplate includes:
 - opaque UUID-style IDs for newly created Schedulers, Day Patterns, Week Patterns, and Events; IDs remain in persisted/status integration data rather than the primary operator UI
 - unassigned-by-default creation and duplication of Scheduler Definitions, plus disabled-by-default Overrides, so configuration can be completed before activation
 - compiled per-Scheduler execution plans with phase-staggered retained timers, cached rolling Previous/Current/Next occurrence cursors, ordered edge execution, startup/resume state restoration, missed one-shot suppression, repeat deadlines, callback isolation, performance diagnostics, and clock-discontinuity handling behind the master execution guard
+- persistent Scheduler Slot pause transport with Manual, Next Event, Duration, Until Time, and Through Day modes; immediate active-intent re-arming; schedule-edit target updates; dynamic mode legends; stable per-Slot pins; and a side-by-side Slot Inspector with ordered Scheduler/enable-gate/resolution/pause status, grouped bold Current/Next Events, scrollable typed Action lists, and live countdowns
 - centralized severity-based logging to the bounded DiagnosticLog, filtered Debug Output, and filtered Q-SYS Event Log, with edge executions at Info and repeats at Debug
 
 ## Build
@@ -78,6 +79,7 @@ Repeatable tests live under `tests/`; `scripts/` is reserved for build and deplo
 python3 tests/qrc/validate_week_patterns.py
 python3 tests/qrc/validate_overrides.py
 python3 tests/qrc/validate_override_dates.py
+python3 tests/qrc/validate_pause_modes.py
 python3 tests/qrc/validate_execution.py
 python3 tests/qrc/validate_logging.py
 ```

@@ -40,6 +40,17 @@ Each assigned Scheduler Slot receives an independent entry:
   "label": "Site Music",
   "enabled": true,
   "paused": false,
+  "pause": {
+    "mode": "NextEvent",
+    "modeLabel": "Next Event",
+    "abbreviation": "NE",
+    "active": false,
+    "durationMinutes": 60,
+    "untilTime": "",
+    "intent": null,
+    "status": "Ready — Next Event",
+    "target": "None"
+  },
   "health": {
     "state": "OK",
     "message": ""
@@ -95,6 +106,8 @@ Each assigned Scheduler Slot receives an independent entry:
 
 `resolvedDayPattern.events` preserves the old Text Controller's ability to inspect the active pattern while using stable Event and Action IDs from the new model.
 
+The `pause` object reports the Slot's saved mode/configuration and its active persisted intent. Active intents contain `requestedAt` plus either `expiresAt`, `notBeforeDate`, or a dated target occurrence with timestamp, Event ID, Day Pattern ID, and equal-time sequence. The legacy top-level `paused` Boolean remains the concise active-state field.
+
 A failure resolving one Scheduler sets that Scheduler's health to `Error` without removing the status entries for other Schedulers. The root health is also set to `Error` when any Scheduler resolution fails.
 
 ## Event occurrence status
@@ -141,6 +154,6 @@ Each Scheduler status includes its plan generation, configuration revision, stag
 
 ## Human-readable selected status
 
-The banked Scheduler Slots page displays eight fixed numbered Slots at a time. Each row provides a filtered Scheduler Definition assignment selector plus live Enable/Pause controls. Definitions assigned to another Slot are excluded from the selector. Slot Inspector selects a Slot independently and provides the same runtime controls with detailed resolution and Event status. Scheduler Definition editors use a separate stable-ID selector; unassigned Definitions are inert and absent from `GlobalSchedulerSlotStatus.slots`.
+The banked Scheduler Slots page displays eight fixed numbered Slots at a time. Each row provides a filtered Scheduler Definition assignment selector plus live Enable/Pause controls. The compact Pause button legend reports `M`, `NE`, `DUR`, `UT`, or `TD` for the configured mode. Definitions assigned to another Slot are excluded from the selector. Slot Inspector selects a Slot independently and provides the same runtime controls with detailed resolution and Event status. Live Status begins with Scheduler name and a bold Enable status (`Enabled — Master Enable on`, `Inhibited — Master Enable off`, `Disabled — Slot Enable off`, or `Unassigned`). It uses the same theme-safe text colour as the other Live Status values. Live Status then shows resolution source, Day Pattern, followed by pause status/request/target/remaining details. Its Current and Next Event groups show bold Event names, scrollable one-Action-per-row type summaries (`Stateful`, repeating interval, or `One Shot`) while retaining comma-separated output-pin summaries, and once-per-second live countdowns sourced from the selected Slot's existing execution poll. Scheduler Definition editors use a separate stable-ID selector; unassigned Definitions are inert and absent from `GlobalSchedulerSlotStatus.slots`.
 
-`TestDateTime` is a Diagnostics-only commissioning aid. Blank means live time; a non-empty value deliberately pins Slot Inspector and aggregate JSON output until the operator presses Use Live Time. It never changes live execution cursors.
+`TestDateTime` is a developer-only Diagnostics aid. Blank means live time; a non-empty value deliberately pins Slot Inspector and aggregate JSON output until the developer presses Use Live Time. It never changes live execution cursors. The runtime clears it on plugin start, when Master Enable is turned on, and when any Scheduler Slot is enabled so normal operational views cannot retain a stale preview timeline.

@@ -58,6 +58,7 @@ python3 scripts/compile_plugin.py --deploy
 - Keep logging preferences in their own persistent controls, separate from `ScheduleData`.
 - Always send Debug, Info, and Error entries to the in-plugin `DiagnosticLog`, regardless of external destination settings. Retain only the newest 12,000 characters and trim complete oldest lines where possible.
 - Use concise, consistent severity/context formatting. Include Scheduler, Event, Action, and execution reason labels/IDs when available. Add plugin identity and Code Name only where useful for the shared Q-SYS Event Log; Debug Output does not need redundant plugin metadata.
+- Use UK English spelling in all operator-facing status, validation, execution, and log messages (for example `initialise`, `initialised`, and `behaviour`).
 - Log successful initial Event Action execution at Info. Log subsequent repeat execution at Debug. Log missing Actions, callback failures, validation failures, resolver failures, and unexpected execution-engine failures at Error.
 - Continue updating `ExecutionStatus` with the latest execution result independently of destination filtering. Callback failures must remain isolated and must not prevent later Event Actions.
 - Never emit routine messages from the one-second execution poll. Any new debug logging must be event-driven and respect configured thresholds to avoid flooding Debug Output or the Event Log.

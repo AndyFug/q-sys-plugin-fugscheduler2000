@@ -22,9 +22,25 @@ Or run the VS Code task:
 Compile FugScheduler2000.qplug (local include compiler)
 ```
 
+## Numbered development build
+
+When intentionally producing a distinct build for deployment or shared testing, increment the fourth `BuildVersion` component and generate matching UTC timestamps automatically:
+
+```bash
+python3 scripts/compile_plugin.py --new-build
+```
+
+This updates `src/info.lua` and the self-contained metadata fallback in `src/runtime.lua`, then compiles. Ordinary compilation remains idempotent and does not change metadata.
+
 ## Deploy
 
-When the host Q-SYS Designer plugin folder is mounted, compile and deploy with:
+To produce a newly numbered build and deploy it while simulation is stopped:
+
+```bash
+python3 scripts/compile_plugin.py --new-build --deploy
+```
+
+To redeploy the same numbered build without changing its metadata:
 
 ```bash
 python3 scripts/compile_plugin.py --deploy
