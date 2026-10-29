@@ -377,6 +377,69 @@ Validated against the active `fugscheduler2000_test` Designer emulator on 2026-1
 
 Remaining execution validation is limited to deterministic backward/forward clock-discontinuity behavior once a safe supported injection mechanism or approved test seam exists.
 
+## Advance to Next Event implementation
+
+Implemented in source; design reload and QRC acceptance remain pending:
+
+- [x] Added an Inspector transport button plus stable counted `SchedulerSlotAdvance` input pins.
+- [x] Require Master Enable, an assigned Slot, and Slot Enable; an active pause is deliberately cleared rather than blocking the command.
+- [x] Execute the resolved Next occurrence once in Event Action order with reason `manual advance`.
+- [x] Make the occurrence Current immediately, start eligible repeats from the advance time, and suppress its later scheduled edge.
+- [x] Persist the consumed occurrence identity in `ScheduleData` and restore the advanced cursor after runtime restart.
+- [x] Clear the persisted marker after the original scheduled timestamp or when schedule changes invalidate the target.
+- [x] Publish manual-advance state in aggregate Slot status and add `tests/qrc/validate_advance_next_event.py`.
+- [x] Deploy the changed design-time plugin while emulation is stopped, restart Designer, and run the new QRC acceptance test.
+
+### QRC findings — Advance to Next Event
+
+Validated in development build `0.1.0.28` against the active `fugscheduler2000_test` emulator:
+
+- The generated and deployed `.qplug` SHA-256 matched: `7dc71350c46d502b72b2af72e275222bd75d2320e1b1c867e656b147a9652c4a`.
+- The reloaded component fingerprint is `da3e8ea3e75d26c5f05de9628292700c`; the Inspector control and stable `SchedulerSlotAdvance 1` input were present.
+- A paused enabled Slot advanced while Master Enable was on, cleared its active pause intent, persisted the target occurrence identity, and made the target Event Current immediately.
+- The target one-shot Action executed exactly once with `reason=manual advance`.
+- After waiting through the target's original wall-clock edge, the persisted marker cleared and the one-shot did not replay; Current and Next remained correctly positioned.
+- The stable per-Slot input performed the same transition as the Inspector button.
+- `tests/qrc/validate_advance_next_event.py` completed 14 assertions with byte-for-byte ScheduleData and Action Provider restoration.
+
+## Named Admin configuration backups
+
+Implemented in source; physical-Core file behavior and QRC acceptance remain pending:
+
+- [x] Added an Admin page with named backup selection, save, guarded load, selected-backup delete, shared Confirm/Cancel flows, summaries, and file-mirror status.
+- [x] Store all named backups in one schema-versioned persistent `ConfigurationBackupCatalog` Text control.
+- [x] Snapshot only the complete Scheduler Definition and Scheduler Slot `ScheduleData` root; preferences and runtime-only state remain excluded.
+- [x] Validate every catalogue entry and complete schedule before use.
+- [x] Load backups atomically with a new local revision and reject loads while Master Enable is on.
+- [x] Attempt to mirror the complete catalogue to `/FugScheduler2000/configurations.json` on a physical Core; report that file writes are unavailable in emulation.
+- [x] When the persistent control is empty on a physical Core, attempt to seed it from the same file.
+- [ ] Determine whether the requested absolute folder path maps to writable Core storage; the official SDK examples document `media/` and `design/` paths instead.
+- [x] Added `tests/qrc/validate_admin_backups.py` with byte-for-byte restoration.
+- [x] Validate UI controls and persistent catalogue behavior in Designer/QRC.
+- [ ] Validate file creation, replacement, Core restart persistence, and off-Core file retrieval on a physical Core.
+
+### QRC findings — Admin configuration backups
+
+Validated in development build `0.1.0.28` against the active `fugscheduler2000_test` emulator:
+
+- The Admin controls appeared after the design-time plugin reload and the empty schema-version-1 catalogue initialised in `ConfigurationBackupCatalog`.
+- A named save captured the complete Scheduler Definition and Scheduler Slot model.
+- Reusing a name armed overwrite confirmation without changing the catalogue; Cancel preserved the previous backup.
+- Delete now uses the same armed Confirm/Cancel flow and removes only the selected catalogue entry after confirmation.
+- Confirmed Load atomically restored the saved model and assigned a new local revision.
+- Load remained rejected while Master Enable was on.
+- Designer correctly reported that the Core media-file mirror is unavailable in emulation.
+- The initial `tests/qrc/validate_admin_backups.py` run completed 11 assertions and restored ScheduleData plus ConfigurationBackupCatalog byte-for-byte.
+- Post-feature regressions passed: Scheduler Slots/Inspector `29`, pause modes `17`, guarded execution `73`, and logging `18` assertions, all with restoration confirmed.
+- Build `0.1.0.29` added selected-backup Delete using the shared Confirm/Cancel flow and changed the experimental physical-Core path to `/FugScheduler2000/configurations.json`.
+- The build-0.1.0.29 generated/deployed SHA-256 matched: `ebb534086d2d41467dcfc853d499e58d37d98c717fbffeeeda71b275d51099a9`; the reloaded component fingerprint is `233afcfbcde59c14b07089a4d841945d`.
+- The expanded Admin test completed 14 assertions: Delete armed without mutation, Cancel preserved the selected entry, Confirm removed only that entry, and the original two saved configurations were restored byte-for-byte.
+- Final state: Master Enable false, Delete/Confirm/Cancel momentary controls false, the original two-backup catalogue restored, plugin and runtime provider `OK`, and zero script errors.
+- Build `0.1.0.30` removed the Admin file-mirror information panel, renamed the group to Configuration Backups, moved Confirm/Cancel into a tighter lower pair, and made left alignment the FugUi default for every ListBox. The generated/deployed SHA-256 matched `2df7352bf0769564489f4f0f7af2a0e88a42e2fbc12075a4c855aa056ba29abc`; the reloaded component fingerprint is `8cfdc5ff2f54bbaf84804c3a2313796d`, with the original two-backup catalogue retained and both scripts healthy.
+- Build `0.1.0.31` added the compact top-right filesystem-location note requested for the Admin group. The generated/deployed SHA-256 matched `7e48b263a381b46e22aa8fbde3ae81f83366ce71a0ca63f879e8599f6da48ccd`; physical-Core path validation remains deferred.
+
+The file approach follows the official SDK JSON read/write example in `.agents/skills/qsys-plugin-sdk/references/official-sdk/Code Examples/19-JSON-Object.md`; that reference explicitly notes that file operations do not work in emulation.
+
 ## Centralized logging implementation
 
 Implemented in source; design reload and QRC acceptance remain pending:

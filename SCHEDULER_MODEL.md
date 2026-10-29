@@ -288,6 +288,25 @@ When Next Event or Through Day reaches its target, the engine clears the pause b
 
 Changing the configured mode, duration, or until-time while paused immediately creates a new intent from the edit time. The ordinary Slot Pause toggle always activates whichever mode is currently configured.
 
+## Advance to Next Event
+
+An assigned, enabled Scheduler Slot may be advanced manually while the plugin-wide Master Enable is on. Advance to Next Event:
+
+1. clears any active pause and pause intent
+2. executes the resolved Next occurrence once with reason `manual advance`
+3. makes that occurrence Current immediately and starts its eligible repeats from the advance time
+4. persists the consumed occurrence identity on the Slot so a runtime restart retains the advanced state
+5. suppresses that occurrence's later scheduled edge
+6. clears the persisted marker after the original scheduled timestamp passes
+
+The command is rejected when the Slot is unassigned or disabled, Master Enable is off, the runtime plan is unavailable, or no Next occurrence can be resolved. Both stateful and one-shot Event Actions execute during the manual transition; callback isolation and normal Action ordering still apply.
+
+## Named configuration backups
+
+The Admin backup catalogue stores named snapshots of the complete persisted `ScheduleData` root, including Scheduler Definitions, Scheduler Slot assignment and operational configuration, pause intents, and any active manual-advance marker. It deliberately excludes callback functions, Action Registry state, editor selections, diagnostics, and presentation/logging preferences.
+
+The first implementation keeps the complete catalogue in one persistent hidden Text control and attempts to mirror the same schema-versioned JSON document to `/FugScheduler2000/configurations.json` on a physical Core. This absolute folder path is an intentional physical-Core experiment; the bundled SDK examples document `media/` and `design/` paths rather than an absolute root path. Q-SYS file writes are unavailable in Designer emulation, so the persistent control remains authoritative. Loading and deleting backups require explicit confirmation. Loading is rejected while Master Enable is on, validates the complete candidate, and assigns a new local configuration revision.
+
 ## Persisted versus runtime data
 
 Persisted configuration is a versioned root containing an ordered `schedulers` Scheduler Definition library plus a fixed ordered `schedulerSlots` array. Definition array order is used for library display; each Definition's stable ID is its identity, while each Slot's number is its stable remote-control identity.
@@ -295,7 +314,7 @@ Persisted configuration is a versioned root containing an ordered `schedulers` S
 Persisted configuration includes:
 
 - Scheduler Definition settings
-- Scheduler Slot assignments, enabled state, configured pause mode/options, and active pause intent
+- Scheduler Slot assignments, enabled state, configured pause mode/options, active pause intent, and any future manually advanced occurrence marker
 - Day Patterns
 - Events
 - Event Action assignments and options

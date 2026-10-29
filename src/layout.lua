@@ -69,7 +69,15 @@ function GetControlLayout(props)
       PrettyName = "Slot Inspector~Pause Until Time"
     })
     ui:label("Use Core-local YYYY-MM-DD HH:MM. Editing an active pause re-arms it immediately.",
-      ui:rect(28, 264, 274, 54), {Color = ui:color("mutedText"), WordWrap = true, VTextAlign = "Top"})
+      ui:rect(28, 264, 274, 46), {Color = ui:color("mutedText"), WordWrap = true, VTextAlign = "Top"})
+    ui:button("InspectorAdvanceNextEvent", ui:rect(28, 326, 274, 30), {
+      ButtonStyle = "Momentary", Legend = "Advance to Next Event", Color = ui:color("schedule")
+    })
+    ui:textControl("InspectorAdvanceStatus", ui:rect(28, 364, 274, 54), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Center", VTextAlign = "Top",
+      WordWrap = true, TextColor = ui:color("mutedText"), FontSize = 9,
+      PrettyName = "Slot Inspector~Advance Status"
+    })
 
     ui:group("Live Status", ui:rect(350, 44, 540, 400))
     FugSchedulerUi.statusField(ui, "Scheduler", "InspectorSchedulerName", ui:rect(368, 68, 504, 18))
@@ -407,6 +415,45 @@ function GetControlLayout(props)
     })
     FugSchedulerUi.statusField(ui, "Registry status", "RegistryStatus", ui:rect(28, 224, 632, 24))
     FugSchedulerUi.statusField(ui, "Action count", "RegisteredActionCount", ui:rect(28, 256, 632, 24))
+
+  elseif page == "Admin" then
+    ui:group("Configuration Backups", ui:rect(10, 44, 520, 400))
+    ui:label("Saved configurations", ui:rect(28, 72, 170, 20), {Color = ui:color("mutedText")})
+    ui:label("Stored on filesystem at /FugScheduler2000/configurations.json", ui:rect(224, 66, 288, 30), {
+      Color = ui:color("mutedText"), HTextAlign = "Right", VTextAlign = "Center",
+      WordWrap = true, FontSize = 8
+    })
+    ui:control("ConfigurationBackupSelect", "ListBox", ui:rect(28, 96, 484, 154), {
+      PrettyName = "Admin~Saved Configurations", FontSize = 10
+    })
+    ui:label("Configuration name", ui:rect(28, 266, 126, 22), {Color = ui:color("mutedText")})
+    ui:textControl("ConfigurationBackupName", ui:rect(160, 262, 352, 28), {
+      PrettyName = "Admin~Configuration Name"
+    })
+    ui:button("SaveConfigurationBackup", ui:rect(28, 306, 150, 28), {
+      ButtonStyle = "Momentary", Legend = "Save Configuration", Color = ui:color("schedule")
+    })
+    ui:button("LoadConfigurationBackup", ui:rect(190, 306, 150, 28), {
+      ButtonStyle = "Momentary", Legend = "Load Configuration", Color = ui:color("warning")
+    })
+    ui:button("DeleteConfigurationBackup", ui:rect(352, 306, 160, 28), {
+      ButtonStyle = "Momentary", Legend = "Delete Configuration", Color = ui:color("danger")
+    })
+    ui:button("ConfirmConfigurationBackupAction", ui:rect(352, 374, 160, 28), {
+      ButtonStyle = "Momentary", Legend = "Confirm", Color = ui:color("danger")
+    })
+    ui:button("CancelConfigurationBackupAction", ui:rect(352, 406, 160, 28), {
+      ButtonStyle = "Momentary", Legend = "Cancel", Color = ui:color("statusBackground"),
+      TextColor = {255, 255, 255}
+    })
+    ui:textControl("ConfigurationBackupSummary", ui:rect(28, 344, 312, 90), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Left", VTextAlign = "Top",
+      WordWrap = true, TextColor = ui:color("controlText"), FontSize = 9,
+      PrettyName = "Admin~Backup Summary"
+    })
+
+
+    FugSchedulerUi.editorStatus(ui, "ConfigurationBackupStatus", ui:rect(10, 448, 880, 34), "Admin~Status")
 
   elseif page == "Preferences" then
     ui:group("Presentation Preferences", ui:rect(10, 44, 430, 236))

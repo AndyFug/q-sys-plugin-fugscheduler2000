@@ -53,6 +53,8 @@ Initial boilerplate includes:
 - unassigned-by-default creation and duplication of Scheduler Definitions, plus disabled-by-default Overrides, so configuration can be completed before activation
 - compiled per-Scheduler execution plans with phase-staggered retained timers, cached rolling Previous/Current/Next occurrence cursors, ordered edge execution, startup/resume state restoration, missed one-shot suppression, repeat deadlines, callback isolation, performance diagnostics, and clock-discontinuity handling behind the master execution guard
 - persistent Scheduler Slot pause transport with Manual, Next Event, Duration, Until Time, and Through Day modes; immediate active-intent re-arming; schedule-edit target updates; dynamic mode legends; stable per-Slot pins; and a side-by-side Slot Inspector with ordered Scheduler/enable-gate/resolution/pause status, grouped bold Current/Next Events, scrollable typed Action lists, and live countdowns
+- Advance to Next Event transport through the Slot Inspector and stable per-Slot input pins; it requires Master Enable and an enabled Slot, clears an active pause, executes the next occurrence once, persists the consumed occurrence across restart, and suppresses its later scheduled edge
+- an Admin page with named complete Scheduler/Slot configuration backups, overwrite/load/delete confirmation, one persistent JSON catalogue control, and an experimental best-effort mirror at `/FugScheduler2000/configurations.json` on a physical Core
 - centralized severity-based logging to the bounded DiagnosticLog, filtered Debug Output, and filtered Q-SYS Event Log, with edge executions at Info and repeats at Debug
 
 ## Build
@@ -80,6 +82,8 @@ python3 tests/qrc/validate_week_patterns.py
 python3 tests/qrc/validate_overrides.py
 python3 tests/qrc/validate_override_dates.py
 python3 tests/qrc/validate_pause_modes.py
+python3 tests/qrc/validate_advance_next_event.py
+python3 tests/qrc/validate_admin_backups.py
 python3 tests/qrc/validate_execution.py
 python3 tests/qrc/validate_logging.py
 ```

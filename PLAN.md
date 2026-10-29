@@ -460,7 +460,8 @@ Exit criterion: multiple Schedulers can resolve concurrently and one selected Sc
 - [x] Re-resolve Event-targeted pause intent after affected schedule edits without adding per-pause timers or broad searches to the one-second poll.
 - [x] Expose advanced pause configuration through Slot Inspector and stable per-Slot controls/pins.
 - [x] Complete Designer/QRC acceptance for all pause modes, restart persistence, target updates, automatic expiry, and execution-budget health.
-- [ ] Add Advance to Next Event as an explicit runtime transition that executes the next occurrence once, makes it current, and suppresses its later scheduled edge.
+- [x] Add Advance to Next Event as an explicit runtime transition that executes the next occurrence once, makes it current, clears an active pause, persists the consumed occurrence, and suppresses its later scheduled edge.
+- [x] Complete Designer/QRC acceptance for Advance to Next Event pause clearing, persisted occurrence identity, scheduled-edge suppression, and stable per-Slot transport; physical-Core restart persistence remains part of live-Core validation.
 - Keep Action testing separate from Scheduler transport state.
 
 ### Phase 3 — scalable editing
@@ -474,6 +475,10 @@ Exit criterion: the reference controller's Site Music, Site Mute, Ice Rink, Big 
 
 ### Phase 4 — import/export, reset, and operational polish
 
+- [x] Add a first-pass Admin page for named complete Scheduler/Slot backups in one persistent JSON catalogue, mirrored experimentally to `/FugScheduler2000/configurations.json` on physical Cores.
+- [x] Add Confirm/Cancel flows for overwrite, load, and selected-backup deletion.
+- [x] Complete Designer/QRC acceptance for named save, overwrite confirmation, guarded load, and persistent-control restoration.
+- [ ] Validate physical-Core file mirroring, restart persistence, and off-Core retrieval.
 - Add staged, validated global JSON export/import with explicit Apply and confirmation behavior.
 - Add selected-Scheduler export/import with a documented transfer envelope and explicit stable-ID conflict handling.
 - Add guarded Reset All Configuration and Reset Selected Scheduler operations that always produce schema-valid models.

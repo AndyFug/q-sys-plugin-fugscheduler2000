@@ -17,6 +17,8 @@ python3 tests/qrc/validate_overrides.py
 python3 tests/qrc/validate_override_dates.py
 python3 tests/qrc/validate_overview.py
 python3 tests/qrc/validate_pause_modes.py
+python3 tests/qrc/validate_advance_next_event.py
+python3 tests/qrc/validate_admin_backups.py
 python3 tests/qrc/validate_execution.py
 python3 tests/qrc/validate_execution_plan_lifecycle.py
 python3 tests/qrc/validate_execution_resolution.py
@@ -41,6 +43,10 @@ The execution test also inspects runtime-plan diagnostics in `GlobalSchedulerSlo
 `validate_overview.py` validates eight stable Slot rows, filtered and forced-duplicate assignment behavior, unassigned Slot behavior, stable Slot Enable/Pause controls, Slot Inspector mirroring, the Unassign helper, and both visual and forced deletion guards.
 
 `validate_pause_modes.py` keeps Master Enable off while validating Manual, Duration, Until Time, Next Event, and Through Day configuration; immediate active-intent re-arming; persisted target snapshots; schedule-edit retargeting; stable per-Slot controls; aggregate pause status; reload persistence; and byte-for-byte restoration.
+
+`validate_advance_next_event.py` temporarily installs safe Action callbacks, advances a paused enabled Slot through both Inspector and stable per-Slot controls, verifies pause clearing and persisted occurrence identity, waits through the original scheduled edge to prove one-shot suppression, and restores ScheduleData plus Action Provider source byte-for-byte.
+
+`validate_admin_backups.py` validates named save, duplicate-name overwrite arming/cancellation, selected-backup delete arming/cancellation/confirmation, confirmed restore with a new local revision, Master Enable load guarding, emulation file-mirror status, and byte-for-byte restoration of both ScheduleData and the backup catalogue.
 
 `validate_execution_plan_lifecycle.py` explicitly assigns and removes a Scheduler Slot plan, verifies that its independent timer polls, waits through multiple former timer periods after deletion, and confirms that an unaffected plan retains its generation and timer phase while continuing to poll.
 

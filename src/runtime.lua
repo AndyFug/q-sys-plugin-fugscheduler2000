@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-10-29T15:27:08Z",
-  BuildTimestamp = 1793287628
+  BuildDate = "2026-10-29T16:46:09Z",
+  BuildTimestamp = 1793292369
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -90,6 +90,12 @@ FugSchedulerRuntime = {
   updatingOverrideEditor = false,
   updatingPreferences = false,
   updatingExecutionControl = false,
+  updatingBackupControls = false,
+  writingBackupCatalog = false,
+  pendingBackupAction = nil,
+  backupCatalog = nil,
+  selectedBackupId = nil,
+  backupFilePath = "/FugScheduler2000/configurations.json",
   overrideDateBuffer = nil,
   selectedDayPatternIds = {},
   selectedWeekPatternIds = {},
@@ -271,7 +277,8 @@ function FugSchedulerRuntime.sampleSchedule()
       paused = false,
       pauseMode = "Manual",
       pauseDurationMinutes = 60,
-      pauseUntilTime = ""
+      pauseUntilTime = "",
+      advancedOccurrence = nil
     })
   end
   return {
@@ -1211,7 +1218,8 @@ function FugSchedulerRuntime.validateSchedule(root)
       paused = false,
       pauseMode = "Manual",
       pauseDurationMinutes = 60,
-      pauseUntilTime = ""
+      pauseUntilTime = "",
+      advancedOccurrence = nil
     })
   end
   local slotsByNumber, assignedSchedulerIds = {}, {}
@@ -1230,6 +1238,17 @@ function FugSchedulerRuntime.validateSchedule(root)
     slot.pauseUntilTime = type(slot.pauseUntilTime) == "string" and slot.pauseUntilTime or ""
     if slot.pauseIntent ~= nil and type(slot.pauseIntent) ~= "table" then
       return nil, nil, "Scheduler Slot " .. slotIndex .. " pauseIntent must be an object"
+    end
+    if slot.advancedOccurrence ~= nil then
+      local advanced = slot.advancedOccurrence
+      if type(advanced) ~= "table" or not tonumber(advanced.timestamp) or
+          type(advanced.date) ~= "string" or type(advanced.dayPatternId) ~= "string" or
+          type(advanced.eventId) ~= "string" or not tonumber(advanced.sequence) then
+        return nil, nil, "Scheduler Slot " .. slotIndex .. " advancedOccurrence is invalid"
+      end
+      advanced.timestamp = tonumber(advanced.timestamp)
+      advanced.sequence = tonumber(advanced.sequence)
+      advanced.advancedAt = tonumber(advanced.advancedAt) or advanced.timestamp
     end
     if slot.schedulerId ~= nil and slot.schedulerId ~= "" then
       if type(slot.schedulerId) ~= "string" or not schedulersById[slot.schedulerId] then
@@ -1270,6 +1289,7 @@ function FugSchedulerRuntime.validateSchedule(root)
       slot.enabled = false
       slot.paused = false
       slot.pauseIntent = nil
+      slot.advancedOccurrence = nil
     end
     slot.enabled = slot.enabled == true
     slot.paused = slot.paused == true
@@ -1394,6 +1414,7 @@ function FugSchedulerRuntime.createRuntimePlan(scheduler, configurationRevision)
     timerPhasePending = false,
     lastPollElapsedTime = nil,
     forwardSearchLimitDate = nil,
+    advanceClearPending = false,
     metrics = {
       schedulerCount = 1,
       eventCount = eventCount,
@@ -1863,6 +1884,24 @@ function FugSchedulerRuntime.refreshInspector()
   local remainingTimestamp = intent and (intent.expiresAt or (intent.target and intent.target.timestamp)) or nil
   FugSchedulerRuntime.setText("InspectorPauseRemaining",
     slot and slot.paused and FugSchedulerRuntime.formatCountdown(os.time(), remainingTimestamp) or "N/A")
+  local plan = scheduler and FugSchedulerRuntime.runtimePlans[scheduler.id] or nil
+  local canAdvance = scheduler ~= nil and slot.enabled == true and FugSchedulerRuntime.automaticExecutionEnabled() and
+    plan ~= nil and plan.nextOccurrence ~= nil
+  if Controls.InspectorAdvanceNextEvent then Controls.InspectorAdvanceNextEvent.IsDisabled = not canAdvance end
+  if slot and slot.advancedOccurrence then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advanced early; scheduled edge will be suppressed until " ..
+      FugSchedulerRuntime.formatPauseTimestamp(slot.advancedOccurrence.timestamp))
+  elseif not scheduler then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Assign a Scheduler Definition to use transport controls")
+  elseif not FugSchedulerRuntime.automaticExecutionEnabled() then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Master Enable must be on to advance")
+  elseif not slot.enabled then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Enable this Scheduler Slot to advance")
+  elseif not plan or not plan.nextOccurrence then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "No next Event is available")
+  else
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Ready to advance to " .. FugSchedulerRuntime.formatEvent(plan.nextOccurrence))
+  end
   local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
   if scheduler and result then
     FugSchedulerRuntime.publishResolution(scheduler, result)
@@ -3502,6 +3541,7 @@ function FugSchedulerRuntime.assignSlot(slotNumber, definitionId)
     slot.pauseDurationMinutes = slot.pauseDurationMinutes or 60
     slot.pauseUntilTime = slot.pauseUntilTime or ""
     slot.pauseIntent = nil
+    slot.advancedOccurrence = nil
   end, FugSchedulerRuntime.selectedSchedulerId, "SchedulerDefinitionEditorStatus")
 end
 
@@ -3604,7 +3644,7 @@ function FugSchedulerRuntime.updateSlotOperationalState(slotNumber, description,
   FugSchedulerRuntime.logLine(description .. " committed at revision " .. schedule.revision, LogLevel.INFO, {
     schedulerLabel = scheduler.label,
     schedulerId = scheduler.id,
-    reason = "pause transport"
+    reason = "slot transport"
   })
   return true
 end
@@ -3719,6 +3759,69 @@ function FugSchedulerRuntime.occurrenceKey(item)
     tostring(item.eventId or (item.event and item.event.id)),
     tostring(item.sequence)
   }, "\31")
+end
+
+-- Copy the stable identity needed to retain a manually advanced occurrence across runtime restarts.
+function FugSchedulerRuntime.occurrenceSnapshot(item, advancedAt)
+  if not item then return nil end
+  return {
+    timestamp = item.timestamp,
+    date = item.date,
+    dayPatternId = item.dayPatternId or (item.dayPattern and item.dayPattern.id),
+    eventId = item.eventId or (item.event and item.event.id),
+    sequence = item.sequence,
+    advancedAt = advancedAt or os.time()
+  }
+end
+
+-- Clear a consumed or invalid persisted advance marker outside the active timer callback.
+function FugSchedulerRuntime.queueClearAdvancedOccurrence(plan, reason)
+  if not plan or plan.advanceClearPending then return end
+  local slot = plan.scheduler and plan.scheduler._pauseSlot or nil
+  if not slot or not slot.advancedOccurrence then return end
+  plan.advanceClearPending = true
+  Timer.CallAfter(function()
+    local currentPlan = FugSchedulerRuntime.runtimePlans[plan.schedulerId]
+    if currentPlan then currentPlan.advanceClearPending = false end
+    local activeSlot = FugSchedulerRuntime.activeSchedule and
+      FugSchedulerRuntime.activeSchedule.schedulerSlots[plan.slotNumber] or nil
+    if not activeSlot or not activeSlot.advancedOccurrence then return end
+    FugSchedulerRuntime.updateSlotOperationalState(
+      plan.slotNumber,
+      "Scheduler Slot " .. plan.slotNumber .. " manual advance marker cleared",
+      function(persistedSlot) persistedSlot.advancedOccurrence = nil end,
+      true
+    )
+    FugSchedulerRuntime.logLine("Manual advance marker cleared: " .. tostring(reason), LogLevel.DEBUG, {
+      schedulerLabel = plan.scheduler.label,
+      schedulerId = plan.scheduler.id,
+      reason = "manual advance"
+    })
+  end, 0.02)
+end
+
+-- Reapply a future manually advanced occurrence after plan creation or runtime restart.
+function FugSchedulerRuntime.applyPersistedAdvance(plan, now)
+  local slot = plan and plan.scheduler and plan.scheduler._pauseSlot or nil
+  local snapshot = slot and slot.advancedOccurrence or nil
+  if not snapshot then return false end
+  if tonumber(snapshot.timestamp) <= now then
+    FugSchedulerRuntime.queueClearAdvancedOccurrence(plan, "scheduled time reached")
+    return false
+  end
+  local targetKey = FugSchedulerRuntime.occurrenceKey(snapshot)
+  local targetIndex
+  for index, occurrence in ipairs(plan.occurrences or {}) do
+    if FugSchedulerRuntime.occurrenceKey(occurrence) == targetKey then targetIndex = index break end
+  end
+  if not targetIndex then
+    FugSchedulerRuntime.queueClearAdvancedOccurrence(plan, "target no longer exists")
+    return false
+  end
+  plan.currentIndex = targetIndex
+  FugSchedulerRuntime.refreshPlanCursor(plan)
+  plan.lastTransitionReason = "Manual advance restored"
+  return true
 end
 
 -- Return one Scheduler's compiled runtime plan.
@@ -3849,6 +3952,71 @@ function FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, state, occurren
   FugSchedulerRuntime.scheduleRepeats(state, occurrence, now)
 end
 
+-- Execute the selected Slot's next occurrence immediately and suppress its later scheduled edge.
+function FugSchedulerRuntime.advanceSlotToNextEvent(slotNumber)
+  local slot, scheduler = FugSchedulerRuntime.slotAssignment(slotNumber)
+  if not slot or not scheduler then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advance rejected: Scheduler Slot is unassigned")
+    return false
+  end
+  if not FugSchedulerRuntime.automaticExecutionEnabled() then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advance rejected: Master Enable is off")
+    return false
+  end
+  if not slot.enabled then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advance rejected: Scheduler Slot is disabled")
+    return false
+  end
+
+  FugSchedulerRuntime.clearDiagnosticTestTime("manual Advance to Next Event", true)
+  local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
+  if not plan then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advance rejected: runtime plan is unavailable")
+    return false
+  end
+  local now = os.time()
+  if not plan.initialized then
+    FugSchedulerRuntime.positionPlanCursor(plan, now)
+    plan.initialized = true
+    plan.lastObservedTimestamp = now
+  end
+  if not plan.nextOccurrence then FugSchedulerRuntime.extendPlanForward(plan) end
+  local target = plan.nextOccurrence
+  local targetIndex = plan.nextIndex
+  if not target or not targetIndex then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advance rejected: no next Event is available")
+    return false
+  end
+
+  local snapshot = FugSchedulerRuntime.occurrenceSnapshot(target, now)
+  local persisted = FugSchedulerRuntime.updateSlotOperationalState(
+    slotNumber,
+    "Scheduler Slot " .. slotNumber .. " advanced to next Event",
+    function(activeSlot)
+      activeSlot.paused = false
+      activeSlot.pauseIntent = nil
+      activeSlot.advancedOccurrence = snapshot
+    end,
+    true
+  )
+  if not persisted then
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advance rejected: transport state could not be persisted")
+    return false
+  end
+
+  plan.currentIndex = targetIndex
+  FugSchedulerRuntime.refreshPlanCursor(plan)
+  FugSchedulerRuntime.executeOccurrence(scheduler, plan, target, "manual advance", now)
+  plan.lastObservedTimestamp = now
+  plan.lastEnabled = true
+  plan.lastPaused = false
+  plan.lastAutomaticEnabled = true
+  local message = "Advanced to " .. FugSchedulerRuntime.formatEvent(target) .. "; active pause cleared"
+  FugSchedulerRuntime.setText("InspectorAdvanceStatus", message)
+  FugSchedulerRuntime.publishLiveRuntimeStatus()
+  return true
+end
+
 -- Run due repeats once and reschedule from now so delayed polls never create callback bursts.
 function FugSchedulerRuntime.processRepeats(scheduler, state, currentOccurrence, now)
   if not currentOccurrence or state.activeOccurrenceKey ~= FugSchedulerRuntime.occurrenceKey(currentOccurrence) then return end
@@ -3943,6 +4111,7 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
 
   if not plan.initialized then
     FugSchedulerRuntime.positionPlanCursor(plan, now)
+    FugSchedulerRuntime.applyPersistedAdvance(plan, now)
     plan.initialized = true
     plan.lastObservedTimestamp = now
     plan.activeOccurrence = plan.currentOccurrence
@@ -3962,9 +4131,15 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
     return
   end
 
+  local advancedSnapshot = scheduler._pauseSlot and scheduler._pauseSlot.advancedOccurrence or nil
+  if advancedSnapshot and tonumber(advancedSnapshot.timestamp) <= now then
+    FugSchedulerRuntime.queueClearAdvancedOccurrence(plan, "scheduled time reached")
+  end
+
   local elapsed = now - plan.lastObservedTimestamp
   if elapsed < 0 then
     FugSchedulerRuntime.positionPlanCursor(plan, now)
+    FugSchedulerRuntime.applyPersistedAdvance(plan, now)
     plan.activeOccurrence = plan.currentOccurrence
     plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
     plan.lastTransitionReason = "Clock moved backwards"
@@ -3976,6 +4151,7 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
     )
   elseif elapsed > FugSchedulerRuntime.normalEdgeMaxDelaySeconds then
     FugSchedulerRuntime.positionPlanCursor(plan, now)
+    FugSchedulerRuntime.applyPersistedAdvance(plan, now)
     plan.activeOccurrence = plan.currentOccurrence
     plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
     FugSchedulerRuntime.clearRepeats(plan)
@@ -4120,6 +4296,7 @@ end
 function FugSchedulerRuntime.reconcileRuntimePlan(plan, previousPlan, now)
   if not previousPlan then return end
   FugSchedulerRuntime.positionPlanCursor(plan, now)
+  FugSchedulerRuntime.applyPersistedAdvance(plan, now)
 
   plan.initialized = previousPlan.initialized
   plan.lastObservedTimestamp = now
@@ -4190,7 +4367,11 @@ function FugSchedulerRuntime.synchronizeRuntimePlans(schedule)
   for schedulerIndex, scheduler in ipairs(assigned) do
     local previousPlan = existing[scheduler.id]
     if previousPlan and previousPlan.slotNumber == scheduler._slotNumber and
-        FugSchedulerRuntime.persistedEqual(previousPlan.scheduler, scheduler) then
+        FugSchedulerRuntime.persistedEqual(previousPlan.scheduler, scheduler) and
+        FugSchedulerRuntime.persistedEqual(
+          previousPlan.scheduler._pauseSlot and previousPlan.scheduler._pauseSlot.advancedOccurrence or nil,
+          scheduler._pauseSlot and scheduler._pauseSlot.advancedOccurrence or nil
+        ) then
       previousPlan.scheduler = scheduler
       previousPlan.configurationRevision = schedule.revision
       nextPlans[scheduler.id] = previousPlan
@@ -4285,6 +4466,8 @@ function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveErro
         active = scheduler._paused,
         intent = scheduler._pauseSlot and FugSchedulerRuntime.copyPersisted(scheduler._pauseSlot.pauseIntent) or nil
       },
+      manualAdvance = scheduler._pauseSlot and
+        FugSchedulerRuntime.copyPersisted(scheduler._pauseSlot.advancedOccurrence) or nil,
       health = {state = "Error", message = tostring(resolveError)}
     }
   end
@@ -4315,6 +4498,8 @@ function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveErro
       status = FugSchedulerRuntime.pauseStatusText(scheduler._pauseSlot),
       target = FugSchedulerRuntime.pauseTargetText(scheduler._pauseSlot)
     },
+    manualAdvance = scheduler._pauseSlot and
+      FugSchedulerRuntime.copyPersisted(scheduler._pauseSlot.advancedOccurrence) or nil,
     health = {state = "OK", message = ""},
     resolution = {
       date = result.targetDate,
@@ -4565,6 +4750,322 @@ function FugSchedulerRuntime.refreshStatus()
   ))
 end
 
+-- Return an empty versioned catalogue for named complete ScheduleData backups.
+function FugSchedulerRuntime.emptyBackupCatalog()
+  local configurations = {}
+  FugSchedulerRuntime.markJsonArray(configurations)
+  return {schemaVersion = 1, updatedAt = os.date("%Y-%m-%dT%H:%M:%S"), configurations = configurations}
+end
+
+-- Validate a backup catalogue and every contained ScheduleData document before use.
+function FugSchedulerRuntime.validateBackupCatalog(candidate)
+  if type(candidate) ~= "table" or candidate.schemaVersion ~= 1 then
+    return nil, "Backup catalogue schemaVersion must be 1"
+  end
+  if type(candidate.configurations) ~= "table" then return nil, "Backup catalogue requires configurations" end
+  local validated = FugSchedulerRuntime.copyPersisted(candidate)
+  local names, ids = {}, {}
+  for index, configuration in ipairs(validated.configurations) do
+    if type(configuration) ~= "table" then return nil, "Backup " .. index .. " must be an object" end
+    configuration.id = tostring(configuration.id or "")
+    configuration.name = string.match(tostring(configuration.name or ""), "^%s*(.-)%s*$") or ""
+    if configuration.id == "" or configuration.name == "" then return nil, "Backup " .. index .. " requires an ID and name" end
+    if ids[configuration.id] then return nil, "Duplicate backup ID: " .. configuration.id end
+    if names[configuration.name] then return nil, "Duplicate backup name: " .. configuration.name end
+    ids[configuration.id], names[configuration.name] = true, true
+    local schedule, _, scheduleError = FugSchedulerRuntime.validateSchedule(configuration.schedule)
+    if not schedule then return nil, "Backup " .. configuration.name .. ": " .. tostring(scheduleError) end
+    configuration.schedule = FugSchedulerRuntime.copyPersisted(schedule)
+    FugSchedulerRuntime.normalizeScheduleArrays(configuration.schedule)
+    configuration.savedAt = tostring(configuration.savedAt or "Unknown")
+  end
+  FugSchedulerRuntime.markJsonArray(validated.configurations)
+  validated.updatedAt = tostring(validated.updatedAt or os.date("%Y-%m-%dT%H:%M:%S"))
+  return validated, nil
+end
+
+-- Return one named backup by stable ID.
+function FugSchedulerRuntime.backupById(id)
+  for _, configuration in ipairs(FugSchedulerRuntime.backupCatalog and
+      FugSchedulerRuntime.backupCatalog.configurations or {}) do
+    if configuration.id == id then return configuration end
+  end
+  return nil
+end
+
+-- Describe one backup without exposing its complete JSON in the Admin UI.
+function FugSchedulerRuntime.backupSummary(configuration)
+  if not configuration then return "Select a saved configuration." end
+  local schedule = configuration.schedule
+  local eventCount, actionCount = FugSchedulerRuntime.scheduleWorkload(schedule)
+  return string.format(
+    "%s\nSaved %s | %d definitions | %d slots | %d Events | %d Event Actions",
+    configuration.name,
+    configuration.savedAt,
+    #(schedule.schedulers or {}),
+    #(schedule.schedulerSlots or {}),
+    eventCount,
+    actionCount
+  )
+end
+
+-- Refresh the Admin controls from the authoritative in-design backup catalogue.
+function FugSchedulerRuntime.refreshBackupControls(message)
+  local catalog = FugSchedulerRuntime.backupCatalog
+  if not catalog then return end
+  local choices = {}
+  for _, configuration in ipairs(catalog.configurations) do
+    table.insert(choices, {Text = configuration.name .. " — " .. configuration.savedAt, Id = configuration.id})
+  end
+  FugSchedulerRuntime.updatingBackupControls = true
+  if Controls.ConfigurationBackupSelect then
+    Controls.ConfigurationBackupSelect.Choices = choices
+    local selected = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+    if not selected then selected = catalog.configurations[1] end
+    FugSchedulerRuntime.selectedBackupId = selected and selected.id or nil
+    Controls.ConfigurationBackupSelect.String = selected and
+      FugSchedulerRuntime.encodeChoice(selected.name .. " — " .. selected.savedAt, selected.id) or ""
+    if Controls.ConfigurationBackupName and selected then Controls.ConfigurationBackupName.String = selected.name end
+  end
+  local selected = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+  if Controls.LoadConfigurationBackup then Controls.LoadConfigurationBackup.IsDisabled = selected == nil end
+  if Controls.DeleteConfigurationBackup then Controls.DeleteConfigurationBackup.IsDisabled = selected == nil end
+  local armed = FugSchedulerRuntime.pendingBackupAction ~= nil
+  if Controls.ConfirmConfigurationBackupAction then Controls.ConfirmConfigurationBackupAction.IsDisabled = not armed end
+  if Controls.CancelConfigurationBackupAction then Controls.CancelConfigurationBackupAction.IsDisabled = not armed end
+  FugSchedulerRuntime.updatingBackupControls = false
+  FugSchedulerRuntime.setText("ConfigurationBackupSummary", FugSchedulerRuntime.backupSummary(selected))
+  FugSchedulerRuntime.setText("ConfigurationBackupStatus", message or
+    string.format("%d saved configuration%s", #catalog.configurations, #catalog.configurations == 1 and "" or "s"))
+end
+
+-- Mirror the complete catalogue to the configured experimental Core JSON path on physical hardware.
+function FugSchedulerRuntime.mirrorBackupCatalogToFile(catalog)
+  if System and System.IsEmulating then
+    FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Designer emulation: file mirror unavailable; persistent control saved.")
+    return false
+  end
+  local writeOk, writeError = pcall(FugSchedulerRuntime.json.dump, catalog, FugSchedulerRuntime.backupFilePath)
+  if writeOk then
+    FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Core file mirror updated successfully.")
+    return true
+  end
+  FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Persistent control saved, but Core file mirror failed: " .. tostring(writeError))
+  FugSchedulerRuntime.logLine("Configuration backup file mirror failed: " .. tostring(writeError), LogLevel.ERROR)
+  return false
+end
+
+-- Persist a validated catalogue to its hidden control, then update the optional Core file mirror.
+function FugSchedulerRuntime.persistBackupCatalog(catalog, message)
+  catalog.updatedAt = os.date("%Y-%m-%dT%H:%M:%S")
+  FugSchedulerRuntime.markJsonArray(catalog.configurations)
+  local serialized = FugSchedulerRuntime.encodeJson(catalog)
+  if serialized == "" then
+    FugSchedulerRuntime.refreshBackupControls("Backup save failed: catalogue JSON serialization failed")
+    return false
+  end
+  FugSchedulerRuntime.writingBackupCatalog = true
+  local writeOk, writeError = pcall(function() Controls.ConfigurationBackupCatalog.String = serialized end)
+  FugSchedulerRuntime.writingBackupCatalog = false
+  if not writeOk then
+    FugSchedulerRuntime.refreshBackupControls("Backup save failed: " .. tostring(writeError))
+    return false
+  end
+  FugSchedulerRuntime.backupCatalog = catalog
+  FugSchedulerRuntime.mirrorBackupCatalogToFile(catalog)
+  FugSchedulerRuntime.refreshBackupControls(message)
+  return true
+end
+
+-- Decode the persistent catalogue, falling back to the configured Core file only when the control is empty.
+function FugSchedulerRuntime.reloadBackupCatalog()
+  local source = Controls.ConfigurationBackupCatalog and Controls.ConfigurationBackupCatalog.String or ""
+  local decoded
+  if source ~= "" then
+    local decodeOk, value = pcall(FugSchedulerRuntime.json.decode, source)
+    if not decodeOk or type(value) ~= "table" then
+      FugSchedulerRuntime.setText("ConfigurationBackupStatus", "Backup catalogue JSON is invalid; previous runtime catalogue retained")
+      return false
+    end
+    decoded = value
+  elseif not (System and System.IsEmulating) then
+    local loadOk, value = pcall(FugSchedulerRuntime.json.load, FugSchedulerRuntime.backupFilePath)
+    if loadOk and type(value) == "string" then
+      local decodeOk, decodedValue = pcall(FugSchedulerRuntime.json.decode, value)
+      if decodeOk then value = decodedValue end
+    end
+    if loadOk and type(value) == "table" then
+      decoded = value
+      FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Loaded backup catalogue from " .. FugSchedulerRuntime.backupFilePath .. ".")
+    end
+  end
+  decoded = decoded or FugSchedulerRuntime.emptyBackupCatalog()
+  local validated, validationError = FugSchedulerRuntime.validateBackupCatalog(decoded)
+  if not validated then
+    FugSchedulerRuntime.setText("ConfigurationBackupStatus", "Backup catalogue rejected: " .. tostring(validationError))
+    return false
+  end
+  FugSchedulerRuntime.backupCatalog = validated
+  if source == "" then
+    FugSchedulerRuntime.persistBackupCatalog(validated, "Backup catalogue initialised")
+  else
+    if System and System.IsEmulating then
+      FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Designer emulation: file mirror unavailable; persistent control loaded.")
+    else
+      FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Persistent catalogue loaded; Core file updates on the next save.")
+    end
+    FugSchedulerRuntime.refreshBackupControls()
+  end
+  return true
+end
+
+-- Save the active Scheduler Definitions and Slot configuration under an operator-supplied name.
+function FugSchedulerRuntime.requestSaveBackup()
+  if not FugSchedulerRuntime.activeSchedule or not FugSchedulerRuntime.backupCatalog then return false end
+  local name = string.match(Controls.ConfigurationBackupName and Controls.ConfigurationBackupName.String or "", "^%s*(.-)%s*$") or ""
+  if name == "" then
+    FugSchedulerRuntime.refreshBackupControls("Save rejected: enter a configuration name")
+    return false
+  end
+  local existing
+  for _, configuration in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do
+    if configuration.name == name then existing = configuration break end
+  end
+  if existing then
+    FugSchedulerRuntime.pendingBackupAction = {type = "overwrite", id = existing.id, name = name}
+    FugSchedulerRuntime.selectedBackupId = existing.id
+    FugSchedulerRuntime.refreshBackupControls("Overwrite " .. name .. "? Press Confirm or Cancel.")
+    return true
+  end
+  local existingIds = {}
+  for _, saved in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do existingIds[saved.id] = true end
+  local configuration = {
+    id = FugSchedulerRuntime.generateUuid(existingIds),
+    name = name,
+    savedAt = os.date("%Y-%m-%d %H:%M:%S"),
+    schedule = FugSchedulerRuntime.copyPersisted(FugSchedulerRuntime.activeSchedule)
+  }
+  FugSchedulerRuntime.normalizeScheduleArrays(configuration.schedule)
+  table.insert(FugSchedulerRuntime.backupCatalog.configurations, configuration)
+  FugSchedulerRuntime.selectedBackupId = configuration.id
+  return FugSchedulerRuntime.persistBackupCatalog(FugSchedulerRuntime.backupCatalog, "Saved configuration " .. name)
+end
+
+-- Arm a confirmed restore so an accidental ListBox selection cannot replace the live configuration.
+function FugSchedulerRuntime.requestLoadBackup()
+  local configuration = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+  if not configuration then
+    FugSchedulerRuntime.refreshBackupControls("Load rejected: select a saved configuration")
+    return false
+  end
+  FugSchedulerRuntime.pendingBackupAction = {type = "load", id = configuration.id, name = configuration.name}
+  FugSchedulerRuntime.refreshBackupControls("Load " .. configuration.name .. "? Turn Master Enable off, then press Confirm.")
+  return true
+end
+
+-- Arm confirmed deletion so a ListBox selection cannot remove a saved configuration accidentally.
+function FugSchedulerRuntime.requestDeleteBackup()
+  local configuration = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+  if not configuration then
+    FugSchedulerRuntime.refreshBackupControls("Delete rejected: select a saved configuration")
+    return false
+  end
+  FugSchedulerRuntime.pendingBackupAction = {type = "delete", id = configuration.id, name = configuration.name}
+  FugSchedulerRuntime.refreshBackupControls("Delete " .. configuration.name .. "? Press Confirm or Cancel.")
+  return true
+end
+
+-- Atomically install one validated backup with a new local revision while Master Enable is off.
+function FugSchedulerRuntime.loadBackup(configuration)
+  if FugSchedulerRuntime.automaticExecutionEnabled() then
+    FugSchedulerRuntime.refreshBackupControls("Load rejected: turn Master Enable off before restoring configuration")
+    return false
+  end
+  local candidate = FugSchedulerRuntime.copyPersisted(configuration.schedule)
+  candidate.revision = (tonumber(FugSchedulerRuntime.activeSchedule and FugSchedulerRuntime.activeSchedule.revision) or 0) + 1
+  local validated, warnings, validationError = FugSchedulerRuntime.validateSchedule(candidate)
+  if not validated then
+    FugSchedulerRuntime.refreshBackupControls("Load rejected: " .. tostring(validationError))
+    return false
+  end
+  local persisted = FugSchedulerRuntime.copyPersisted(validated)
+  FugSchedulerRuntime.normalizeScheduleArrays(persisted)
+  local serialized = FugSchedulerRuntime.encodeJson(persisted)
+  if serialized == "" then
+    FugSchedulerRuntime.refreshBackupControls("Load failed: ScheduleData JSON serialization failed")
+    return false
+  end
+  FugSchedulerRuntime.writingScheduleData = true
+  local writeOk, writeError = pcall(function() Controls.ScheduleData.String = serialized end)
+  FugSchedulerRuntime.writingScheduleData = false
+  if not writeOk then
+    FugSchedulerRuntime.refreshBackupControls("Load failed: ScheduleData write failed: " .. tostring(writeError))
+    return false
+  end
+  FugSchedulerRuntime.refreshLineViewer("ScheduleDataViewer", serialized)
+  local selectedId = FugSchedulerRuntime.selectedSchedulerId
+  if not validated._schedulersById[selectedId] then selectedId = validated.schedulers[1].id end
+  FugSchedulerRuntime.installValidatedSchedule(validated, warnings, selectedId, "Restored")
+  FugSchedulerRuntime.refreshBackupControls("Loaded configuration " .. configuration.name .. " at revision " .. validated.revision)
+  return true
+end
+
+-- Execute the currently armed overwrite or restore action.
+function FugSchedulerRuntime.confirmBackupAction()
+  local pending = FugSchedulerRuntime.pendingBackupAction
+  if not pending then
+    FugSchedulerRuntime.refreshBackupControls("Nothing is awaiting confirmation")
+    return false
+  end
+  local configuration = FugSchedulerRuntime.backupById(pending.id)
+  if not configuration then
+    FugSchedulerRuntime.pendingBackupAction = nil
+    FugSchedulerRuntime.refreshBackupControls("Confirmation cancelled: saved configuration no longer exists")
+    return false
+  end
+  if pending.type == "overwrite" then
+    configuration.savedAt = os.date("%Y-%m-%d %H:%M:%S")
+    configuration.schedule = FugSchedulerRuntime.copyPersisted(FugSchedulerRuntime.activeSchedule)
+    FugSchedulerRuntime.normalizeScheduleArrays(configuration.schedule)
+    FugSchedulerRuntime.pendingBackupAction = nil
+    return FugSchedulerRuntime.persistBackupCatalog(FugSchedulerRuntime.backupCatalog, "Overwrote configuration " .. configuration.name)
+  elseif pending.type == "load" then
+    local loaded = FugSchedulerRuntime.loadBackup(configuration)
+    if loaded then FugSchedulerRuntime.pendingBackupAction = nil end
+    return loaded
+  elseif pending.type == "delete" then
+    local deletedIndex
+    for index, saved in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do
+      if saved.id == configuration.id then deletedIndex = index break end
+    end
+    if not deletedIndex then
+      FugSchedulerRuntime.pendingBackupAction = nil
+      FugSchedulerRuntime.refreshBackupControls("Delete cancelled: saved configuration no longer exists")
+      return false
+    end
+    table.remove(FugSchedulerRuntime.backupCatalog.configurations, deletedIndex)
+    local nextSelection = FugSchedulerRuntime.backupCatalog.configurations[math.min(
+      deletedIndex,
+      #FugSchedulerRuntime.backupCatalog.configurations
+    )]
+    FugSchedulerRuntime.selectedBackupId = nextSelection and nextSelection.id or nil
+    FugSchedulerRuntime.pendingBackupAction = nil
+    return FugSchedulerRuntime.persistBackupCatalog(
+      FugSchedulerRuntime.backupCatalog,
+      "Deleted configuration " .. configuration.name
+    )
+  end
+  FugSchedulerRuntime.pendingBackupAction = nil
+  FugSchedulerRuntime.refreshBackupControls("Unknown confirmation action cancelled")
+  return false
+end
+
+-- Cancel an armed overwrite or restore operation without changing persistent data.
+function FugSchedulerRuntime.cancelBackupAction()
+  FugSchedulerRuntime.pendingBackupAction = nil
+  FugSchedulerRuntime.refreshBackupControls("Pending backup action cancelled")
+end
+
 -- Populate persistent presentation and logging preferences without touching schedule configuration.
 function FugSchedulerRuntime.refreshPreferences(message)
   FugSchedulerRuntime.updatingPreferences = true
@@ -4690,6 +5191,12 @@ function FugSchedulerRuntime.attachHandlers()
         FugSchedulerRuntime.setSlotPaused(capturedSlotNumber, control.Boolean)
       end
     end
+    local advanceControl = countedControl("SchedulerSlotAdvance", capturedSlotNumber)
+    if advanceControl then
+      advanceControl.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.advanceSlotToNextEvent(capturedSlotNumber) end
+      end
+    end
     local pauseModeControl = countedControl("SchedulerSlotPauseMode", capturedSlotNumber)
     if pauseModeControl then
       pauseModeControl.EventHandler = function(control)
@@ -4757,6 +5264,11 @@ function FugSchedulerRuntime.attachHandlers()
         "pauseUntilTime",
         control.String
       )
+    end
+  end
+  if Controls.InspectorAdvanceNextEvent then
+    Controls.InspectorAdvanceNextEvent.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.advanceSlotToNextEvent(FugSchedulerRuntime.selectedSlotNumber) end
     end
   end
 
@@ -5282,6 +5794,48 @@ function FugSchedulerRuntime.attachHandlers()
   attachLogLevelHandler("DebugLogLevel", "Debug Output")
   attachLogLevelHandler("EventLogLevel", "Event Log")
 
+  if Controls.ConfigurationBackupCatalog then
+    Controls.ConfigurationBackupCatalog.EventHandler = function()
+      if not FugSchedulerRuntime.writingBackupCatalog then FugSchedulerRuntime.reloadBackupCatalog() end
+    end
+  end
+  if Controls.ConfigurationBackupSelect then
+    Controls.ConfigurationBackupSelect.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingBackupControls then return end
+      FugSchedulerRuntime.selectedBackupId = FugSchedulerRuntime.choiceId(control.String)
+      local configuration = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+      FugSchedulerRuntime.updatingBackupControls = true
+      if Controls.ConfigurationBackupName and configuration then Controls.ConfigurationBackupName.String = configuration.name end
+      FugSchedulerRuntime.updatingBackupControls = false
+      FugSchedulerRuntime.setText("ConfigurationBackupSummary", FugSchedulerRuntime.backupSummary(configuration))
+    end
+  end
+  if Controls.SaveConfigurationBackup then
+    Controls.SaveConfigurationBackup.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.requestSaveBackup() end
+    end
+  end
+  if Controls.LoadConfigurationBackup then
+    Controls.LoadConfigurationBackup.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.requestLoadBackup() end
+    end
+  end
+  if Controls.DeleteConfigurationBackup then
+    Controls.DeleteConfigurationBackup.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.requestDeleteBackup() end
+    end
+  end
+  if Controls.ConfirmConfigurationBackupAction then
+    Controls.ConfirmConfigurationBackupAction.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.confirmBackupAction() end
+    end
+  end
+  if Controls.CancelConfigurationBackupAction then
+    Controls.CancelConfigurationBackupAction.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.cancelBackupAction() end
+    end
+  end
+
   if Controls.ReloadActions then
     Controls.ReloadActions.EventHandler = function(control)
       if control.Boolean then FugSchedulerRuntime.reloadActions() end
@@ -5346,6 +5900,7 @@ function FugSchedulerRuntime.initialize()
   if Controls.DateFormatPreference then Controls.DateFormatPreference.Choices = {} end
   if Controls.DebugLogLevel then Controls.DebugLogLevel.Choices = {} end
   if Controls.EventLogLevel then Controls.EventLogLevel.Choices = {} end
+  if Controls.ConfigurationBackupSelect then Controls.ConfigurationBackupSelect.Choices = {} end
   for _, weekday in ipairs(FugSchedulerWeekdays) do
     if Controls[weekday.controlName] then Controls[weekday.controlName].Choices = {} end
   end
@@ -5369,6 +5924,9 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
   FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
   FugSchedulerRuntime.setText("OverrideEditorStatus", "Waiting for a valid Override configuration")
+  FugSchedulerRuntime.setText("ConfigurationBackupStatus", "Loading named configuration backups")
+  FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Checking Core file mirror availability")
+  FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Waiting for a runnable Scheduler Slot")
   FugSchedulerRuntime.setText("PreferencesStatus", "Loading preferences")
   FugSchedulerRuntime.setText("BuildDateDisplay", FugSchedulerRuntime.formatBuildDate(FugSchedulerPluginInfo.BuildTimestamp))
   FugSchedulerRuntime.refreshStatus()
@@ -5389,6 +5947,7 @@ function FugSchedulerRuntime.initialize()
     Controls.EventLogLevel.String = FugSchedulerRuntime.encodeChoice("Off", LogLevel.OFF)
   end
   FugSchedulerRuntime.refreshPreferences()
+  FugSchedulerRuntime.reloadBackupCatalog()
   FugSchedulerRuntime.logLine("FugScheduler 2000 scheduler runtime initialised.")
 
   FugSchedulerRuntime.reloadActions()

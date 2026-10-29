@@ -240,6 +240,7 @@ end
 function FugUi.control(ui, name, style, rect, opts)
   local item = opts or {}
   item.Style = style
+  if style == "ListBox" and item.HTextAlign == nil then item.HTextAlign = "Left" end
   item.Position = FugUi.pos(rect)
   item.Size = FugUi.size(rect)
   ui.layout[name] = item
