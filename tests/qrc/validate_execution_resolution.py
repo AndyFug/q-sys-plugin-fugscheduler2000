@@ -72,8 +72,6 @@ def scheduler(scheduler_id: str, label: str, day_patterns: list[dict], default_d
     return {
         "id": scheduler_id,
         "label": label,
-        "enabled": False,
-        "paused": False,
         "defaultWeekPatternId": week_id,
         "dayPatterns": day_patterns,
         "weekPatterns": [{
@@ -88,14 +86,14 @@ def scheduler(scheduler_id: str, label: str, day_patterns: list[dict], default_d
 def resolve(test_time: str) -> dict:
     set_value("TestDateTime", test_time, 0.1)
     press("ResolveTestTime")
-    return json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
+    return json.loads(controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"])
 
 
 def main() -> None:
     ensure_expected_design("preflight")
     initial = controls(
         "ScheduleData", "TestDateTime", "AutomaticExecutionEnabled", "ResolveTestTime",
-        "GlobalSchedulerStatus", "script.status", "script.error.count",
+        "GlobalSchedulerSlotStatus", "script.status", "script.error.count",
     )
     runtime = controls("script.status", "script.error.count", component=RUNTIME_PROVIDER)
     check(initial["AutomaticExecutionEnabled"]["Value"] < 0.5, "automatic execution is off before resolver testing")
@@ -129,12 +127,20 @@ def main() -> None:
                 "patternId": "empty-day",
             }],
         )
-        model = {"schemaVersion": 1, "revision": 1, "schedulers": [midnight, gap]}
+        model = {
+            "schemaVersion": 2, "revision": 1,
+            "schedulerSlots": [
+                {"slot": 1, "schedulerId": "cursor-midnight", "enabled": False, "paused": False},
+                {"slot": 2, "schedulerId": "cursor-gap", "enabled": False, "paused": False},
+                *[{"slot": index, "enabled": False, "paused": False} for index in range(3, 9)],
+            ],
+            "schedulers": [midnight, gap],
+        }
         ensure_expected_design("fixture mutation")
         set_value("ScheduleData", json.dumps(model, separators=(",", ":")), 1.0)
 
         status = resolve("2026-12-25 00:00")
-        entries = {item["id"]: item for item in status["schedulers"]}
+        entries = {item["schedulerId"]: item for item in status["slots"]}
         midnight_status = entries["cursor-midnight"]
         check(midnight_status["currentEvent"]["id"] == "midnight-late", "Current crosses midnight from the previous date")
         check(midnight_status["currentEvent"]["date"] == "2026-12-24", "cross-midnight Current retains its occurrence date")
@@ -149,10 +155,10 @@ def main() -> None:
         check(gap_status["nextEvent"]["date"] == "2027-04-01", "incremental resolver finds Next after a long empty range")
 
         before_boundary = resolve("2026-11-30 13:00")
-        before_gap = {item["id"]: item for item in before_boundary["schedulers"]}["cursor-gap"]
+        before_gap = {item["schedulerId"]: item for item in before_boundary["slots"]}["cursor-gap"]
         check(before_gap["resolution"]["sourceType"] == "DefaultWeekPattern", "date before Override uses the Default Week Pattern")
         at_boundary = resolve("2026-12-01 00:00")
-        boundary_gap = {item["id"]: item for item in at_boundary["schedulers"]}["cursor-gap"]
+        boundary_gap = {item["schedulerId"]: item for item in at_boundary["slots"]}["cursor-gap"]
         check(boundary_gap["resolution"]["sourceType"] == "DayPatternOverride", "Override is inclusive at its start boundary")
         check('\"_' not in controls("ScheduleData")["ScheduleData"]["String"], "runtime cursor/cache state is absent from ScheduleData")
     finally:

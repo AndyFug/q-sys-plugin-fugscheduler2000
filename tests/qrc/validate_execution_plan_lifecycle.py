@@ -56,11 +56,11 @@ def press(name: str) -> None:
 
 def status() -> dict:
     press("ResolveTestTime")
-    return json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
+    return json.loads(controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"])
 
 
 def entries(result: dict) -> dict[str, dict]:
-    return {item["id"]: item for item in result["schedulers"]}
+    return {item["schedulerId"]: item for item in result["slots"]}
 
 
 def temporary_scheduler() -> dict:
@@ -68,8 +68,6 @@ def temporary_scheduler() -> dict:
     return {
         "id": "qrc-plan-delete-scheduler",
         "label": "Plan Deletion QRC Test",
-        "enabled": False,
-        "paused": False,
         "defaultWeekPatternId": "qrc-plan-delete-week",
         "dayPatterns": [{
             "id": day_id,
@@ -97,7 +95,7 @@ def main() -> None:
     ensure_design("preflight")
     initial = controls(
         "ScheduleData", "TestDateTime", "AutomaticExecutionEnabled", "ResolveTestTime",
-        "GlobalSchedulerStatus", "script.status", "script.error.count",
+        "GlobalSchedulerSlotStatus", "script.status", "script.error.count",
     )
     provider = controls("script.status", "script.error.count", component=RUNTIME_PROVIDER)
     check(initial["AutomaticExecutionEnabled"]["Value"] < 0.5, "automatic execution is off before plan lifecycle testing")
@@ -114,18 +112,29 @@ def main() -> None:
     temporary_id = "qrc-plan-delete-scheduler"
 
     try:
+        baseline_model = deepcopy(original_model)
+        baseline_model["schemaVersion"] = 2
+        baseline_model["schedulerSlots"] = [
+            {"slot": 1, "schedulerId": preserved_id, "enabled": False, "paused": False},
+            *[{"slot": index, "enabled": False, "paused": False} for index in range(2, 9)],
+        ]
+        for definition in baseline_model["schedulers"]:
+            definition.pop("enabled", None)
+            definition.pop("paused", None)
+        set_value("ScheduleData", json.dumps(baseline_model, separators=(",", ":")), 0.8)
         set_value("TestDateTime", "", 0.3)
         time.sleep(1.3)
         before = status()
         before_entries = entries(before)
         preserved_before = before_entries[preserved_id]["execution"]
-        check(before["performance"]["schedulerCount"] == len(original_model["schedulers"]),
-              "baseline plan count matches the persisted Scheduler count")
+        check(before["performance"]["schedulerCount"] == 1,
+              "baseline creates one runtime plan for one assigned Slot")
         check(preserved_before["performance"]["pollCount"] > 0, "preserved Scheduler timer is polling before mutation")
 
-        added_model = deepcopy(original_model)
+        added_model = deepcopy(baseline_model)
         added_model["revision"] = int(added_model.get("revision", 0)) + 1
         added_model["schedulers"].append(temporary_scheduler())
+        added_model["schedulerSlots"][1]["schedulerId"] = temporary_id
         ensure_design("add mutation")
         set_value("ScheduleData", json.dumps(added_model, separators=(",", ":")), 0.8)
         time.sleep(2.3)
@@ -133,8 +142,8 @@ def main() -> None:
         after_add_entries = entries(after_add)
         temporary_execution = after_add_entries[temporary_id]["execution"]
         preserved_after_add = after_add_entries[preserved_id]["execution"]
-        check(after_add["performance"]["schedulerCount"] == len(original_model["schedulers"]) + 1,
-              "adding a Scheduler creates exactly one runtime plan")
+        check(after_add["performance"]["schedulerCount"] == 2,
+              "assigning a second Definition creates exactly one additional runtime plan")
         check(temporary_execution["performance"]["pollCount"] > 0, "new Scheduler timer polls independently")
         check(preserved_after_add["planGeneration"] == preserved_before["planGeneration"],
               "adding a Scheduler preserves an unaffected plan generation")
@@ -145,6 +154,7 @@ def main() -> None:
 
         removed_model = deepcopy(added_model)
         removed_model["revision"] += 1
+        removed_model["schedulerSlots"][1].pop("schedulerId", None)
         removed_model["schedulers"] = [item for item in removed_model["schedulers"] if item["id"] != temporary_id]
         ensure_design("delete mutation")
         set_value("ScheduleData", json.dumps(removed_model, separators=(",", ":")), 0.8)
@@ -153,8 +163,8 @@ def main() -> None:
         after_delete_entries = entries(after_delete)
         preserved_after_delete = after_delete_entries[preserved_id]["execution"]
         check(temporary_id not in after_delete_entries, "deleted Scheduler plan remains absent after multiple former timer periods")
-        check(after_delete["performance"]["schedulerCount"] == len(original_model["schedulers"]),
-              "deleting a Scheduler removes exactly one runtime plan")
+        check(after_delete["performance"]["schedulerCount"] == 1,
+              "unassigning and deleting a Definition removes exactly one runtime plan")
         check(preserved_after_delete["planGeneration"] == preserved_before["planGeneration"],
               "deleting another Scheduler preserves the unaffected plan generation")
         check(preserved_after_delete["timerPhaseSeconds"] == preserved_before["timerPhaseSeconds"],

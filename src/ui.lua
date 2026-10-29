@@ -1,63 +1,59 @@
 FugSchedulerUi = FugSchedulerUi or {}
 
--- Return the shared retained-container column specifications for Overview rows.
-function FugSchedulerUi.overviewColumnSpecs()
+-- Return the retained-container column specifications for Scheduler Slot rows.
+function FugSchedulerUi.slotColumnSpecs()
   return {
-    {width = 157},
-    {width = 42},
-    {width = 42},
-    {grow = 1},
-    {grow = 1},
-    {grow = 1}
+    {width = 34}, {width = 180}, {width = 42}, {width = 42},
+    {grow = 1}, {grow = 1}, {grow = 1}
   }
 end
 
--- Add the compact header within one fixed-bounds FugUi Box.
-function FugSchedulerUi.overviewHeader(ui, rect)
+-- Add the compact Scheduler Slot table header.
+function FugSchedulerUi.slotHeader(ui, rect)
   local row = FugUi.box(ui, rect, {padding = 2})
-  local cells = {row:splitRow(FugSchedulerUi.overviewColumnSpecs(), {gap = 4})}
-  local labels = {"Scheduler", "Enable", "Pause", "Current Pattern", "Current Event", "Next Event"}
+  local cells = {row:splitRow(FugSchedulerUi.slotColumnSpecs(), {gap = 4})}
+  local labels = {"Slot", "Scheduler Definition", "On", "Pause", "Current Pattern", "Current Event", "Next Event"}
   for index, cell in ipairs(cells) do
     ui:label(labels[index], cell:fill(), {
       Color = ui:color("mutedText"), FontSize = 9, IsBold = true,
-      HTextAlign = index >= 2 and index <= 3 and "Center" or "Left"
+      HTextAlign = (index == 1 or index == 3 or index == 4) and "Center" or "Left"
     })
   end
   return row
 end
 
--- Add one movable fixed-bounds Scheduler row and split its local child columns.
-function FugSchedulerUi.overviewSchedulerRow(ui, rect, rowIndex)
+-- Add one fixed numbered Scheduler Slot row using the stable counted slot controls.
+function FugSchedulerUi.slotRow(ui, rect, slotNumber)
   local row = FugUi.box(ui, rect, {padding = 2})
   row:group("", {
-    Fill = ui:color(rowIndex % 2 == 0 and "panelAlt" or "panel"),
+    Fill = ui:color(slotNumber % 2 == 0 and "panelAlt" or "panel"),
     StrokeColor = ui:color("stroke"), StrokeWidth = 1, CornerRadius = 3
   })
-  local cells = {row:splitRow(FugSchedulerUi.overviewColumnSpecs(), {gap = 4})}
-
-  local schedulerCell = cells[1]:fill()
-  local schedulerText = ui:rect(schedulerCell.x + 6, schedulerCell.y, schedulerCell.w - 6, schedulerCell.h)
-  ui:textControl(overviewControlName("OverviewSchedulerLabel", rowIndex), schedulerText, {
+  local cells = {row:splitRow(FugSchedulerUi.slotColumnSpecs(), {gap = 4})}
+  ui:textControl(countedControlName("SchedulerSlotNumber", slotNumber), cells[1]:fill(), {
     IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
-    HTextAlign = "Left", FontSize = 9, IsBold = true
+    FontSize = 9, IsBold = true, HTextAlign = "Center"
   })
-  local enableCell = cells[2]:fill()
-  local pauseCell = cells[3]:fill()
-  ui:button(overviewControlName("OverviewSchedulerEnabled", rowIndex), ui:center(enableCell, 30, enableCell.h), {
+  ui:control(countedControlName("SchedulerSlotDefinition", slotNumber), "ComboBox", cells[2]:fill(), {
+    PrettyName = "Scheduler Slots~Slot " .. tostring(slotNumber) .. " Definition", FontSize = 8
+  })
+  local enableCell = cells[3]:fill()
+  local pauseCell = cells[4]:fill()
+  ui:button(countedControlName("SchedulerSlotEnabled", slotNumber), ui:center(enableCell, 30, enableCell.h), {
     ButtonStyle = "Toggle", Legend = "", Color = ui:color("ok")
   })
-  ui:button(overviewControlName("OverviewSchedulerPaused", rowIndex), ui:center(pauseCell, 30, pauseCell.h), {
+  ui:button(countedControlName("SchedulerSlotPaused", slotNumber), ui:center(pauseCell, 30, pauseCell.h), {
     ButtonStyle = "Toggle", Legend = "", Color = ui:color("warning")
   })
-  ui:textControl(overviewControlName("OverviewCurrentPattern", rowIndex), cells[4]:fill(), {
+  ui:textControl(countedControlName("SchedulerSlotCurrentPattern", slotNumber), cells[5]:fill(), {
     IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
     HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
   })
-  ui:textControl(overviewControlName("OverviewCurrentEvent", rowIndex), cells[5]:fill(), {
+  ui:textControl(countedControlName("SchedulerSlotCurrentEvent", slotNumber), cells[6]:fill(), {
     IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
     HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
   })
-  ui:textControl(overviewControlName("OverviewNextEvent", rowIndex), cells[6]:fill(), {
+  ui:textControl(countedControlName("SchedulerSlotNextEvent", slotNumber), cells[7]:fill(), {
     IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
     HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
   })

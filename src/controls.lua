@@ -22,33 +22,41 @@ function GetControls(_props)
     Count = 1
   })
 
-  -- Select which Scheduler the banked human-readable status controls and editor display.
-  table.insert(ctrls, {Name = "SchedulerSelect", ControlType = "Text", Count = 1})
-  table.insert(ctrls, {Name = "SchedulerEnabled", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Output", Count = 1})
+  local slotCount = propValue(_props, "Scheduler Slot Count", 8)
+
+  -- Provide stable runnable slot controls; only these operational controls are public pins.
   table.insert(ctrls, {Name = "AutomaticExecutionEnabled", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Input", Count = 1})
   table.insert(ctrls, {Name = "ExecutionStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerSlotNumber", ControlType = "Text", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotDefinition", ControlType = "Text", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotAssignedId", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotEnabled", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Both", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotPaused", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Both", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotCurrentPattern", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotCurrentEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotNextEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotNextTime", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = slotCount})
 
-  -- Present ten operational Scheduler rows with live Enable/Pause toggles per Overview bank.
-  table.insert(ctrls, {Name = "OverviewPreviousBank", ControlType = "Button", ButtonType = "Momentary", Count = 1})
-  table.insert(ctrls, {Name = "OverviewNextBank", ControlType = "Button", ButtonType = "Momentary", Count = 1})
-  table.insert(ctrls, {Name = "OverviewBankStatus", ControlType = "Text", Count = 1})
-  table.insert(ctrls, {Name = "OverviewSchedulerLabel", ControlType = "Text", Count = FugSchedulerOverviewRows})
-  table.insert(ctrls, {Name = "OverviewSchedulerEnabled", ControlType = "Button", ButtonType = "Toggle", Count = FugSchedulerOverviewRows})
-  table.insert(ctrls, {Name = "OverviewSchedulerPaused", ControlType = "Button", ButtonType = "Toggle", Count = FugSchedulerOverviewRows})
-  table.insert(ctrls, {Name = "OverviewCurrentPattern", ControlType = "Text", Count = FugSchedulerOverviewRows})
-  table.insert(ctrls, {Name = "OverviewCurrentEvent", ControlType = "Text", Count = FugSchedulerOverviewRows})
-  table.insert(ctrls, {Name = "OverviewNextEvent", ControlType = "Text", Count = FugSchedulerOverviewRows})
-  table.insert(ctrls, {Name = "OverviewNextTime", ControlType = "Text", Count = FugSchedulerOverviewRows})
+  -- Bank navigation is UI-only and intentionally omitted from the public control-pin contract.
+  table.insert(ctrls, {Name = "SchedulerSlotsPreviousBank", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerSlotsNextBank", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerSlotsBankStatus", ControlType = "Text", Count = 1})
 
-  -- Edit the selected Scheduler through the runtime's validated transaction layer.
-  table.insert(ctrls, {Name = "SchedulerLabel", ControlType = "Text", Count = 1})
-  table.insert(ctrls, {Name = "SchedulerEditorEnabled", ControlType = "Button", ButtonType = "Toggle", Count = 1})
-  table.insert(ctrls, {Name = "SchedulerPaused", ControlType = "Button", ButtonType = "Toggle", Count = 1})
-  table.insert(ctrls, {Name = "SchedulerDefaultWeekPattern", ControlType = "Text", Count = 1})
-  table.insert(ctrls, {Name = "AddScheduler", ControlType = "Button", ButtonType = "Momentary", Count = 1})
-  table.insert(ctrls, {Name = "DuplicateScheduler", ControlType = "Button", ButtonType = "Momentary", Count = 1})
-  table.insert(ctrls, {Name = "DeleteScheduler", ControlType = "Button", ButtonType = "Momentary", Count = 1})
-  table.insert(ctrls, {Name = "SchedulerEditorStatus", ControlType = "Text", Count = 1})
+  -- Inspect one runnable slot in detail without changing the definition editor selection.
+  table.insert(ctrls, {Name = "InspectorSlotSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "InspectorSlotEnabled", ControlType = "Button", ButtonType = "Toggle", Count = 1})
+  table.insert(ctrls, {Name = "InspectorSlotPaused", ControlType = "Button", ButtonType = "Toggle", Count = 1})
+
+  -- Edit Scheduler Definitions through the runtime's validated transaction layer.
+  table.insert(ctrls, {Name = "SchedulerDefinitionSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerDefinitionLabel", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerDefinitionDefaultWeekPattern", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerDefinitionAssignedSlot", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "UnassignSchedulerDefinition", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "AddSchedulerDefinition", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DuplicateSchedulerDefinition", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "DeleteSchedulerDefinition", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "SchedulerDefinitionEditorStatus", ControlType = "Text", Count = 1})
 
   -- Build Day Patterns by selecting nested Events and editing their ordered Event Actions.
   table.insert(ctrls, {Name = "DayPatternSelect", ControlType = "Text", Count = 1})
@@ -146,9 +154,9 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "RegistryStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "RegisteredActionCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "ScheduleStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "SchedulerCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "GlobalSchedulerStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "GlobalSchedulerStatusViewer", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "AssignedSchedulerSlotCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "GlobalSchedulerSlotStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "GlobalSchedulerSlotStatusViewer", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ResolutionSource", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "ResolvedDayPattern", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "PreviousEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})

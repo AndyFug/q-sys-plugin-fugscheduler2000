@@ -38,19 +38,19 @@ Initial boilerplate includes:
 - a generated `FugScheduler2000.qplug`
 - an ordinary hidden `ActionSource` Text input control pin
 - a reserved hidden `code` input for supplying the complete runtime during live debugging
-- a banked operational Overview with ten Scheduler status rows and live Enable/Pause toggles, a selected-Scheduler Inspector, Schedules, Day Patterns, Week Patterns, Overrides, Actions, Preferences, Diagnostics, and About pages, with the public plugin version shown in the shared header and version, build, locally formatted build date, plugin ID, and author metadata on About
+- a banked Scheduler Slots page with eight stable runnable slots per bank, definition assignment selectors, and live Enable/Pause controls; a selected-slot Slot Inspector; Scheduler Definitions, Day Patterns, Week Patterns, Overrides, Actions, Preferences, Diagnostics, and About pages
 - a Phase 1 Action Registry that compiles trusted source, calls `GetFugSchedulerActions()`, validates Actions, and provides guarded callback execution
-- versioned persistent `ScheduleData` JSON containing an ordered array of Schedulers, with a documented sample in `references/sample_schedule.json`
+- versioned persistent `ScheduleData` JSON separating an ordered Scheduler Definition library from fixed numbered Scheduler Slots, with a documented sample in `references/sample_schedule.json`
 - independent validation and read-only resolution for every Scheduler's Day Patterns, Week Patterns, Overrides, and previous/current/next Events
-- deterministic `TestDateTime` resolution retained as a Diagnostics-only commissioning tool, plus a guarded execution engine whose Overview-level Master Execution safety toggle defaults off
-- aggregate `GlobalSchedulerStatus` JSON plus a selected-Scheduler status view for third-party integrations and UI inspection
+- deterministic `TestDateTime` resolution retained as a Diagnostics-only commissioning tool, plus a guarded execution engine whose Scheduler Slots-level Master Enable safety toggle defaults off
+- aggregate `GlobalSchedulerSlotStatus` JSON plus a selected-Slot status view for third-party integrations and UI inspection
 - a validated configuration transaction layer that strips runtime indexes, commits only complete schema-v1 candidates, preserves the previous valid model on failure, and avoids recursive `ScheduleData` handling
-- a first visual Scheduler editor using label-based structured selectors for Scheduler and Default Week Pattern selection, plus labels, enabled/paused state, add, duplicate, guarded delete, and transaction feedback
+- a Scheduler Definition editor with label-based structured selectors, Default Week Pattern selection, add/duplicate, assignment readout, an Unassign from Slot helper, and deletion guarded while assigned
 - a three-column Day Patterns editor with scrollable Day Pattern, Event, and Event Action lists; Day Pattern/Event CRUD; disabled-by-default Event Action creation; in-place attached-Action editing; Action deletion and ordering; per-assignment enabled, one-shot, startup/resume, and repeat options; reference-guarded Day Pattern deletion; and contextual validation feedback
 - a visual Week Patterns editor with a scrollable structured selector, label/add/duplicate/guarded-delete transactions, seven structured Day Pattern assignments, per-Scheduler runtime selection, and reference summaries
 - a visual Scheduler-scoped Overrides editor for ordered Day Pattern and Week Pattern Overrides, including presentation-only DMY/MDY/ISO date preferences, buffered date validation, long-form dates, inclusive range summaries, atomic duration-preserving Start edits, convenience duration controls, type-dependent pattern selection, enabled state, add/duplicate/delete/move transactions, overlap warnings, and per-Scheduler runtime selection
 - opaque UUID-style IDs for newly created Schedulers, Day Patterns, Week Patterns, and Events; IDs remain in persisted/status integration data rather than the primary operator UI
-- disabled-by-default creation and duplication of Schedulers and Overrides so their configuration can be completed before activation
+- unassigned-by-default creation and duplication of Scheduler Definitions, plus disabled-by-default Overrides, so configuration can be completed before activation
 - compiled per-Scheduler execution plans with phase-staggered retained timers, cached rolling Previous/Current/Next occurrence cursors, ordered edge execution, startup/resume state restoration, missed one-shot suppression, repeat deadlines, callback isolation, performance diagnostics, and clock-discontinuity handling behind the master execution guard
 - centralized severity-based logging to the bounded DiagnosticLog, filtered Debug Output, and filtered Q-SYS Event Log, with edge executions at Info and repeats at Debug
 

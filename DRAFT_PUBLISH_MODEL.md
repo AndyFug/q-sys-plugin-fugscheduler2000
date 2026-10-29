@@ -2,6 +2,8 @@
 
 Status: **Deferred design proposal**. Do not implement this model until the basic editor, resolver, persistence, and execution behavior is sufficiently complete and the user explicitly confirms that the configuration-layer refactor should begin.
 
+> **Scheduler Slot update:** The active architecture now separates inert Scheduler Definitions from fixed numbered runnable Scheduler Slots. Any future Stage/Commit implementation must key enabled, paused, and transport state by Slot number and treat Definition-to-Slot assignment as structural configuration. Older references below to live state keyed directly by Scheduler ID require revision before implementation.
+
 The current immediate-commit transaction architecture remains in use. As an interim safety measure, newly created Schedulers and Overrides are disabled by default so they can be configured before being activated.
 
 ## Decision summary

@@ -84,7 +84,7 @@ def no_runtime_keys(value: object) -> bool:
 
 
 def failure_snapshot() -> dict[str, str]:
-    names = ["ScheduleData", "GlobalSchedulerStatus", "ResolutionSource", "SchedulerSelect", "OverrideSelect"]
+    names = ["ScheduleData", "GlobalSchedulerSlotStatus", "ResolutionSource", "SchedulerDefinitionSelect", "OverrideSelect"]
     state = controls(*names)
     return {name: state[name]["String"] for name in names}
 
@@ -105,8 +105,8 @@ def main() -> None:
             "OverrideSelect", "OverrideLabel", "OverrideEnabled", "OverrideType",
             "OverrideStartDate", "OverrideEndDate", "OverridePattern", "OverrideSummary",
             "AddOverride", "DuplicateOverride", "DeleteOverride", "MoveOverrideUp",
-            "MoveOverrideDown", "OverrideEditorStatus", "SchedulerSelect", "DayPatternSelect",
-            "WeekPatternSelect", "ScheduleData", "GlobalSchedulerStatus", "ResolutionSource",
+            "MoveOverrideDown", "OverrideEditorStatus", "SchedulerDefinitionSelect", "DayPatternSelect",
+            "WeekPatternSelect", "ScheduleData", "GlobalSchedulerSlotStatus", "ResolutionSource",
             "TestDateTime", "ResolveTestTime", "Status", "script.status", "script.error.count",
         ]
         state = controls(*required)
@@ -117,10 +117,18 @@ def main() -> None:
         check(runtime_health["script.status"]["String"] == "OK" and runtime_health["script.error.count"]["Value"] == 0,
               "runtime provider script is OK with zero errors")
 
-        press("AddScheduler")
-        scheduler_id = selected_id("SchedulerSelect")
+        baseline = schedule()
+        for slot in baseline["schedulerSlots"]:
+            slot.pop("schedulerId", None)
+            slot["enabled"] = False
+            slot["paused"] = False
+        set_value("ScheduleData", json.dumps(baseline, separators=(",", ":")))
+        press("AddSchedulerDefinition")
+        scheduler_id = selected_id("SchedulerDefinitionSelect")
         check(bool(UUID_V4.match(scheduler_id)), "temporary Scheduler has a UUID-v4-style ID")
-        set_value("SchedulerLabel", "Override QRC Test")
+        set_value("SchedulerDefinitionLabel", "Override QRC Test")
+        set_value("SchedulerSlotDefinition 1", choice(scheduler_id, "Override QRC Test"))
+        set_value("InspectorSlotSelect", choice(1, "Slot 1 — Override QRC Test"))
 
         press("AddOverride")
         override_id = selected_id("OverrideSelect")
@@ -296,7 +304,7 @@ def main() -> None:
               "existing Day Pattern editor still retains edits")
         check(selected_scheduler(schedule(), scheduler_id)["label"] == "Override QRC Test",
               "existing Scheduler editor still retains edits")
-        check("automatic execution OFF" in controls("Status")["Status"]["String"],
+        check("Master Enable OFF" in controls("Status")["Status"]["String"],
               "automatic scheduled callback execution remains disabled")
 
         final_health = controls("script.status", "script.error.count")

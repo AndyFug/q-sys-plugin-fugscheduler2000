@@ -88,8 +88,8 @@ def check(condition: bool, label: str) -> None:
 
 def failure_snapshot() -> dict[str, str]:
     names = [
-        "ScheduleData", "GlobalSchedulerStatus", "ResolutionSource",
-        "SchedulerSelect", "OverrideSelect",
+        "ScheduleData", "GlobalSchedulerSlotStatus", "ResolutionSource",
+        "SchedulerDefinitionSelect", "OverrideSelect",
     ]
     state = controls(*names)
     return {name: state[name]["String"] for name in names}
@@ -121,8 +121,8 @@ def main() -> None:
             "SetOverrideRangeToday", "ShiftOverrideStartBackDay", "ShiftOverrideStartForwardDay",
             "ShiftOverrideStartBackWeek", "ShiftOverrideStartForwardWeek", "SetOverrideRangeOneDay",
             "ShiftOverrideRangeBack", "ShiftOverrideRangeForward", "ShiftOverrideEndBackWeek",
-            "ShiftOverrideEndForwardWeek", "OverrideEditorStatus", "ScheduleData", "GlobalSchedulerStatus",
-            "ResolutionSource", "SchedulerSelect", "OverrideSelect", "Status", "script.status",
+            "ShiftOverrideEndForwardWeek", "OverrideEditorStatus", "ScheduleData", "GlobalSchedulerSlotStatus",
+            "ResolutionSource", "SchedulerDefinitionSelect", "OverrideSelect", "Status", "script.status",
             "script.error.count",
         ]
         state = controls(*required)
@@ -137,9 +137,9 @@ def main() -> None:
         check(runtime_health["script.status"]["String"] == "OK" and runtime_health["script.error.count"]["Value"] == 0,
               "runtime provider starts OK with zero errors")
 
-        press("AddScheduler")
-        scheduler_id = selected_id("SchedulerSelect")
-        set_value("SchedulerLabel", "Override Date QRC Test")
+        press("AddSchedulerDefinition")
+        scheduler_id = selected_id("SchedulerDefinitionSelect")
+        set_value("SchedulerDefinitionLabel", "Override Date QRC Test")
         press("AddOverride")
         override_id = selected_id("OverrideSelect")
         press("SetOverrideRangeOneDay")
@@ -317,7 +317,7 @@ def main() -> None:
               "End -1 Wk shortens duration by seven calendar days")
 
         press("ResolveTestTime")
-        generated_date = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])["generatedAt"][:10]
+        generated_date = json.loads(controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"])["generatedAt"][:10]
         revision = schedule()["revision"]
         press("SetOverrideRangeToday")
         today_model = schedule()
@@ -354,22 +354,22 @@ def main() -> None:
 
         set_value("OverrideSelect", choice(duplicate_id, "New Override Copy"))
         set_value("OverrideStartDate", "not-a-date")
-        press("AddScheduler")
-        empty_scheduler_id = selected_id("SchedulerSelect")
-        set_value("SchedulerSelect", choice(scheduler_id, "Override Date QRC Test"))
+        press("AddSchedulerDefinition")
+        empty_scheduler_id = selected_id("SchedulerDefinitionSelect")
+        set_value("SchedulerDefinitionSelect", choice(scheduler_id, "Override Date QRC Test"))
         set_value("OverrideSelect", choice(duplicate_id, "New Override Copy"))
         check(controls("OverrideStartDate")["OverrideStartDate"]["String"] != "not-a-date",
               "changing Scheduler context discards invalid buffered input safely")
 
-        set_value("SchedulerSelect", choice(empty_scheduler_id, "New Scheduler"))
+        set_value("SchedulerDefinitionSelect", choice(empty_scheduler_id, "New Scheduler"))
         empty_before = schedule_text()
         press("ShiftOverrideRangeForward")
         check(schedule_text() == empty_before, "forced range action with no Override is harmless")
-        set_value("SchedulerSelect", choice(scheduler_id, "Override Date QRC Test"))
+        set_value("SchedulerDefinitionSelect", choice(scheduler_id, "Override Date QRC Test"))
 
         final_model = schedule()
         check(no_runtime_keys(final_model), "runtime-only date buffers and indexes are absent from ScheduleData")
-        check("automatic execution OFF" in controls("Status")["Status"]["String"],
+        check("Master Enable OFF" in controls("Status")["Status"]["String"],
               "automatic scheduled callback execution remains disabled")
         final_health = controls("script.status", "script.error.count")
         final_runtime_health = controls("script.status", "script.error.count", component=RUNTIME_PROVIDER)

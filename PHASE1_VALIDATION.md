@@ -472,6 +472,34 @@ Designer/QRC findings:
 - Master Execution is now explicitly forced off at each runtime initialization, preventing a previously persisted armed value from surviving a restart.
 - `tests/qrc/validate_overview.py` completed 39 assertions with byte-for-byte restoration and all three scripts healthy. It confirmed the bold Scheduler column, preference-formatted occurrence dates/times, equal-share wrapped detail columns, `source / Day Pattern` display, persistent live Enable/Pause transactions with revision increments, hidden toggles on unused rows, lower grey bank controls, and `Page N of M (Total X schedulers)` status. The existing execution suite completed 62 assertions and the Week Pattern, Override, and Override Date regressions completed 42, 48, and 54 assertions respectively after the page/control lifecycle change.
 
+## Scheduler Definition and Slot architecture refactor
+
+Implemented and deployed to the `fugscheduler2000_test` Designer emulator as build `0.1.0.20`. This supersedes the earlier banked Overview control contract above.
+
+- [x] Added a design-time Scheduler Slot Count property with default 8 and range 1-32.
+- [x] Replaced dynamic Scheduler rows with stable numbered `SchedulerSlot... N` controls and eight visible rows per bank.
+- [x] Added filtered per-Slot Scheduler Definition assignment selectors; a Definition can be assigned to at most one Slot.
+- [x] Made new and duplicated Scheduler Definitions unassigned and inert.
+- [x] Moved enabled/paused operational state to Scheduler Slots and retained detailed Slot controls in Slot Inspector.
+- [x] Added assigned-Slot readout and a disabled-when-unassigned `Unassign from Slot` helper to Scheduler Definitions.
+- [x] Guarded Definition deletion in both UI state and runtime transactions while assigned.
+- [x] Removed legacy Overview/Schedules controls rather than retaining compatibility aliases.
+- [x] Deployed with reset schema-version-2 `ScheduleData`; the prior schema-version-1 value was backed up temporarily before the intentional development reset.
+- [x] Rewrote the repeatable QRC suites for schema v2, Scheduler Definitions, assigned Slots, Slot status, and renamed controls.
+- [x] Added repeatable filtered/forced-duplicate assignment, Slot Inspector mirroring, Unassign, and forced assigned-Definition deletion coverage.
+- [x] Completed all safe current-time QRC suites: 328 assertions total with byte-for-byte restoration.
+- [x] Updated and syntax-validated the genuine-midnight suite; live execution remains pending its required 20-second-to-25-minute pre-midnight window.
+
+Designer/QRC findings:
+
+- Build `0.1.0.20` produced a changed running component fingerprint and exposed the expected new controls while removing `Overview...`, `SchedulerSelect`, and `GlobalSchedulerStatus` controls.
+- The first deployment exposed a control-panel layout error caused by reading height from a FugUi Box rather than its filled rectangle; the corrected layout deployed and simulated successfully.
+- `SchedulerRuntimeProvider` and `ActionProvider` both reported `OK` with zero errors after hot-deploying the matching runtime.
+- The repeatable Slot suite completed 26 assertions confirming filtered and forced-duplicate assignment behavior, active Enable/Pause controls only while assigned, stable assigned-ID output, assigned-slot count, Definition assignment readout, Unassign behavior, visual and forced deletion guards, false momentaries, Master Enable off, and byte-for-byte restoration.
+- Empty aggregate Slot status now serializes as `"slots": []` rather than an empty JSON object.
+- Execution regression found that moving an unchanged Definition between Slots could preserve an old timer phase and collide with a newly assigned Slot. Plans now retain their Slot number and derive a stable unique phase from that Slot; affected plans rebuild on Slot movement while unrelated Slot plans retain generation and phase.
+- Completed suites: Week Patterns 42, Overrides 48, Override Dates 54, Scheduler Slots 26, Execution 70, Plan Lifecycle 24, Resolution 21, Scale 25, and Logging 18 assertions.
+
 ## Build validation
 
 - [x] Run `python3 scripts/compile_plugin.py` successfully.

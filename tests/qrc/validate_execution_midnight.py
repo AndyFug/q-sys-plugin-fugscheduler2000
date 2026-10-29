@@ -73,7 +73,7 @@ def press(name: str) -> None:
 def qsys_now() -> datetime:
     set_value("TestDateTime", "", 0.2)
     press("ResolveTestTime")
-    raw = controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"]
+    raw = controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"]
     return datetime.strptime(json.loads(raw)["generatedAt"], "%Y-%m-%d %H:%M:%S")
 
 
@@ -92,8 +92,6 @@ def fixture(scheduler_id: str) -> dict:
     return {
         "id": scheduler_id,
         "label": "Live Midnight QRC Test",
-        "enabled": True,
-        "paused": False,
         "defaultWeekPatternId": scheduler_id + "-week",
         "dayPatterns": [{
             "id": day_id,
@@ -120,7 +118,7 @@ def main() -> None:
     ensure_design("preflight")
     initial = controls(
         "ScheduleData", "TestDateTime", "AutomaticExecutionEnabled", "ResolveTestTime",
-        "GlobalSchedulerStatus", "DiagnosticLog", "script.status", "script.error.count",
+        "GlobalSchedulerSlotStatus", "DiagnosticLog", "script.status", "script.error.count",
     )
     runtime = controls("script.status", "script.error.count", component=RUNTIME_PROVIDER)
     provider = controls("script.status", "script.error.count", component=ACTION_PROVIDER)
@@ -145,13 +143,19 @@ def main() -> None:
         staged = deepcopy(model)
         staged["revision"] = int(staged.get("revision", 0)) + 1
         for scheduler in staged["schedulers"]:
-            scheduler["enabled"] = False
+            scheduler.pop("enabled", None)
+            scheduler.pop("paused", None)
         staged["schedulers"].append(fixture(scheduler_id))
+        staged["schemaVersion"] = 2
+        staged["schedulerSlots"] = [
+            {"slot": 1, "schedulerId": scheduler_id, "enabled": True, "paused": False},
+            *[{"slot": index, "enabled": False, "paused": False} for index in range(2, 9)],
+        ]
         ensure_design("fixture mutation")
         set_value("ScheduleData", json.dumps(staged, separators=(",", ":")), 1.0)
         time.sleep(2.0)
-        prepared = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
-        prepared_entry = {item["id"]: item for item in prepared["schedulers"]}[scheduler_id]
+        prepared = json.loads(controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"])
+        prepared_entry = {item["schedulerId"]: item for item in prepared["slots"]}[scheduler_id]
         check(prepared_entry["execution"]["performance"]["pollCount"] > 0,
               "midnight Scheduler timer is polling before arming")
         check(prepared_entry["currentEvent"]["id"] == scheduler_id + "-after",
@@ -174,9 +178,9 @@ def main() -> None:
             print(f"WAIT: {max(0, int(remaining))}s remaining", flush=True)
 
         ensure_design("post-midnight")
-        post = controls("GlobalSchedulerStatus", "DiagnosticLog", "script.status", "script.error.count")
-        global_status = json.loads(post["GlobalSchedulerStatus"]["String"])
-        entry = {item["id"]: item for item in global_status["schedulers"]}[scheduler_id]
+        post = controls("GlobalSchedulerSlotStatus", "DiagnosticLog", "script.status", "script.error.count")
+        global_status = json.loads(post["GlobalSchedulerSlotStatus"]["String"])
+        entry = {item["schedulerId"]: item for item in global_status["slots"]}[scheduler_id]
         expected_date = midnight.strftime("%Y-%m-%d")
         prior_date = (midnight - timedelta(days=1)).strftime("%Y-%m-%d")
         check(entry["previousEvent"]["id"] == scheduler_id + "-before", "Previous advances to the 23:59 Event")

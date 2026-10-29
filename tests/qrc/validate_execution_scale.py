@@ -15,9 +15,8 @@ COMPONENT = "AndyFugFugScheduler2000"
 RUNTIME_PROVIDER = "SchedulerRuntimeProvider"
 ROOT = Path(__file__).resolve().parents[2]
 QRC = ROOT.parent / ".agents/skills/qsys-deploy/scripts/qsys-qrc.cjs"
-SCALES = [(5, 10), (20, 20)]
-if os.environ.get("FUGSCHEDULER_SCALE_50") == "1":
-    SCALES.append((50, 20))
+# The active test component has the default eight stable Scheduler Slots.
+SCALES = [(5, 10), (8, 20)]
 
 assertions: list[str] = []
 
@@ -123,8 +122,6 @@ def synthetic_model(scheduler_count: int, event_count: int) -> dict:
         schedulers.append({
             "id": scheduler_id,
             "label": f"Scale Scheduler {scheduler_index + 1}",
-            "enabled": False,
-            "paused": False,
             "defaultWeekPatternId": week_id,
             "dayPatterns": [{"id": day_id, "label": "Scale Day", "events": events}],
             "weekPatterns": [{
@@ -134,14 +131,19 @@ def synthetic_model(scheduler_count: int, event_count: int) -> dict:
             }],
             "overrides": [],
         })
-    return {"schemaVersion": 1, "revision": 1, "schedulers": schedulers}
+    slots = [
+        {"slot": index + 1, "schedulerId": schedulers[index]["id"], "enabled": False, "paused": False}
+        if index < scheduler_count else {"slot": index + 1, "enabled": False, "paused": False}
+        for index in range(8)
+    ]
+    return {"schemaVersion": 2, "revision": 1, "schedulerSlots": slots, "schedulers": schedulers}
 
 
 def main() -> None:
     ensure_expected_design("preflight")
     initial = controls(
         "ScheduleData", "TestDateTime", "AutomaticExecutionEnabled",
-        "GlobalSchedulerStatus", "ResolveTestTime", "script.status", "script.error.count",
+        "GlobalSchedulerSlotStatus", "ResolveTestTime", "script.status", "script.error.count",
     )
     runtime_health = controls("script.status", "script.error.count", component=RUNTIME_PROVIDER)
     check(
@@ -165,11 +167,11 @@ def main() -> None:
             started = time.perf_counter()
             set_value("ScheduleData", json.dumps(model, separators=(",", ":")), 4.0)
             install_seconds = time.perf_counter() - started
-            snapshot = controls("GlobalSchedulerStatus", "ScheduleData", "script.status", "script.error.count")
-            status = json.loads(snapshot["GlobalSchedulerStatus"]["String"])
+            snapshot = controls("GlobalSchedulerSlotStatus", "ScheduleData", "script.status", "script.error.count")
+            status = json.loads(snapshot["GlobalSchedulerSlotStatus"]["String"])
             performance = status["performance"]
-            phases = [item["execution"]["timerPhaseSeconds"] for item in status["schedulers"]]
-            poll_counts = [item["execution"]["performance"]["pollCount"] for item in status["schedulers"]]
+            phases = [item["execution"]["timerPhaseSeconds"] for item in status["slots"]]
+            poll_counts = [item["execution"]["performance"]["pollCount"] for item in status["slots"]]
 
             check(performance["schedulerCount"] == scheduler_count, f"{scheduler_count}x{event_count}: Scheduler count matches")
             check(performance["eventCount"] == scheduler_count * event_count, f"{scheduler_count}x{event_count}: Event count matches")

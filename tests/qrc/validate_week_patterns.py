@@ -99,7 +99,7 @@ def main() -> None:
         required = [
             "WeekPatternSelect", "WeekPatternLabel", "WeekPatternReferences", "WeekPatternEditorStatus",
             "AddWeekPattern", "DuplicateWeekPattern", "DeleteWeekPattern", *WEEKDAYS.values(),
-            "SchedulerSelect", "DayPatternSelect", "ScheduleData", "GlobalSchedulerStatus",
+            "SchedulerDefinitionSelect", "DayPatternSelect", "ScheduleData", "GlobalSchedulerSlotStatus",
             "ResolutionSource", "Status", "script.status", "script.error.count",
         ]
         state = controls(*required)
@@ -107,10 +107,10 @@ def main() -> None:
         check(state["script.status"]["String"] == "OK" and state["script.error.count"]["Value"] == 0,
               "plugin script is OK with zero errors")
 
-        press("AddScheduler")
-        scheduler_id = selected_id("SchedulerSelect")
+        press("AddSchedulerDefinition")
+        scheduler_id = selected_id("SchedulerDefinitionSelect")
         check(bool(UUID_V4.match(scheduler_id)), "temporary Scheduler has a UUID-v4-style ID")
-        set_value("SchedulerLabel", "Week Pattern QRC Test")
+        set_value("SchedulerDefinitionLabel", "Week Pattern QRC Test")
         model = schedule()
         scheduler = selected_scheduler(model, scheduler_id)
         check(scheduler["label"] == "Week Pattern QRC Test", "Scheduler editor still commits label edits")
@@ -147,16 +147,16 @@ def main() -> None:
               "Week Pattern label edit commits exactly once")
 
         failure_before = controls(
-            "ScheduleData", "GlobalSchedulerStatus", "ResolutionSource", "SchedulerSelect", "WeekPatternSelect"
+            "ScheduleData", "GlobalSchedulerSlotStatus", "ResolutionSource", "SchedulerDefinitionSelect", "WeekPatternSelect"
         )
         set_value("WeekPatternLabel", "")
         failure_after = controls(
-            "ScheduleData", "GlobalSchedulerStatus", "ResolutionSource", "SchedulerSelect", "WeekPatternSelect",
+            "ScheduleData", "GlobalSchedulerSlotStatus", "ResolutionSource", "SchedulerDefinitionSelect", "WeekPatternSelect",
             "WeekPatternLabel", "WeekPatternEditorStatus"
         )
         unchanged = all(
             failure_after[name]["String"] == failure_before[name]["String"]
-            for name in ["ScheduleData", "GlobalSchedulerStatus", "ResolutionSource", "SchedulerSelect", "WeekPatternSelect"]
+            for name in ["ScheduleData", "GlobalSchedulerSlotStatus", "ResolutionSource", "SchedulerDefinitionSelect", "WeekPatternSelect"]
         )
         check(unchanged and failure_after["WeekPatternLabel"]["String"] == "Visual Test Week",
               "empty label rejection preserves model, resolver output, and selections")
@@ -267,7 +267,7 @@ def main() -> None:
         current_model = schedule()
         check(no_runtime_keys(current_model), "runtime underscore indexes are absent from ScheduleData")
         status_text = controls("Status")["Status"]["String"]
-        check("automatic execution OFF" in status_text, "automatic scheduled callback execution remains disabled")
+        check("Master Enable OFF" in status_text, "automatic scheduled callback execution remains disabled")
         health = controls("script.status", "script.error.count")
         check(health["script.status"]["String"] == "OK" and health["script.error.count"]["Value"] == 0,
               "plugin remains OK with zero script errors")

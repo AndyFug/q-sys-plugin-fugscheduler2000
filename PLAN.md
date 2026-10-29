@@ -130,18 +130,20 @@ Schedules persist action IDs, not function values or labels.
 
 The canonical nomenclature, hierarchy, resolution rules, and worked examples are defined in `SCHEDULER_MODEL.md`.
 
-The persisted root contains an ordered array of independently resolved Schedulers. Array order is used for display while stable Scheduler IDs provide identity and integration lookup:
+The persisted root contains an ordered Scheduler Definition library plus fixed numbered Scheduler Slots. Definition array order is used for library display, stable Definition IDs preserve configuration identity, and Slot numbers provide stable runtime integration endpoints:
 
 ```lua
 ScheduleData = {
-  schemaVersion = 1,
+  schemaVersion = 2,
   revision = 1,
+  schedulerSlots = {
+    {slot = 1, schedulerId = "site-music", enabled = true, paused = false},
+    {slot = 2, enabled = false, paused = false}
+  },
   schedulers = {
     {
       id = "site-music",
       label = "Site Music",
-      enabled = true,
-      paused = false,
       timezoneMode = "Core Local",
       defaultWeekPatternId = "normal-week",
       dayPatterns = {},
@@ -229,26 +231,26 @@ Likely approach:
 
 Use the vendored FugUi framework and separate operator status from configuration.
 
-### Overview
+### Scheduler Slots
 
-- compact operational table with ten Schedulers per bank
+- compact operational table with eight stable numbered Scheduler Slots per bank
 - one fixed-bounds FugUi Box per Scheduler so the complete row can be moved or resized as one object while its local columns stay within the table width
-- bold Scheduler labels with no row selector; Overview remains a purely operational status page while Inspector owns selection
-- compact live Enable/Pause toggles that commit by stable Scheduler ID through the validated persistence transaction, plus equal-share wrapped columns for Current Pattern (`source / Day Pattern`) and Current/Next Events with preference-formatted occurrence date and time
+- a filtered Scheduler Definition assignment ComboBox per Slot; already-assigned Definitions are unavailable in other Slot selectors
+- compact live Enable/Pause toggles addressed by stable Slot number, plus Current Pattern (`source / Day Pattern`) and Current/Next Event status
 - compact grey previous/next controls below the table and status formatted as `Page N of M (Total X schedulers)`
-- prominent global Master Execution safety toggle and execution status
+- prominent global Master Enable safety toggle and execution status
 
-### Inspector
+### Slot Inspector
 
-- selected Scheduler enabled/paused state
+- selected Scheduler Slot enabled/paused state
 - resolved Day Pattern and resolution source
 - Previous, Current, and Next Events
 - Current Event Actions, next-action timestamp, and live countdown
 - registry, schedule, execution, Scheduler-count, and Action-count status
 
-### Schedulers
+### Scheduler Definitions
 
-- select/add/rename/disable Scheduler
+- select/add/rename Scheduler Definition; new and duplicated Definitions remain unassigned
 - select the Default Week Pattern
 - inspect the currently resolved Day Pattern and the rule that selected it
 - manage multiple independent Schedulers in persisted display order
@@ -439,7 +441,7 @@ Exit criterion: the plugin can discover trusted external actions reliably and re
 - Publish the aggregate integration contract defined in `STATUS_MODEL.md`.
 - Implement ordered Event Action execution, pause/resume, one-shot, startup/resume fire, and repeat behavior behind a disabled-by-default master execution safety control.
 - Track Event occurrences explicitly so duplicate-time ordering, missed edges, clock discontinuities, and a later Advance to Next Event command can be handled deterministically.
-- Build functional Overview, Scheduler, Day Patterns, Week Patterns, Overrides, Actions, and Diagnostics pages.
+- Build functional Scheduler Slots, Scheduler Definitions, Slot Inspector, Day Patterns, Week Patterns, Overrides, Actions, and Diagnostics pages.
 - Add manual action testing with a guard/confirmation strategy.
 
 Exit criterion: multiple Schedulers can resolve concurrently and one selected Scheduler can reproduce a representative subset of the reference controller without schedule definitions in Lua.

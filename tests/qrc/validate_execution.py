@@ -115,8 +115,6 @@ def scheduler_fixture(scheduler_id: str, day_id: str, week_id: str, current_time
     return {
         "id": scheduler_id,
         "label": "Execution QRC Test",
-        "enabled": True,
-        "paused": False,
         "defaultWeekPatternId": week_id,
         "dayPatterns": [{
             "id": day_id,
@@ -158,10 +156,10 @@ def main() -> None:
 
     required = [
         "AutomaticExecutionEnabled", "ExecutionStatus", "ScheduleData", "TestDateTime", "ResolveTestTime",
-        "SchedulerSelect", "SchedulerEditorEnabled", "SchedulerPaused", "EventActionSelect", "EventActionPicker",
+        "SchedulerDefinitionSelect", "SchedulerSlotEnabled 1", "SchedulerSlotPaused 1", "EventActionSelect", "EventActionPicker",
         "EventActionEnabled", "EventActionMode", "EventActionFireOnStartup", "EventActionFireOnResume",
         "EventActionRepeatSeconds", "AddEventAction", "DeleteEventAction",
-        "ActionSelect", "RegisteredActionCount", "GlobalSchedulerStatus", "DiagnosticLog", "Status",
+        "ActionSelect", "RegisteredActionCount", "GlobalSchedulerSlotStatus", "DiagnosticLog", "Status",
         "DebugLogLevel", "EventLogLevel", "ActionSource", "ReloadActions",
         "script.status", "script.error.count",
     ]
@@ -218,32 +216,40 @@ def main() -> None:
         set_value("EventLogLevel", choice(0, "Off"))
         set_value("TestDateTime", "")
         press("ResolveTestTime")
-        live_status = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
+        live_status = json.loads(controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"])
         now = datetime.strptime(live_status["resolvedFor"], "%Y-%m-%d %H:%M:%S")
         event_time = (now - timedelta(minutes=1)).strftime("%H:%M")
 
         model = json.loads(original_schedule)
-        # Isolate ExecutionStatus and logging from callbacks belonging to pre-existing Schedulers.
+        # Isolate execution while retaining one unrelated assigned plan for lifecycle checks.
         for existing_scheduler in model["schedulers"]:
-            existing_scheduler["enabled"] = False
+            existing_scheduler.pop("enabled", None)
+            existing_scheduler.pop("paused", None)
+        preserved_scheduler_id = model["schedulers"][0]["id"]
         scheduler_id = "qrc-execution-test-" + now.strftime("%Y%m%d%H%M%S")
         day_id = "qrc-execution-day"
         week_id = "qrc-execution-week"
         model["schedulers"].append(scheduler_fixture(scheduler_id, day_id, week_id, event_time))
+        model["schemaVersion"] = 2
+        model["schedulerSlots"] = [
+            {"slot": 1, "schedulerId": scheduler_id, "enabled": True, "paused": False},
+            {"slot": 2, "schedulerId": preserved_scheduler_id, "enabled": False, "paused": False},
+            *[{"slot": index, "enabled": False, "paused": False} for index in range(3, 9)],
+        ]
         set_value("ScheduleData", json.dumps(model, indent=2), delay=1.3)
-        set_value("SchedulerSelect", choice(scheduler_id, "Execution QRC Test"))
+        set_value("SchedulerDefinitionSelect", choice(scheduler_id, "Execution QRC Test"))
         time.sleep(1.2)
         event_action_list = controls("EventActionSelect")
         check(len(event_action_list["EventActionSelect"].get("Choices", [])) == 2, "Event Action rows are available for explicit selection")
         set_value("EventActionSelect", choice("1", "1  Callback 1 [state]"), delay=0.5)
         press("ResolveTestTime")
-        plan_status = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
-        scheduler_entries = {item["id"]: item for item in plan_status["schedulers"]}
-        timer_phases = [item["execution"]["timerPhaseSeconds"] for item in plan_status["schedulers"]]
-        check(plan_status["performance"]["schedulerCount"] == len(model["schedulers"]), "one runtime plan exists per configured Scheduler")
+        plan_status = json.loads(controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"])
+        scheduler_entries = {item["schedulerId"]: item for item in plan_status["slots"]}
+        timer_phases = [item["execution"]["timerPhaseSeconds"] for item in plan_status["slots"]]
+        check(plan_status["performance"]["schedulerCount"] == 2, "one runtime plan exists per assigned Scheduler Slot")
         check(len(set(timer_phases)) == len(timer_phases), "Scheduler poll timers use distinct staggered phases")
         check(
-            all(item["execution"]["performance"]["pollCount"] > 0 for item in plan_status["schedulers"]),
+            all(item["execution"]["performance"]["pollCount"] > 0 for item in plan_status["slots"]),
             "independent Scheduler timers have each completed at least one poll",
         )
         check(
@@ -251,7 +257,6 @@ def main() -> None:
             and plan_status["performance"]["actionCount"] >= 2,
             "runtime performance status publishes Scheduler, Event, and Action counts",
         )
-        preserved_scheduler_id = model["schedulers"][0]["id"]
         preserved_generation = scheduler_entries[preserved_scheduler_id]["execution"]["planGeneration"]
         preserved_phase = scheduler_entries[preserved_scheduler_id]["execution"]["timerPhaseSeconds"]
 
@@ -326,7 +331,7 @@ def main() -> None:
             "startup restores the current stateful Action",
         )
         check("Callback 2" not in startup["ExecutionStatus"]["String"], "startup does not replay the current one-shot Action")
-        check("automatic execution ARMED" in startup["Status"]["String"], "aggregate status reports the execution guard as armed")
+        check("Master Enable ARMED" in startup["Status"]["String"], "aggregate status reports the execution guard as armed")
         startup_log = diagnostic_text()
         check(
             '[INFO] Scheduler "Execution QRC Test"' in startup_log
@@ -344,22 +349,22 @@ def main() -> None:
             "subsequent repeat execution is logged at Debug with execution context",
         )
 
-        set_value("SchedulerPaused", True, delay=1.2)
+        set_value("SchedulerSlotPaused 1", True, delay=1.2)
         paused_status = controls("ExecutionStatus")["ExecutionStatus"]["String"]
         time.sleep(2.4)
         check(controls("ExecutionStatus")["ExecutionStatus"]["String"] == paused_status, "pause blocks repeat callbacks while timeline resolution continues")
 
-        set_value("SchedulerPaused", False, delay=1.2)
+        set_value("SchedulerSlotPaused 1", False, delay=1.2)
         resume_status = controls("ExecutionStatus")["ExecutionStatus"]["String"]
         check("Callback 1" in resume_status and "resume" in resume_status, "resume restores the current stateful Action")
         check("Callback 2" not in resume_status, "resume does not replay the current one-shot Action")
 
-        set_value("SchedulerEditorEnabled", False, delay=1.2)
+        set_value("SchedulerSlotEnabled 1", False, delay=1.2)
         scheduler_disabled_status = controls("ExecutionStatus")["ExecutionStatus"]["String"]
         time.sleep(2.4)
         check(controls("ExecutionStatus")["ExecutionStatus"]["String"] == scheduler_disabled_status, "Scheduler disable blocks repeat callbacks independently of pause")
 
-        set_value("SchedulerEditorEnabled", True, delay=1.2)
+        set_value("SchedulerSlotEnabled 1", True, delay=1.2)
         scheduler_enabled_status = controls("ExecutionStatus")["ExecutionStatus"]["String"]
         check("Callback 1" in scheduler_enabled_status and "enabled" in scheduler_enabled_status, "Scheduler enable restores the current stateful Action")
         check("Callback 2" not in scheduler_enabled_status, "Scheduler enable does not replay the current one-shot Action")
@@ -380,8 +385,8 @@ def main() -> None:
         })
         set_value("ScheduleData", json.dumps(changed_model, indent=2), delay=1.3)
         changed_to_b = controls("ExecutionStatus")["ExecutionStatus"]["String"]
-        changed_status = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
-        changed_entries = {item["id"]: item for item in changed_status["schedulers"]}
+        changed_status = json.loads(controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"])
+        changed_entries = {item["schedulerId"]: item for item in changed_status["slots"]}
         check(
             changed_entries[preserved_scheduler_id]["execution"]["planGeneration"] == preserved_generation
             and changed_entries[preserved_scheduler_id]["execution"]["timerPhaseSeconds"] == preserved_phase,
@@ -415,8 +420,8 @@ def main() -> None:
         set_value("AutomaticExecutionEnabled", False, delay=0.4)
         disabled_status = controls("ExecutionStatus", "Status")
         check(
-            "disabled" in disabled_status["ExecutionStatus"]["String"].lower()
-            and "automatic execution OFF" in disabled_status["Status"]["String"],
+            "Master Enable is off" in disabled_status["ExecutionStatus"]["String"]
+            and "Master Enable OFF" in disabled_status["Status"]["String"],
             "master guard disables callbacks and reports OFF",
         )
         time.sleep(2.4)
@@ -427,7 +432,7 @@ def main() -> None:
 
         # Build a focused real-edge fixture only after the lifecycle checks are complete.
         ensure_expected_design("scheduled-edge mutation")
-        edge_status = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
+        edge_status = json.loads(controls("GlobalSchedulerSlotStatus")["GlobalSchedulerSlotStatus"]["String"])
         edge_now = datetime.strptime(edge_status["resolvedFor"], "%Y-%m-%d %H:%M:%S")
         minute_offset = 1 if edge_now.second <= 25 else 2
         edge_at = (edge_now + timedelta(minutes=minute_offset)).replace(second=0)
@@ -435,15 +440,14 @@ def main() -> None:
 
         edge_model = json.loads(original_schedule)
         for existing_scheduler in edge_model["schedulers"]:
-            existing_scheduler["enabled"] = False
+            existing_scheduler.pop("enabled", None)
+            existing_scheduler.pop("paused", None)
         edge_scheduler_id = "qrc-scheduled-edge-" + edge_now.strftime("%Y%m%d%H%M%S")
         edge_day_id = "qrc-scheduled-edge-day"
         edge_week_id = "qrc-scheduled-edge-week"
         edge_model["schedulers"].append({
             "id": edge_scheduler_id,
             "label": "Scheduled Edge QRC Test",
-            "enabled": True,
-            "paused": False,
             "defaultWeekPatternId": edge_week_id,
             "dayPatterns": [{
                 "id": edge_day_id,
@@ -487,8 +491,13 @@ def main() -> None:
             }],
             "overrides": [],
         })
+        edge_model["schemaVersion"] = 2
+        edge_model["schedulerSlots"] = [
+            {"slot": 1, "schedulerId": edge_scheduler_id, "enabled": True, "paused": False},
+            *[{"slot": index, "enabled": False, "paused": False} for index in range(2, 9)],
+        ]
         set_value("ScheduleData", json.dumps(edge_model, indent=2), delay=1.3)
-        set_value("SchedulerSelect", choice(edge_scheduler_id, "Scheduled Edge QRC Test"))
+        set_value("SchedulerDefinitionSelect", choice(edge_scheduler_id, "Scheduled Edge QRC Test"))
         before_edge_log = diagnostic_text()
         one_shot_success = (
             f'Scheduler "Scheduled Edge QRC Test" [{edge_scheduler_id}] | Event "Shared Edge B" [qrc-edge-b] | '

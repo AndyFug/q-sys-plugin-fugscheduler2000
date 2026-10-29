@@ -147,38 +147,46 @@ Week Pattern: Christmas Week
 
 The range does not need to begin on Monday or end on Sunday.
 
-### Scheduler
+### Scheduler Definition
 
-A **Scheduler** is one independent scheduling system. It owns:
+A **Scheduler Definition** is a reusable library object. It owns:
 
-- identity and operator-facing label
-- enabled/paused state
+- stable identity and operator-facing label
 - Default Week Pattern
 - Day Patterns
 - Week Patterns
 - Overrides
-- runtime resolution state
 
-Examples include `Site Music`, `Site Mute`, `Ice Rink Announcements`, `Big Wheel`, and `De-Icer`.
+A definition is inert: it has no enabled, paused, transport, cursor, or execution state until assigned to a Scheduler Slot. Newly created and duplicated definitions remain unassigned and use opaque UUID-style stable IDs.
 
-The plugin supports multiple independent Schedulers from the persisted root. Editors may display one selected Scheduler at a time, but validation, resolution, runtime state, and integration status remain independent for every configured Scheduler. Newly created Schedulers use opaque UUID-style stable IDs; normal operator UI displays Scheduler labels while status and persisted JSON retain the IDs for integration identity.
+### Scheduler Slot
+
+A **Scheduler Slot** is one fixed numbered runnable endpoint. The design-time `Scheduler Slot Count` property creates 1-32 stable slots; the default is eight. A slot owns:
+
+- its fixed slot number
+- zero or one assigned Scheduler Definition ID
+- enabled and paused operational state
+- runtime resolution, cursor, timer, and execution state
+
+One Scheduler Definition may be assigned to at most one slot. Unassigned slots do not resolve or execute. Slot deletion/compaction does not exist: unassigning Slot 2 leaves Slot 2 empty and does not change any other slot's remote-control identity.
 
 ## Model hierarchy
 
 ```text
-Scheduler
-├── Default Week Pattern
-├── Week Patterns
-│   └── Monday-Sunday Day Pattern assignments
-├── Day Patterns
-│   └── Events
-│       ├── Time
-│       └── Ordered Event Actions
-│           └── Action ID
-├── Overrides
-│   ├── Day Pattern Overrides
-│   └── Week Pattern Overrides
-└── Action Registry (runtime-only)
+Scheduler Slot
+└── Assigned Scheduler Definition
+    ├── Default Week Pattern
+    ├── Week Patterns
+    │   └── Monday-Sunday Day Pattern assignments
+    ├── Day Patterns
+    │   └── Events
+    │       ├── Time
+    │       └── Ordered Event Actions
+    │           └── Action ID
+    ├── Overrides
+    │   ├── Day Pattern Overrides
+    │   └── Week Pattern Overrides
+    └── Action Registry (runtime-only)
 ```
 
 ## Date resolution
@@ -270,11 +278,12 @@ The initial pause remains active until manually cleared. Planned operational ext
 
 ## Persisted versus runtime data
 
-Persisted configuration is a versioned root containing an ordered `schedulers` array. Array order is used for display; each Scheduler's stable ID is its identity.
+Persisted configuration is a versioned root containing an ordered `schedulers` Scheduler Definition library plus a fixed ordered `schedulerSlots` array. Definition array order is used for library display; each Definition's stable ID is its identity, while each Slot's number is its stable remote-control identity.
 
 Persisted configuration includes:
 
-- Scheduler settings
+- Scheduler Definition settings
+- Scheduler Slot assignments and enabled/paused state
 - Day Patterns
 - Events
 - Event Action assignments and options
@@ -298,7 +307,7 @@ Runtime-only data includes:
 - poll/rebuild performance measurements
 - validation and callback errors
 
-Automatic execution is additionally protected by a persistent plugin-wide safety toggle that defaults off. A Scheduler must be enabled, unpaused, and covered by that master toggle before callbacks can execute.
+Automatic execution is additionally protected by the plugin-wide Master Enable safety toggle that defaults off on runtime start. A Scheduler Slot must be assigned, enabled, unpaused, and covered by that master toggle before callbacks can execute.
 
 ## Worked example
 

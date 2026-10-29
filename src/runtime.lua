@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-10-26T09:18:54Z",
-  BuildTimestamp = 1793006334
+  BuildDate = "2026-10-29T12:59:35Z",
+  BuildTimestamp = 1793278775
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -37,17 +37,17 @@ local LogLevel = {
   DEBUG = 7
 }
 
-FugSchedulerOverviewRows = FugSchedulerOverviewRows or 10
+FugSchedulerSlotRowsPerBank = FugSchedulerSlotRowsPerBank or 8
 
 -- Resolve counted controls in both embedded-plugin and hot-deployed runtime environments.
-overviewControlName = overviewControlName or function(baseName, index)
+countedControlName = countedControlName or function(baseName, index)
   return baseName .. " " .. tostring(index)
 end
 countedControl = countedControl or function(baseName, index)
   if not Controls then return nil end
   local collection = Controls[baseName]
   if type(collection) == "table" and collection[index] then return collection[index] end
-  return Controls[overviewControlName(baseName, index)]
+  return Controls[countedControlName(baseName, index)]
 end
 
 local LogLevelLabels = {
@@ -66,11 +66,14 @@ FugSchedulerRuntime = {
   scheduleWarnings = {},
   scheduleInitialized = false,
   selectedSchedulerId = nil,
-  overviewBank = 1,
+  selectedSlotNumber = 1,
+  slotBank = 1,
   resolutionResultsById = {},
   globalStatus = nil,
   writingScheduleData = false,
   updatingSchedulerEditor = false,
+  updatingSlotControls = false,
+  updatingInspectorControls = false,
   updatingDayPatternEditor = false,
   updatingWeekPatternEditor = false,
   updatingOverrideEditor = false,
@@ -89,7 +92,7 @@ FugSchedulerRuntime = {
   occurrenceSafetyHorizonDays = 400,
   rollingFutureDateCount = 2,
   deferredRefreshGeneration = 0,
-  lastExecutionMessage = "Automatic execution is disabled",
+  lastExecutionMessage = "Master Enable is off",
   uuidCounter = 0,
   uuidSeeded = false
 }
@@ -119,7 +122,7 @@ function FugSchedulerRuntime.setText(name, value)
   if Controls[name] then Controls[name].String = text end
   local viewers = {
     ScheduleData = "ScheduleDataViewer",
-    GlobalSchedulerStatus = "GlobalSchedulerStatusViewer",
+    GlobalSchedulerSlotStatus = "GlobalSchedulerSlotStatusViewer",
     DiagnosticLog = "DiagnosticLogViewer"
   }
   if viewers[name] then FugSchedulerRuntime.refreshLineViewer(viewers[name], text) end
@@ -237,17 +240,29 @@ function FugSchedulerRuntime.logLine(message, messageLevel, context)
   FugSchedulerRuntime.log(messageLevel or LogLevel.INFO, message, context)
 end
 
--- Return the sample multi-Scheduler configuration used when ScheduleData is initially empty.
+-- Return the design-time number of stable Scheduler Slot controls available at runtime.
+function FugSchedulerRuntime.slotCount()
+  local collection = Controls and Controls.SchedulerSlotDefinition or nil
+  if type(collection) == "table" then return #collection end
+  local count = 0
+  while countedControl("SchedulerSlotDefinition", count + 1) do count = count + 1 end
+  return math.max(1, count)
+end
+
+-- Return the sample Scheduler Definition library with every runnable slot unassigned.
 function FugSchedulerRuntime.sampleSchedule()
+  local slots = {}
+  for slotNumber = 1, FugSchedulerRuntime.slotCount() do
+    table.insert(slots, {slot = slotNumber, schedulerId = nil, enabled = false, paused = false})
+  end
   return {
-    schemaVersion = 1,
+    schemaVersion = 2,
     revision = 1,
+    schedulerSlots = slots,
     schedulers = {
       {
         id = "demo-scheduler",
         label = "Demo Scheduler",
-        enabled = true,
-        paused = false,
         defaultWeekPatternId = "normal-week",
         dayPatterns = {
           {
@@ -330,8 +345,6 @@ function FugSchedulerRuntime.sampleSchedule()
       {
         id = "demo-announcements",
         label = "Demo Announcements",
-        enabled = true,
-        paused = false,
         defaultWeekPatternId = "announcement-week",
         dayPatterns = {
           {
@@ -404,6 +417,7 @@ end
 
 -- Mark schema collection fields so RapidJSON emits empty collections as [] rather than {}.
 function FugSchedulerRuntime.normalizeScheduleArrays(root)
+  FugSchedulerRuntime.markJsonArray(root.schedulerSlots)
   FugSchedulerRuntime.markJsonArray(root.schedulers)
   for _, scheduler in ipairs(root.schedulers or {}) do
     FugSchedulerRuntime.markJsonArray(scheduler.dayPatterns)
@@ -459,15 +473,13 @@ function FugSchedulerRuntime.generateUuid(existing)
   end
 end
 
--- Return a new, immediately valid disabled Scheduler with one empty Day and Week Pattern.
+-- Return a new, immediately valid unassigned Scheduler Definition with one empty Day and Week Pattern.
 function FugSchedulerRuntime.newScheduler(id, label)
   local dayPatternId = "default-day"
   local weekPatternId = "default-week"
   return {
     id = id,
-    label = label or "New Scheduler",
-    enabled = false,
-    paused = false,
+    label = label or "New Scheduler Definition",
     defaultWeekPatternId = weekPatternId,
     dayPatterns = {
       {id = dayPatternId, label = "Default Day", events = {}}
@@ -840,9 +852,6 @@ function FugSchedulerRuntime.validateScheduler(scheduler, schedulerIndex)
   if type(scheduler.label) ~= "string" or scheduler.label == "" then
     return nil, nil, prefix .. " requires a non-empty label"
   end
-  scheduler.enabled = scheduler.enabled ~= false
-  scheduler.paused = scheduler.paused == true
-
   for dayIndex, dayPattern in ipairs(scheduler.dayPatterns) do
     if type(dayPattern) ~= "table" then return nil, nil, prefix .. " Day Pattern " .. dayIndex .. " must be an object" end
     if type(dayPattern.id) ~= "string" or dayPattern.id == "" then return nil, nil, prefix .. " Day Pattern " .. dayIndex .. " requires an ID" end
@@ -1010,8 +1019,11 @@ end
 -- Validate the multi-Scheduler root and build stable ID lookup indexes for runtime use.
 function FugSchedulerRuntime.validateSchedule(root)
   if type(root) ~= "table" then return nil, nil, "ScheduleData must decode to an object" end
-  if root.schemaVersion ~= 1 then return nil, nil, "ScheduleData schemaVersion must be 1" end
-  if type(root.schedulers) ~= "table" or #root.schedulers == 0 then return nil, nil, "ScheduleData requires at least one Scheduler" end
+  if root.schemaVersion ~= 2 then return nil, nil, "ScheduleData schemaVersion must be 2" end
+  if type(root.schedulers) ~= "table" or #root.schedulers == 0 then
+    return nil, nil, "ScheduleData requires at least one Scheduler Definition"
+  end
+  if type(root.schedulerSlots) ~= "table" then return nil, nil, "ScheduleData requires schedulerSlots" end
 
   local warnings = {}
   local schedulersById = {}
@@ -1023,8 +1035,49 @@ function FugSchedulerRuntime.validateSchedule(root)
     for _, warning in ipairs(schedulerWarnings) do table.insert(warnings, warning) end
   end
 
+  local expectedSlotCount = FugSchedulerRuntime.slotCount()
+  if #root.schedulerSlots > expectedSlotCount then
+    for slotIndex = expectedSlotCount + 1, #root.schedulerSlots do
+      if root.schedulerSlots[slotIndex] and root.schedulerSlots[slotIndex].schedulerId then
+        return nil, nil, "Reduce Scheduler Slot Count only after unassigning slots above the new limit"
+      end
+    end
+    while #root.schedulerSlots > expectedSlotCount do table.remove(root.schedulerSlots) end
+  end
+  while #root.schedulerSlots < expectedSlotCount do
+    local slotNumber = #root.schedulerSlots + 1
+    table.insert(root.schedulerSlots, {slot = slotNumber, schedulerId = nil, enabled = false, paused = false})
+  end
+  local slotsByNumber, assignedSchedulerIds = {}, {}
+  for slotIndex, slot in ipairs(root.schedulerSlots) do
+    if type(slot) ~= "table" then return nil, nil, "Scheduler Slot " .. slotIndex .. " must be an object" end
+    if slot.slot ~= slotIndex then return nil, nil, "Scheduler Slot entries must be ordered and numbered from 1" end
+    if slot.schedulerId ~= nil and slot.schedulerId ~= "" then
+      if type(slot.schedulerId) ~= "string" or not schedulersById[slot.schedulerId] then
+        return nil, nil, "Scheduler Slot " .. slotIndex .. " references a missing Scheduler Definition"
+      end
+      if assignedSchedulerIds[slot.schedulerId] then
+        return nil, nil, "Scheduler Definition " .. slot.schedulerId .. " is assigned to more than one slot"
+      end
+      assignedSchedulerIds[slot.schedulerId] = slotIndex
+      local scheduler = schedulersById[slot.schedulerId]
+      scheduler._slotNumber = slotIndex
+      scheduler._enabled = slot.enabled == true
+      scheduler._paused = slot.paused == true
+    else
+      slot.schedulerId = nil
+      slot.enabled = false
+      slot.paused = false
+    end
+    slot.enabled = slot.enabled == true
+    slot.paused = slot.paused == true
+    slotsByNumber[slotIndex] = slot
+  end
+
   root.revision = tonumber(root.revision) or 1
   root._schedulersById = schedulersById
+  root._slotsByNumber = slotsByNumber
+  root._assignedSlotBySchedulerId = assignedSchedulerIds
   return root, warnings, nil
 end
 
@@ -1110,6 +1163,7 @@ function FugSchedulerRuntime.createRuntimePlan(scheduler, configurationRevision)
   local compiledEvents, eventCount, actionCount = FugSchedulerRuntime.compileSchedulerEvents(scheduler)
   local plan = {
     schedulerId = scheduler.id,
+    slotNumber = scheduler._slotNumber,
     scheduler = scheduler,
     configurationRevision = configurationRevision,
     generation = FugSchedulerRuntime.nextPlanGeneration,
@@ -1370,46 +1424,49 @@ function FugSchedulerRuntime.formatCountdown(fromTimestamp, nextTimestamp)
   return string.format("%02d:%02d:%02d", hours, minutes, remainingSeconds)
 end
 
--- Return the currently selected Scheduler, falling back to the first configured Scheduler.
+-- Return the selected Scheduler Definition, falling back to the first library entry.
 function FugSchedulerRuntime.selectedScheduler()
   if not FugSchedulerRuntime.activeSchedule then return nil end
   local selectedId = FugSchedulerRuntime.selectedSchedulerId
-  if not selectedId and Controls.SchedulerSelect then
-    selectedId = FugSchedulerRuntime.choiceId(Controls.SchedulerSelect.String)
+  if not selectedId and Controls.SchedulerDefinitionSelect then
+    selectedId = FugSchedulerRuntime.choiceId(Controls.SchedulerDefinitionSelect.String)
   end
-  local scheduler = FugSchedulerRuntime.activeSchedule._schedulersById[selectedId]
-  if scheduler then return scheduler end
-  return FugSchedulerRuntime.activeSchedule.schedulers[1]
+  return FugSchedulerRuntime.activeSchedule._schedulersById[selectedId] or
+    FugSchedulerRuntime.activeSchedule.schedulers[1]
 end
 
--- Populate the Scheduler selector from the persisted array while preserving stable ID selection.
-function FugSchedulerRuntime.refreshSchedulerChoices()
-  if not Controls.SchedulerSelect or not FugSchedulerRuntime.activeSchedule then return end
+-- Return one configured slot and its assigned Scheduler Definition, when present.
+function FugSchedulerRuntime.slotAssignment(slotNumber)
+  local schedule = FugSchedulerRuntime.activeSchedule
+  local slot = schedule and schedule._slotsByNumber[slotNumber] or nil
+  local scheduler = slot and slot.schedulerId and schedule._schedulersById[slot.schedulerId] or nil
+  return slot, scheduler
+end
 
+-- Populate the Scheduler Definition selector while preserving stable-ID selection.
+function FugSchedulerRuntime.refreshSchedulerChoices()
+  if not Controls.SchedulerDefinitionSelect or not FugSchedulerRuntime.activeSchedule then return end
   local choices = {}
   for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
     table.insert(choices, {Text = scheduler.label, Id = scheduler.id})
   end
-  Controls.SchedulerSelect.Choices = choices
-
+  Controls.SchedulerDefinitionSelect.Choices = choices
   local selectedId = FugSchedulerRuntime.selectedSchedulerId
-  if not selectedId then selectedId = FugSchedulerRuntime.choiceId(Controls.SchedulerSelect.String) end
   if not FugSchedulerRuntime.activeSchedule._schedulersById[selectedId] then
     selectedId = FugSchedulerRuntime.activeSchedule.schedulers[1].id
   end
   FugSchedulerRuntime.selectedSchedulerId = selectedId
   local selected = FugSchedulerRuntime.activeSchedule._schedulersById[selectedId]
-  Controls.SchedulerSelect.String = FugSchedulerRuntime.encodeChoice(selected.label, selected.id)
+  Controls.SchedulerDefinitionSelect.String = FugSchedulerRuntime.encodeChoice(selected.label, selected.id)
 end
 
--- Format one Event with preference-formatted occurrence date and time for Overview.
+-- Format one Event with preference-formatted occurrence date and time for slot displays.
 function FugSchedulerRuntime.overviewEventText(event)
   if not event then return "—" end
   local label = tostring(event.label or event.id or "Unnamed Event")
   local dateText = FugSchedulerRuntime.formatDisplayDate(event.date or "", FugSchedulerRuntime.dateFormatPreference())
-  local timeText = tostring(event.time or "")
   if dateText == "" then return label end
-  return string.format("%s (%s %s)", label, dateText, timeText)
+  return string.format("%s (%s %s)", label, dateText, tostring(event.time or ""))
 end
 
 -- Format the active resolution source and Day Pattern as one compact path.
@@ -1418,127 +1475,147 @@ function FugSchedulerRuntime.overviewPatternText(status)
   local source = tostring(status.resolution.source or "Pattern")
   local separator = string.find(source, ": ", 1, true)
   if separator then source = string.sub(source, separator + 2) end
-  local dayPattern = tostring(status.resolution.dayPatternLabel or "—")
-  return source .. " / " .. dayPattern
+  return source .. " / " .. tostring(status.resolution.dayPatternLabel or "—")
 end
 
--- Format the next occurrence time compactly, retaining a day cue across midnight.
-function FugSchedulerRuntime.overviewNextTime(event, resolvedFor)
-  if not event or not event.timestamp then return "—" end
-  local resolvedDate = type(resolvedFor) == "string" and string.sub(resolvedFor, 1, 10) or ""
-  if event.date == resolvedDate then return os.date("%H:%M", event.timestamp) end
-  return os.date("%a %H:%M", event.timestamp)
-end
-
--- Return the persisted Scheduler represented by one row in the active Overview bank.
-function FugSchedulerRuntime.overviewSchedulerForRow(rowIndex, schedule)
-  schedule = schedule or FugSchedulerRuntime.activeSchedule
-  if not schedule then return nil end
-  local schedulerIndex = (((FugSchedulerRuntime.overviewBank or 1) - 1) * FugSchedulerOverviewRows) + rowIndex
-  return schedule.schedulers[schedulerIndex]
-end
-
--- Refresh the ten counted controls in the current operational Overview bank.
-function FugSchedulerRuntime.refreshOverviewRows()
-  local statuses = FugSchedulerRuntime.globalStatus and FugSchedulerRuntime.globalStatus.schedulers or {}
-  local total = #statuses
-  local bankCount = math.max(1, math.ceil(total / FugSchedulerOverviewRows))
-  FugSchedulerRuntime.overviewBank = math.max(1, math.min(FugSchedulerRuntime.overviewBank or 1, bankCount))
-  local firstIndex = ((FugSchedulerRuntime.overviewBank - 1) * FugSchedulerOverviewRows) + 1
-  local lastIndex = math.min(total, firstIndex + FugSchedulerOverviewRows - 1)
-
-  if Controls.OverviewBankStatus then
-    Controls.OverviewBankStatus.String = total == 0 and "No Schedulers" or string.format(
-      "Page %d of %d (Total %d schedulers)",
-      FugSchedulerRuntime.overviewBank,
-      bankCount,
-      total
-    )
+-- Refresh every stable Scheduler Slot control and show only the active eight-row UI bank.
+function FugSchedulerRuntime.refreshSlotControls()
+  if not FugSchedulerRuntime.activeSchedule then return end
+  local slotCount = FugSchedulerRuntime.slotCount()
+  local bankCount = math.max(1, math.ceil(slotCount / FugSchedulerSlotRowsPerBank))
+  FugSchedulerRuntime.slotBank = math.max(1, math.min(FugSchedulerRuntime.slotBank or 1, bankCount))
+  if Controls.SchedulerSlotsBankStatus then
+    Controls.SchedulerSlotsBankStatus.String = string.format("Page %d of %d (Slots %d-%d)",
+      FugSchedulerRuntime.slotBank, bankCount,
+      ((FugSchedulerRuntime.slotBank - 1) * FugSchedulerSlotRowsPerBank) + 1,
+      math.min(slotCount, FugSchedulerRuntime.slotBank * FugSchedulerSlotRowsPerBank))
   end
-  if Controls.OverviewPreviousBank then
-    Controls.OverviewPreviousBank.IsDisabled = FugSchedulerRuntime.overviewBank <= 1
-  end
-  if Controls.OverviewNextBank then
-    Controls.OverviewNextBank.IsDisabled = FugSchedulerRuntime.overviewBank >= bankCount
-  end
+  if Controls.SchedulerSlotsPreviousBank then Controls.SchedulerSlotsPreviousBank.IsDisabled = FugSchedulerRuntime.slotBank <= 1 end
+  if Controls.SchedulerSlotsNextBank then Controls.SchedulerSlotsNextBank.IsDisabled = FugSchedulerRuntime.slotBank >= bankCount end
 
-  FugSchedulerRuntime.updatingOverviewControls = true
-  for rowIndex = 1, FugSchedulerOverviewRows do
-    local status = statuses[firstIndex + rowIndex - 1]
-    local labelControl = countedControl("OverviewSchedulerLabel", rowIndex)
-    local enabledControl = countedControl("OverviewSchedulerEnabled", rowIndex)
-    local pausedControl = countedControl("OverviewSchedulerPaused", rowIndex)
-    local patternControl = countedControl("OverviewCurrentPattern", rowIndex)
-    local currentControl = countedControl("OverviewCurrentEvent", rowIndex)
-    local nextControl = countedControl("OverviewNextEvent", rowIndex)
-    local nextTimeControl = countedControl("OverviewNextTime", rowIndex)
-    local hasStatus = status ~= nil
-
-    if labelControl then labelControl.String = hasStatus and tostring(status.label or status.id) or "" end
+  local statuses = FugSchedulerRuntime.globalStatus and FugSchedulerRuntime.globalStatus.slots or {}
+  local statusBySlot = {}
+  for _, status in ipairs(statuses) do statusBySlot[status.slot] = status end
+  FugSchedulerRuntime.updatingSlotControls = true
+  for slotNumber = 1, slotCount do
+    local slot, scheduler = FugSchedulerRuntime.slotAssignment(slotNumber)
+    local status = statusBySlot[slotNumber]
+    local visible = math.floor((slotNumber - 1) / FugSchedulerSlotRowsPerBank) + 1 == FugSchedulerRuntime.slotBank
+    local assignedElsewhere = FugSchedulerRuntime.activeSchedule._assignedSlotBySchedulerId
+    local choices = {{Text = "Unassigned", Id = ""}}
+    for _, definition in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
+      local assignedSlot = assignedElsewhere[definition.id]
+      if not assignedSlot or assignedSlot == slotNumber then
+        table.insert(choices, {Text = definition.label, Id = definition.id})
+      end
+    end
+    local numberControl = countedControl("SchedulerSlotNumber", slotNumber)
+    local definitionControl = countedControl("SchedulerSlotDefinition", slotNumber)
+    local idControl = countedControl("SchedulerSlotAssignedId", slotNumber)
+    local enabledControl = countedControl("SchedulerSlotEnabled", slotNumber)
+    local pausedControl = countedControl("SchedulerSlotPaused", slotNumber)
+    local patternControl = countedControl("SchedulerSlotCurrentPattern", slotNumber)
+    local currentControl = countedControl("SchedulerSlotCurrentEvent", slotNumber)
+    local nextControl = countedControl("SchedulerSlotNextEvent", slotNumber)
+    local nextTimeControl = countedControl("SchedulerSlotNextTime", slotNumber)
+    local rowControls = {numberControl, definitionControl, enabledControl, pausedControl, patternControl, currentControl, nextControl}
+    for _, control in ipairs(rowControls) do if control then control.IsInvisible = not visible end end
+    if numberControl then numberControl.String = tostring(slotNumber) end
+    if definitionControl then
+      definitionControl.Choices = choices
+      definitionControl.String = scheduler and FugSchedulerRuntime.encodeChoice(scheduler.label, scheduler.id) or
+        FugSchedulerRuntime.encodeChoice("Unassigned", "")
+    end
+    if idControl then idControl.String = scheduler and scheduler.id or "" end
     if enabledControl then
-      enabledControl.Boolean = hasStatus and status.enabled == true or false
-      enabledControl.IsDisabled = not hasStatus
-      enabledControl.IsInvisible = not hasStatus
+      enabledControl.Boolean = slot and slot.enabled == true or false
+      enabledControl.IsDisabled = scheduler == nil
     end
     if pausedControl then
-      pausedControl.Boolean = hasStatus and status.paused == true or false
-      pausedControl.IsDisabled = not hasStatus
-      pausedControl.IsInvisible = not hasStatus
+      pausedControl.Boolean = slot and slot.paused == true or false
+      pausedControl.IsDisabled = scheduler == nil
     end
-    if patternControl then patternControl.String = hasStatus and FugSchedulerRuntime.overviewPatternText(status) or "" end
-    if currentControl then currentControl.String = hasStatus and FugSchedulerRuntime.overviewEventText(status.currentEvent) or "" end
-    if nextControl then nextControl.String = hasStatus and FugSchedulerRuntime.overviewEventText(status.nextEvent) or "" end
-    if nextTimeControl then
-      nextTimeControl.String = hasStatus and FugSchedulerRuntime.overviewNextTime(
-        status.nextEvent,
-        FugSchedulerRuntime.globalStatus and FugSchedulerRuntime.globalStatus.resolvedFor
-      ) or ""
-    end
+    if patternControl then patternControl.String = scheduler and FugSchedulerRuntime.overviewPatternText(status) or "—" end
+    if currentControl then currentControl.String = scheduler and FugSchedulerRuntime.overviewEventText(status and status.currentEvent) or "—" end
+    if nextControl then nextControl.String = scheduler and FugSchedulerRuntime.overviewEventText(status and status.nextEvent) or "—" end
+    if nextTimeControl then nextTimeControl.String = status and status.nextEvent and os.date("%Y-%m-%d %H:%M", status.nextEvent.timestamp) or "" end
   end
-  FugSchedulerRuntime.updatingOverviewControls = false
+  FugSchedulerRuntime.updatingSlotControls = false
 end
 
--- Refresh every selected-Scheduler view after a selector or Overview-row change.
+-- Refresh the Inspector selector and detailed runtime controls for one slot.
+function FugSchedulerRuntime.refreshInspector()
+  if not FugSchedulerRuntime.activeSchedule or not Controls.InspectorSlotSelect then return end
+  local choices = {}
+  for slotNumber = 1, FugSchedulerRuntime.slotCount() do
+    local _, scheduler = FugSchedulerRuntime.slotAssignment(slotNumber)
+    local label = scheduler and ("Slot " .. slotNumber .. " — " .. scheduler.label) or ("Slot " .. slotNumber .. " — Unassigned")
+    table.insert(choices, {Text = label, Id = slotNumber})
+  end
+  Controls.InspectorSlotSelect.Choices = choices
+  local slotNumber = tonumber(FugSchedulerRuntime.selectedSlotNumber) or 1
+  slotNumber = math.max(1, math.min(FugSchedulerRuntime.slotCount(), slotNumber))
+  FugSchedulerRuntime.selectedSlotNumber = slotNumber
+  local slot, scheduler = FugSchedulerRuntime.slotAssignment(slotNumber)
+  Controls.InspectorSlotSelect.String = FugSchedulerRuntime.encodeChoice(choices[slotNumber].Text, slotNumber)
+  FugSchedulerRuntime.updatingInspectorControls = true
+  if Controls.InspectorSlotEnabled then
+    Controls.InspectorSlotEnabled.Boolean = slot and slot.enabled == true or false
+    Controls.InspectorSlotEnabled.IsDisabled = scheduler == nil
+  end
+  if Controls.InspectorSlotPaused then
+    Controls.InspectorSlotPaused.Boolean = slot and slot.paused == true or false
+    Controls.InspectorSlotPaused.IsDisabled = scheduler == nil
+  end
+  FugSchedulerRuntime.updatingInspectorControls = false
+  local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
+  if scheduler and result then
+    FugSchedulerRuntime.publishResolution(scheduler, result)
+  else
+    for _, name in ipairs({"ResolutionSource", "ResolvedDayPattern", "PreviousEvent", "CurrentEvent",
+      "CurrentEventActions", "NextEvent", "NextEventTime", "Countdown"}) do FugSchedulerRuntime.setText(name, "Unassigned") end
+  end
+end
+
+-- Refresh every selected-definition editor after a library selector change.
 function FugSchedulerRuntime.refreshSelectedSchedulerViews(message)
   local scheduler = FugSchedulerRuntime.selectedScheduler()
-  if Controls.SchedulerSelect and scheduler then
-    Controls.SchedulerSelect.String = FugSchedulerRuntime.encodeChoice(scheduler.label, scheduler.id)
+  if Controls.SchedulerDefinitionSelect and scheduler then
+    Controls.SchedulerDefinitionSelect.String = FugSchedulerRuntime.encodeChoice(scheduler.label, scheduler.id)
   end
   FugSchedulerRuntime.overrideDateBuffer = nil
-  local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
-  if scheduler and result then FugSchedulerRuntime.publishResolution(scheduler, result) end
-  local selectionMessage = message or ("Selected Scheduler " .. tostring(scheduler and scheduler.label or ""))
+  local selectionMessage = message or ("Selected Scheduler Definition " .. tostring(scheduler and scheduler.label or ""))
   FugSchedulerRuntime.refreshSchedulerEditor(selectionMessage)
   FugSchedulerRuntime.refreshDayPatternEditor(selectionMessage)
   FugSchedulerRuntime.refreshWeekPatternEditor(selectionMessage)
   FugSchedulerRuntime.refreshOverrideEditor(selectionMessage)
-  FugSchedulerRuntime.refreshOverviewRows()
+  FugSchedulerRuntime.refreshSlotControls()
 end
 
--- Refresh all controls in the visual Scheduler editor from the selected valid model.
+-- Refresh the Scheduler Definition editor and its slot-assignment helper.
 function FugSchedulerRuntime.refreshSchedulerEditor(message)
   if not FugSchedulerRuntime.activeSchedule then return end
   local scheduler = FugSchedulerRuntime.selectedScheduler()
   if not scheduler then return end
-
   FugSchedulerRuntime.updatingSchedulerEditor = true
-  if Controls.SchedulerLabel then Controls.SchedulerLabel.String = scheduler.label end
-  if Controls.SchedulerEditorEnabled then Controls.SchedulerEditorEnabled.Boolean = scheduler.enabled end
-  if Controls.SchedulerPaused then Controls.SchedulerPaused.Boolean = scheduler.paused end
-
-  if Controls.SchedulerDefaultWeekPattern then
+  if Controls.SchedulerDefinitionLabel then Controls.SchedulerDefinitionLabel.String = scheduler.label end
+  if Controls.SchedulerDefinitionDefaultWeekPattern then
     local choices = {}
-    for _, weekPattern in ipairs(scheduler.weekPatterns) do
-      table.insert(choices, {Text = weekPattern.label, Id = weekPattern.id})
-    end
-    Controls.SchedulerDefaultWeekPattern.Choices = choices
+    for _, weekPattern in ipairs(scheduler.weekPatterns) do table.insert(choices, {Text = weekPattern.label, Id = weekPattern.id}) end
+    Controls.SchedulerDefinitionDefaultWeekPattern.Choices = choices
     local selected = scheduler._weekPatternsById[scheduler.defaultWeekPatternId]
-    Controls.SchedulerDefaultWeekPattern.String = FugSchedulerRuntime.encodeChoice(selected.label, selected.id)
+    Controls.SchedulerDefinitionDefaultWeekPattern.String = FugSchedulerRuntime.encodeChoice(selected.label, selected.id)
   end
-  if Controls.DeleteScheduler then Controls.DeleteScheduler.IsDisabled = #FugSchedulerRuntime.activeSchedule.schedulers <= 1 end
+  local assignedSlot = FugSchedulerRuntime.activeSchedule._assignedSlotBySchedulerId[scheduler.id]
+  if Controls.SchedulerDefinitionAssignedSlot then
+    Controls.SchedulerDefinitionAssignedSlot.String = assignedSlot and ("Scheduler Slot " .. assignedSlot) or "Unassigned"
+  end
+  if Controls.UnassignSchedulerDefinition then Controls.UnassignSchedulerDefinition.IsDisabled = assignedSlot == nil end
+  if Controls.DeleteSchedulerDefinition then
+    Controls.DeleteSchedulerDefinition.IsDisabled = #FugSchedulerRuntime.activeSchedule.schedulers <= 1 or assignedSlot ~= nil
+  end
   FugSchedulerRuntime.updatingSchedulerEditor = false
-
-  if message then FugSchedulerRuntime.setText("SchedulerEditorStatus", message) end
+  if message then FugSchedulerRuntime.setText("SchedulerDefinitionEditorStatus", message) end
 end
 
 -- Return aggregate counts used by load and commit status messages.
@@ -1550,7 +1627,7 @@ function FugSchedulerRuntime.scheduleSummary(schedule, warningCount)
     overrideCount = overrideCount + #scheduler.overrides
   end
   return string.format(
-    "%d Schedulers, %d Day Patterns, %d Week Patterns, %d Overrides; %d warnings",
+    "%d Scheduler Definitions, %d Day Patterns, %d Week Patterns, %d Overrides; %d warnings",
     #schedule.schedulers,
     dayPatternCount,
     weekPatternCount,
@@ -1584,12 +1661,16 @@ function FugSchedulerRuntime.deferInstalledScheduleRefresh(summary)
       FugSchedulerRuntime.setText("ScheduleStatus", "Test date/time error: " .. tostring(parseError))
       return
     end
+    local assigned = {}
+    for _, slot in ipairs(schedule.schedulerSlots) do
+      if slot.schedulerId then table.insert(assigned, schedule._schedulersById[slot.schedulerId]) end
+    end
     local state = {index = 1, statuses = {}, resultsById = {}, hasResolutionError = false}
     local function step()
       if generation ~= FugSchedulerRuntime.deferredRefreshGeneration or schedule ~= FugSchedulerRuntime.activeSchedule then return end
-      local lastIndex = math.min(#schedule.schedulers, state.index + 3)
+      local lastIndex = math.min(#assigned, state.index + 3)
       for index = state.index, lastIndex do
-        local scheduler = schedule.schedulers[index]
+        local scheduler = assigned[index]
         local resolveOk, result = pcall(function()
           local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
           if requested == "" and plan and plan.currentOccurrence then
@@ -1606,13 +1687,13 @@ function FugSchedulerRuntime.deferInstalledScheduleRefresh(summary)
         end
       end
       state.index = lastIndex + 1
-      if state.index <= #schedule.schedulers then
+      if state.index <= #assigned then
         Timer.CallAfter(step, 0.02)
         return
       end
       FugSchedulerRuntime.resolutionResultsById = state.resultsById
       FugSchedulerRuntime.publishGlobalStatus(timestamp, state.statuses, state.hasResolutionError)
-      local selected = FugSchedulerRuntime.selectedScheduler()
+      local _, selected = FugSchedulerRuntime.slotAssignment(FugSchedulerRuntime.selectedSlotNumber or 1)
       local selectedResult = selected and state.resultsById[selected.id] or nil
       if selected and selectedResult then FugSchedulerRuntime.publishResolution(selected, selectedResult) end
       Timer.CallAfter(function()
@@ -1621,6 +1702,8 @@ function FugSchedulerRuntime.deferInstalledScheduleRefresh(summary)
         FugSchedulerRuntime.refreshDayPatternEditor(summary)
         FugSchedulerRuntime.refreshWeekPatternEditor(summary)
         FugSchedulerRuntime.refreshOverrideEditor(summary)
+        FugSchedulerRuntime.refreshSlotControls()
+        FugSchedulerRuntime.refreshInspector()
         FugSchedulerRuntime.refreshStatus()
       end, 0.02)
     end
@@ -1655,13 +1738,15 @@ function FugSchedulerRuntime.installValidatedSchedule(validated, warnings, selec
     FugSchedulerRuntime.refreshDayPatternEditor(summary)
     FugSchedulerRuntime.refreshWeekPatternEditor(summary)
     FugSchedulerRuntime.refreshOverrideEditor(summary)
+    FugSchedulerRuntime.refreshSlotControls()
+    FugSchedulerRuntime.refreshInspector()
     FugSchedulerRuntime.refreshStatus()
   end
 end
 
 -- Apply one editor mutation to a clean candidate, then validate, serialize, persist, and install it.
 function FugSchedulerRuntime.commitScheduleEdit(description, editFunction, selectedId, feedbackControl)
-  feedbackControl = feedbackControl or "SchedulerEditorStatus"
+  feedbackControl = feedbackControl or "SchedulerDefinitionEditorStatus"
   if not FugSchedulerRuntime.activeSchedule then
     FugSchedulerRuntime.setText(feedbackControl, "Edit rejected: no valid Schedule is loaded")
     return false
@@ -1683,7 +1768,7 @@ function FugSchedulerRuntime.commitScheduleEdit(description, editFunction, selec
   if not editOk then return reject("Edit rejected: " .. tostring(editResult)) end
   if editResult == false then return reject("Edit rejected: " .. tostring(editError or description)) end
 
-  candidate.schemaVersion = 1
+  candidate.schemaVersion = 2
   candidate.revision = (tonumber(candidate.revision) or 0) + 1
   local validated, warnings, validationError = FugSchedulerRuntime.validateSchedule(candidate)
   if not validated then return reject("Edit rejected: " .. tostring(validationError)) end
@@ -3033,13 +3118,13 @@ function FugSchedulerRuntime.moveEventAction(offset)
   end, nil, "DayPatternEditorStatus")
 end
 
--- Add a minimal valid Scheduler and select it after the transaction commits.
+-- Add a minimal valid unassigned Scheduler Definition and select it after commit.
 function FugSchedulerRuntime.addScheduler()
   local existing = {}
   for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do existing[scheduler.id] = true end
   local id = FugSchedulerRuntime.generateUuid(existing)
-  return FugSchedulerRuntime.commitScheduleEdit("Scheduler " .. id .. " added", function(candidate)
-    table.insert(candidate.schedulers, FugSchedulerRuntime.newScheduler(id, "New Scheduler"))
+  return FugSchedulerRuntime.commitScheduleEdit("Scheduler Definition " .. id .. " added", function(candidate)
+    table.insert(candidate.schedulers, FugSchedulerRuntime.newScheduler(id, "New Scheduler Definition"))
   end, id)
 end
 
@@ -3057,19 +3142,25 @@ function FugSchedulerRuntime.duplicateScheduler()
     local duplicate = FugSchedulerRuntime.copyPersisted(candidate.schedulers[index])
     duplicate.id = id
     duplicate.label = duplicate.label .. " Copy"
-    duplicate.enabled = false
-    duplicate.paused = false
     table.insert(candidate.schedulers, index + 1, duplicate)
   end, id)
 end
 
--- Delete the selected Scheduler, but never permit removal of the final Scheduler.
+-- Delete an unassigned Scheduler Definition, retaining at least one library entry.
 function FugSchedulerRuntime.deleteScheduler()
   local source = FugSchedulerRuntime.selectedScheduler()
   if not source then return false end
+  local assignedSlot = FugSchedulerRuntime.activeSchedule._assignedSlotBySchedulerId[source.id]
+  if assignedSlot then
+    local message = "Delete rejected: assigned to Scheduler Slot " .. assignedSlot .. "; unassign it first"
+    FugSchedulerRuntime.setText("SchedulerDefinitionEditorStatus", message)
+    FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
+    FugSchedulerRuntime.refreshSchedulerEditor()
+    return false
+  end
   if #FugSchedulerRuntime.activeSchedule.schedulers <= 1 then
-    local message = "Delete rejected: at least one Scheduler is required"
-    FugSchedulerRuntime.setText("SchedulerEditorStatus", message)
+    local message = "Delete rejected: at least one Scheduler Definition is required"
+    FugSchedulerRuntime.setText("SchedulerDefinitionEditorStatus", message)
     FugSchedulerRuntime.logLine(message, LogLevel.ERROR)
     FugSchedulerRuntime.refreshSchedulerEditor()
     return false
@@ -3082,11 +3173,53 @@ function FugSchedulerRuntime.deleteScheduler()
     selectedAfterDelete = FugSchedulerRuntime.activeSchedule.schedulers[nextIndex + 1].id
   end
 
-  return FugSchedulerRuntime.commitScheduleEdit("Scheduler " .. source.id .. " deleted", function(candidate)
+  return FugSchedulerRuntime.commitScheduleEdit("Scheduler Definition " .. source.id .. " deleted", function(candidate)
     local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
     if not index then return false, "selected Scheduler no longer exists" end
     table.remove(candidate.schedulers, index)
   end, selectedAfterDelete)
+end
+
+-- Assign one Scheduler Definition to a stable slot, or clear the slot when definitionId is empty.
+function FugSchedulerRuntime.assignSlot(slotNumber, definitionId)
+  return FugSchedulerRuntime.commitScheduleEdit("Scheduler Slot " .. slotNumber .. " assignment updated", function(candidate)
+    local slot = candidate.schedulerSlots[slotNumber]
+    if not slot then return false, "Scheduler Slot no longer exists" end
+    definitionId = definitionId ~= "" and definitionId or nil
+    if definitionId then
+      if not FugSchedulerRuntime.itemById(candidate.schedulers, definitionId) then
+        return false, "selected Scheduler Definition no longer exists"
+      end
+      for otherSlotNumber, otherSlot in ipairs(candidate.schedulerSlots) do
+        if otherSlotNumber ~= slotNumber and otherSlot.schedulerId == definitionId then
+          return false, "Scheduler Definition is already assigned to Slot " .. otherSlotNumber
+        end
+      end
+    end
+    slot.schedulerId = definitionId
+    slot.enabled = false
+    slot.paused = false
+  end, FugSchedulerRuntime.selectedSchedulerId, "SchedulerDefinitionEditorStatus")
+end
+
+-- Unassign the selected Scheduler Definition from its current slot.
+function FugSchedulerRuntime.unassignSelectedDefinition()
+  local scheduler = FugSchedulerRuntime.selectedScheduler()
+  local slotNumber = scheduler and FugSchedulerRuntime.activeSchedule._assignedSlotBySchedulerId[scheduler.id] or nil
+  if not slotNumber then
+    FugSchedulerRuntime.refreshSchedulerEditor("Selected Scheduler Definition is already unassigned")
+    return false
+  end
+  return FugSchedulerRuntime.assignSlot(slotNumber, nil)
+end
+
+-- Change one assigned slot's immediate enabled or paused operational state.
+function FugSchedulerRuntime.setSlotState(slotNumber, field, value)
+  return FugSchedulerRuntime.commitScheduleEdit("Scheduler Slot " .. slotNumber .. " " .. field .. " state updated", function(candidate)
+    local slot = candidate.schedulerSlots[slotNumber]
+    if not slot or not slot.schedulerId then return false, "Scheduler Slot is unassigned" end
+    slot[field] = value == true
+  end, FugSchedulerRuntime.selectedSchedulerId, "SchedulerDefinitionEditorStatus")
 end
 
 -- Return whether the plugin-wide automatic execution safety control is armed.
@@ -3272,14 +3405,14 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
   local scheduler = plan.scheduler
   local now = os.time()
   local automaticEnabled = FugSchedulerRuntime.automaticExecutionEnabled()
-  local allowed = automaticEnabled and scheduler.enabled and not scheduler.paused
+  local allowed = automaticEnabled and scheduler._enabled and not scheduler._paused
 
   if not plan.initialized then
     FugSchedulerRuntime.positionPlanCursor(plan, now)
     plan.initialized = true
     plan.lastObservedTimestamp = now
-    plan.lastEnabled = scheduler.enabled
-    plan.lastPaused = scheduler.paused
+    plan.lastEnabled = scheduler._enabled
+    plan.lastPaused = scheduler._paused
     plan.lastAutomaticEnabled = automaticEnabled
     plan.activeOccurrence = plan.currentOccurrence
     plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
@@ -3326,21 +3459,21 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
     )
   else
     local crossed = FugSchedulerRuntime.advancePlanCursor(plan, plan.lastObservedTimestamp, now)
-    if not automaticEnabled or not scheduler.enabled then
+    if not automaticEnabled or not scheduler._enabled then
       plan.activeOccurrence = plan.currentOccurrence
       plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
-      plan.lastTransitionReason = not scheduler.enabled and "Scheduler disabled" or "Automatic execution disabled"
+      plan.lastTransitionReason = not scheduler._enabled and "Scheduler disabled" or "Master Enable is off"
       FugSchedulerRuntime.clearRepeats(plan)
-    elseif scheduler.paused then
+    elseif scheduler._paused then
       plan.activeOccurrence = plan.currentOccurrence
       plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
       plan.lastTransitionReason = "Scheduler paused"
       FugSchedulerRuntime.clearRepeats(plan)
     elseif plan.lastAutomaticEnabled == false and automaticEnabled then
       FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "startup", now)
-    elseif plan.lastEnabled == false and scheduler.enabled then
+    elseif plan.lastEnabled == false and scheduler._enabled then
       FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "enabled", now)
-    elseif plan.lastPaused == true and not scheduler.paused then
+    elseif plan.lastPaused == true and not scheduler._paused then
       FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnResume", "resume", now)
     else
       for _, occurrence in ipairs(crossed) do
@@ -3355,8 +3488,8 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
   end
 
   plan.lastObservedTimestamp = now
-  plan.lastEnabled = scheduler.enabled
-  plan.lastPaused = scheduler.paused
+  plan.lastEnabled = scheduler._enabled
+  plan.lastPaused = scheduler._paused
   plan.lastAutomaticEnabled = automaticEnabled
 end
 
@@ -3397,8 +3530,8 @@ function FugSchedulerRuntime.executionPoll()
 end
 
 -- Start one retained timer with a deliberate first-phase offset, then poll every second.
-function FugSchedulerRuntime.startPlanTimer(plan, schedulerIndex, schedulerCount)
-  local phase = 0.05 + (((schedulerIndex - 1) / math.max(1, schedulerCount)) * 0.90)
+function FugSchedulerRuntime.startPlanTimer(plan)
+  local phase = 0.05 + (((plan.slotNumber - 1) / math.max(1, FugSchedulerRuntime.slotCount())) * 0.90)
   plan.timerPhaseSeconds = phase
   plan.timerPhasePending = true
   plan.timer = Timer.New()
@@ -3436,15 +3569,15 @@ function FugSchedulerRuntime.reconcileRuntimePlan(plan, previousPlan, now)
   if not previousPlan.initialized then return end
 
   local scheduler = plan.scheduler
-  local allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler.enabled and not scheduler.paused
+  local allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler._enabled and not scheduler._paused
   local previousKey = FugSchedulerRuntime.occurrenceKey(previousPlan.currentOccurrence)
   local currentKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
   if not allowed then
     FugSchedulerRuntime.clearRepeats(plan)
-    plan.lastTransitionReason = scheduler.paused and "Scheduler paused" or "Execution blocked after plan rebuild"
-  elseif previousPlan.scheduler.enabled == false and scheduler.enabled then
+    plan.lastTransitionReason = scheduler._paused and "Scheduler paused" or "Execution blocked after plan rebuild"
+  elseif previousPlan.scheduler._enabled == false and scheduler._enabled then
     FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "enabled", now)
-  elseif previousPlan.scheduler.paused == true and not scheduler.paused then
+  elseif previousPlan.scheduler._paused == true and not scheduler._paused then
     FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnResume", "resume", now)
   elseif previousKey ~= currentKey then
     FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, nil, "schedule change", now)
@@ -3454,16 +3587,17 @@ function FugSchedulerRuntime.reconcileRuntimePlan(plan, previousPlan, now)
   end
 end
 
--- Reuse unchanged plans and replace only changed, added, or deleted Scheduler plans.
+-- Reuse unchanged plans and create timers only for assigned runnable Scheduler Slots.
 function FugSchedulerRuntime.synchronizeRuntimePlans(schedule)
-  local existing = FugSchedulerRuntime.runtimePlans
-  local nextPlans = {}
+  local existing, nextPlans, assigned = FugSchedulerRuntime.runtimePlans, {}, {}
   local now = os.time()
-  local schedulerCount = #schedule.schedulers
-
-  for schedulerIndex, scheduler in ipairs(schedule.schedulers) do
+  for _, slot in ipairs(schedule.schedulerSlots) do
+    if slot.schedulerId then table.insert(assigned, schedule._schedulersById[slot.schedulerId]) end
+  end
+  for schedulerIndex, scheduler in ipairs(assigned) do
     local previousPlan = existing[scheduler.id]
-    if previousPlan and FugSchedulerRuntime.persistedEqual(previousPlan.scheduler, scheduler) then
+    if previousPlan and previousPlan.slotNumber == scheduler._slotNumber and
+        FugSchedulerRuntime.persistedEqual(previousPlan.scheduler, scheduler) then
       previousPlan.scheduler = scheduler
       previousPlan.configurationRevision = schedule.revision
       nextPlans[scheduler.id] = previousPlan
@@ -3473,10 +3607,9 @@ function FugSchedulerRuntime.synchronizeRuntimePlans(schedule)
       FugSchedulerRuntime.runtimePlans = nextPlans
       FugSchedulerRuntime.reconcileRuntimePlan(plan, previousPlan, now)
       if previousPlan then FugSchedulerRuntime.stopRuntimePlan(previousPlan) end
-      FugSchedulerRuntime.startPlanTimer(plan, schedulerIndex, schedulerCount)
+      FugSchedulerRuntime.startPlanTimer(plan)
     end
   end
-
   for schedulerId, plan in pairs(existing) do
     if not nextPlans[schedulerId] then FugSchedulerRuntime.stopRuntimePlan(plan) end
   end
@@ -3535,10 +3668,11 @@ end
 function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveError)
   if resolveError then
     return {
-      id = scheduler.id,
+      slot = scheduler._slotNumber,
+      schedulerId = scheduler.id,
       label = scheduler.label,
-      enabled = scheduler.enabled,
-      paused = scheduler.paused,
+      enabled = scheduler._enabled,
+      paused = scheduler._paused,
       health = {state = "Error", message = tostring(resolveError)}
     }
   end
@@ -3551,10 +3685,11 @@ function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveErro
   local averagePollDuration = metrics.pollCount and metrics.pollCount > 0 and
     (metrics.totalPollDuration / metrics.pollCount) or 0
   return {
-    id = scheduler.id,
+    slot = scheduler._slotNumber,
+    schedulerId = scheduler.id,
     label = scheduler.label,
-    enabled = scheduler.enabled,
-    paused = scheduler.paused,
+    enabled = scheduler._enabled,
+    paused = scheduler._paused,
     health = {state = "OK", message = ""},
     resolution = {
       date = result.targetDate,
@@ -3566,7 +3701,7 @@ function FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, resolveErro
     },
     resolvedDayPattern = FugSchedulerRuntime.dayPatternStatus(result.resolvedDayPattern),
     execution = {
-      allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler.enabled and not scheduler.paused,
+      allowed = FugSchedulerRuntime.automaticExecutionEnabled() and scheduler._enabled and not scheduler._paused,
       initialized = executionState and executionState.initialized or false,
       activeOccurrence = FugSchedulerRuntime.eventStatus(executionState and executionState.activeOccurrence or nil),
       activeRepeatCount = repeatCount,
@@ -3627,6 +3762,7 @@ function FugSchedulerRuntime.publishGlobalStatus(timestamp, schedulerStatuses, h
     performance.averagePollDurationSeconds = totalPollDuration / performance.pollCount
   end
 
+  FugSchedulerRuntime.markJsonArray(schedulerStatuses)
   local status = {
     schemaVersion = 1,
     generatedAt = os.date("%Y-%m-%d %H:%M:%S"),
@@ -3640,14 +3776,15 @@ function FugSchedulerRuntime.publishGlobalStatus(timestamp, schedulerStatuses, h
     },
     automaticExecutionEnabled = Controls.AutomaticExecutionEnabled and Controls.AutomaticExecutionEnabled.Boolean == true or false,
     performance = performance,
-    schedulers = schedulerStatuses
+    slots = schedulerStatuses
   }
 
   FugSchedulerStatus = status
   FugSchedulerRuntime.globalStatus = status
-  FugSchedulerRuntime.setText("GlobalSchedulerStatus", FugSchedulerRuntime.encodeJson(status))
-  FugSchedulerRuntime.setText("SchedulerCount", tostring(#schedulerStatuses))
-  FugSchedulerRuntime.refreshOverviewRows()
+  FugSchedulerRuntime.setText("GlobalSchedulerSlotStatus", FugSchedulerRuntime.encodeJson(status))
+  FugSchedulerRuntime.setText("AssignedSchedulerSlotCount", tostring(#schedulerStatuses))
+  FugSchedulerRuntime.refreshSlotControls()
+  FugSchedulerRuntime.refreshInspector()
 end
 
 -- Publish live cached plan state after an execution/lifecycle transition without detached resolution.
@@ -3657,9 +3794,10 @@ function FugSchedulerRuntime.publishLiveRuntimeStatus()
   local schedulerStatuses = {}
   local selectedScheduler, selectedResult = FugSchedulerRuntime.selectedScheduler(), nil
   local resolvedTimestamp = os.time()
-  for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
-    local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
-    if plan then
+  for _, slot in ipairs(FugSchedulerRuntime.activeSchedule.schedulerSlots) do
+    local scheduler = slot.schedulerId and FugSchedulerRuntime.activeSchedule._schedulersById[slot.schedulerId] or nil
+    local plan = scheduler and FugSchedulerRuntime.runtimePlans[scheduler.id] or nil
+    if scheduler and plan then
       local timestamp = plan.lastObservedTimestamp or resolvedTimestamp
       local result = FugSchedulerRuntime.planResolutionResult(plan, timestamp)
       table.insert(schedulerStatuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, nil))
@@ -3672,8 +3810,6 @@ end
 
 -- Publish the selected Scheduler's resolver result to human-readable status controls.
 function FugSchedulerRuntime.publishResolution(scheduler, result)
-  FugSchedulerRuntime.selectedSchedulerId = scheduler.id
-  if Controls.SchedulerEnabled then Controls.SchedulerEnabled.Boolean = scheduler.enabled end
   FugSchedulerRuntime.setText("ResolutionSource", result.resolutionSource or "None")
   FugSchedulerRuntime.setText("ResolvedDayPattern", result.resolvedDayPattern and result.resolvedDayPattern.label or "None")
   FugSchedulerRuntime.setText("PreviousEvent", FugSchedulerRuntime.formatEvent(result.previous))
@@ -3703,7 +3839,9 @@ function FugSchedulerRuntime.resolveSelectedTime()
   local resultsById = {}
   local schedulerStatuses = {}
   local hasResolutionError = false
-  for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
+  for _, slot in ipairs(FugSchedulerRuntime.activeSchedule.schedulerSlots) do
+    local scheduler = slot.schedulerId and FugSchedulerRuntime.activeSchedule._schedulersById[slot.schedulerId] or nil
+    if scheduler then
     local resolveOk, result = pcall(function()
       local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
       if requested == "" and plan and plan.currentOccurrence then
@@ -3723,12 +3861,13 @@ function FugSchedulerRuntime.resolveSelectedTime()
         {schedulerLabel = scheduler.label, schedulerId = scheduler.id}
       )
     end
+    end
   end
 
   FugSchedulerRuntime.resolutionResultsById = resultsById
   FugSchedulerRuntime.publishGlobalStatus(timestamp, schedulerStatuses, hasResolutionError)
 
-  local selected = FugSchedulerRuntime.selectedScheduler()
+  local _, selected = FugSchedulerRuntime.slotAssignment(FugSchedulerRuntime.selectedSlotNumber or 1)
   local selectedResult = selected and resultsById[selected.id] or nil
   if selected and selectedResult then
     FugSchedulerRuntime.publishResolution(selected, selectedResult)
@@ -3778,18 +3917,20 @@ function FugSchedulerRuntime.reloadSchedule()
   return true
 end
 
--- Refresh the aggregate plugin state and report whether automatic execution is armed.
+-- Refresh aggregate state and report whether the global Master Enable is on.
 function FugSchedulerRuntime.refreshStatus()
   local schedulerCount, enabledCount = 0, 0
   if FugSchedulerRuntime.activeSchedule then
-    schedulerCount = #FugSchedulerRuntime.activeSchedule.schedulers
-    for _, scheduler in ipairs(FugSchedulerRuntime.activeSchedule.schedulers) do
-      if scheduler.enabled then enabledCount = enabledCount + 1 end
+    for _, slot in ipairs(FugSchedulerRuntime.activeSchedule.schedulerSlots) do
+      if slot.schedulerId then
+        schedulerCount = schedulerCount + 1
+        if slot.enabled then enabledCount = enabledCount + 1 end
+      end
     end
   end
   local executionState = FugSchedulerRuntime.automaticExecutionEnabled() and "ARMED" or "OFF"
   FugSchedulerRuntime.setText("Status", string.format(
-    "Scheduler ready; %d/%d Schedulers enabled; automatic execution %s",
+    "Scheduler ready; %d/%d assigned Slots enabled; Master Enable %s",
     enabledCount,
     schedulerCount,
     executionState
@@ -3851,9 +3992,9 @@ function FugSchedulerRuntime.attachHandlers()
     Controls.AutomaticExecutionEnabled.EventHandler = function(control)
       if FugSchedulerRuntime.updatingExecutionControl then return end
       if control.Boolean then
-        FugSchedulerRuntime.setExecutionMessage("Automatic execution armed; staggered Scheduler timers are initializing live state")
+        FugSchedulerRuntime.setExecutionMessage("Master Enable is on; staggered Scheduler timers are initializing live state")
       else
-        FugSchedulerRuntime.setExecutionMessage("Automatic execution disabled; callbacks and repeats are blocked")
+        FugSchedulerRuntime.setExecutionMessage("Master Enable is off; callbacks and repeats are blocked")
         for _, plan in pairs(FugSchedulerRuntime.runtimePlans) do FugSchedulerRuntime.clearRepeats(plan) end
       end
       FugSchedulerRuntime.refreshStatus()
@@ -3870,138 +4011,110 @@ function FugSchedulerRuntime.attachHandlers()
     end
   end
 
-  if Controls.SchedulerSelect then
-    Controls.SchedulerSelect.EventHandler = function(control)
+  if Controls.SchedulerDefinitionSelect then
+    Controls.SchedulerDefinitionSelect.EventHandler = function(control)
       FugSchedulerRuntime.selectedSchedulerId = FugSchedulerRuntime.choiceId(control.String)
       FugSchedulerRuntime.refreshSelectedSchedulerViews()
     end
   end
-
-  if Controls.OverviewPreviousBank then
-    Controls.OverviewPreviousBank.EventHandler = function(control)
+  if Controls.InspectorSlotSelect then
+    Controls.InspectorSlotSelect.EventHandler = function(control)
+      FugSchedulerRuntime.selectedSlotNumber = tonumber(FugSchedulerRuntime.choiceId(control.String)) or 1
+      FugSchedulerRuntime.refreshInspector()
+    end
+  end
+  if Controls.SchedulerSlotsPreviousBank then
+    Controls.SchedulerSlotsPreviousBank.EventHandler = function(control)
       if not control.Boolean then return end
-      FugSchedulerRuntime.overviewBank = math.max(1, (FugSchedulerRuntime.overviewBank or 1) - 1)
-      FugSchedulerRuntime.refreshOverviewRows()
+      FugSchedulerRuntime.slotBank = math.max(1, (FugSchedulerRuntime.slotBank or 1) - 1)
+      FugSchedulerRuntime.refreshSlotControls()
+    end
+  end
+  if Controls.SchedulerSlotsNextBank then
+    Controls.SchedulerSlotsNextBank.EventHandler = function(control)
+      if not control.Boolean then return end
+      FugSchedulerRuntime.slotBank = (FugSchedulerRuntime.slotBank or 1) + 1
+      FugSchedulerRuntime.refreshSlotControls()
     end
   end
 
-  if Controls.OverviewNextBank then
-    Controls.OverviewNextBank.EventHandler = function(control)
-      if not control.Boolean then return end
-      FugSchedulerRuntime.overviewBank = (FugSchedulerRuntime.overviewBank or 1) + 1
-      FugSchedulerRuntime.refreshOverviewRows()
+  for slotNumber = 1, FugSchedulerRuntime.slotCount() do
+    local capturedSlotNumber = slotNumber
+    local definitionControl = countedControl("SchedulerSlotDefinition", capturedSlotNumber)
+    if definitionControl then
+      definitionControl.EventHandler = function(control)
+        if FugSchedulerRuntime.updatingSlotControls then return end
+        FugSchedulerRuntime.assignSlot(capturedSlotNumber, FugSchedulerRuntime.choiceId(control.String))
+      end
     end
-  end
-
-  for rowIndex = 1, FugSchedulerOverviewRows do
-    local capturedRowIndex = rowIndex
-    local enabledControl = countedControl("OverviewSchedulerEnabled", capturedRowIndex)
+    local enabledControl = countedControl("SchedulerSlotEnabled", capturedSlotNumber)
     if enabledControl then
       enabledControl.EventHandler = function(control)
-        if FugSchedulerRuntime.updatingOverviewControls then return end
-        local scheduler = FugSchedulerRuntime.overviewSchedulerForRow(capturedRowIndex)
-        if not scheduler then
-          FugSchedulerRuntime.refreshOverviewRows()
-          return
-        end
-        local schedulerId, schedulerLabel, enabled = scheduler.id, scheduler.label, control.Boolean
-        local committed = FugSchedulerRuntime.commitScheduleEdit(
-          "Overview Scheduler " .. schedulerLabel .. " enabled state updated",
-          function(candidate)
-            local candidateScheduler = FugSchedulerRuntime.itemById(candidate.schedulers, schedulerId)
-            if not candidateScheduler then return false, "Overview Scheduler no longer exists" end
-            candidateScheduler.enabled = enabled
-          end
-        )
-        if not committed then FugSchedulerRuntime.refreshOverviewRows() end
+        if FugSchedulerRuntime.updatingSlotControls then return end
+        FugSchedulerRuntime.setSlotState(capturedSlotNumber, "enabled", control.Boolean)
       end
     end
-
-    local pausedControl = countedControl("OverviewSchedulerPaused", capturedRowIndex)
+    local pausedControl = countedControl("SchedulerSlotPaused", capturedSlotNumber)
     if pausedControl then
       pausedControl.EventHandler = function(control)
-        if FugSchedulerRuntime.updatingOverviewControls then return end
-        local scheduler = FugSchedulerRuntime.overviewSchedulerForRow(capturedRowIndex)
-        if not scheduler then
-          FugSchedulerRuntime.refreshOverviewRows()
-          return
-        end
-        local schedulerId, schedulerLabel, paused = scheduler.id, scheduler.label, control.Boolean
-        local committed = FugSchedulerRuntime.commitScheduleEdit(
-          "Overview Scheduler " .. schedulerLabel .. " paused state updated",
-          function(candidate)
-            local candidateScheduler = FugSchedulerRuntime.itemById(candidate.schedulers, schedulerId)
-            if not candidateScheduler then return false, "Overview Scheduler no longer exists" end
-            candidateScheduler.paused = paused
-          end
-        )
-        if not committed then FugSchedulerRuntime.refreshOverviewRows() end
+        if FugSchedulerRuntime.updatingSlotControls then return end
+        FugSchedulerRuntime.setSlotState(capturedSlotNumber, "paused", control.Boolean)
       end
     end
   end
 
-  if Controls.SchedulerLabel then
-    Controls.SchedulerLabel.EventHandler = function(control)
+  if Controls.InspectorSlotEnabled then
+    Controls.InspectorSlotEnabled.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingInspectorControls then return end
+      FugSchedulerRuntime.setSlotState(FugSchedulerRuntime.selectedSlotNumber, "enabled", control.Boolean)
+    end
+  end
+  if Controls.InspectorSlotPaused then
+    Controls.InspectorSlotPaused.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingInspectorControls then return end
+      FugSchedulerRuntime.setSlotState(FugSchedulerRuntime.selectedSlotNumber, "paused", control.Boolean)
+    end
+  end
+
+  if Controls.SchedulerDefinitionLabel then
+    Controls.SchedulerDefinitionLabel.EventHandler = function(control)
       if FugSchedulerRuntime.updatingSchedulerEditor then return end
       local label = control.String or ""
-      FugSchedulerRuntime.commitScheduleEdit("Scheduler label updated", function(candidate)
+      FugSchedulerRuntime.commitScheduleEdit("Scheduler Definition label updated", function(candidate)
         local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
-        if not index then return false, "selected Scheduler no longer exists" end
+        if not index then return false, "selected Scheduler Definition no longer exists" end
         candidate.schedulers[index].label = label
       end)
     end
   end
-
-  if Controls.SchedulerEditorEnabled then
-    Controls.SchedulerEditorEnabled.EventHandler = function(control)
-      if FugSchedulerRuntime.updatingSchedulerEditor then return end
-      local enabled = control.Boolean
-      FugSchedulerRuntime.commitScheduleEdit("Scheduler enabled state updated", function(candidate)
-        local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
-        if not index then return false, "selected Scheduler no longer exists" end
-        candidate.schedulers[index].enabled = enabled
-      end)
-    end
-  end
-
-  if Controls.SchedulerPaused then
-    Controls.SchedulerPaused.EventHandler = function(control)
-      if FugSchedulerRuntime.updatingSchedulerEditor then return end
-      local paused = control.Boolean
-      FugSchedulerRuntime.commitScheduleEdit("Scheduler paused state updated", function(candidate)
-        local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
-        if not index then return false, "selected Scheduler no longer exists" end
-        candidate.schedulers[index].paused = paused
-      end)
-    end
-  end
-
-  if Controls.SchedulerDefaultWeekPattern then
-    Controls.SchedulerDefaultWeekPattern.EventHandler = function(control)
+  if Controls.SchedulerDefinitionDefaultWeekPattern then
+    Controls.SchedulerDefinitionDefaultWeekPattern.EventHandler = function(control)
       if FugSchedulerRuntime.updatingSchedulerEditor then return end
       local weekPatternId = FugSchedulerRuntime.choiceId(control.String) or ""
       FugSchedulerRuntime.commitScheduleEdit("Default Week Pattern updated", function(candidate)
         local index = FugSchedulerRuntime.selectedSchedulerIndex(candidate)
-        if not index then return false, "selected Scheduler no longer exists" end
+        if not index then return false, "selected Scheduler Definition no longer exists" end
         candidate.schedulers[index].defaultWeekPatternId = weekPatternId
       end)
     end
   end
-
-  if Controls.AddScheduler then
-    Controls.AddScheduler.EventHandler = function(control)
+  if Controls.UnassignSchedulerDefinition then
+    Controls.UnassignSchedulerDefinition.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.unassignSelectedDefinition() end
+    end
+  end
+  if Controls.AddSchedulerDefinition then
+    Controls.AddSchedulerDefinition.EventHandler = function(control)
       if control.Boolean then FugSchedulerRuntime.addScheduler() end
     end
   end
-
-  if Controls.DuplicateScheduler then
-    Controls.DuplicateScheduler.EventHandler = function(control)
+  if Controls.DuplicateSchedulerDefinition then
+    Controls.DuplicateSchedulerDefinition.EventHandler = function(control)
       if control.Boolean then FugSchedulerRuntime.duplicateScheduler() end
     end
   end
-
-  if Controls.DeleteScheduler then
-    Controls.DeleteScheduler.EventHandler = function(control)
+  if Controls.DeleteSchedulerDefinition then
+    Controls.DeleteSchedulerDefinition.EventHandler = function(control)
       if control.Boolean then FugSchedulerRuntime.deleteScheduler() end
     end
   end
@@ -4520,15 +4633,16 @@ end
 
 -- Initialize sample persistence, registries, status, and the first resolution result.
 function FugSchedulerRuntime.initialize()
-  -- Master Execution is deliberately fail-safe and must be re-armed after every runtime start.
+  -- Master Enable is deliberately fail-safe and must be turned on after every runtime start.
   if Controls.AutomaticExecutionEnabled then
     FugSchedulerRuntime.updatingExecutionControl = true
     Controls.AutomaticExecutionEnabled.Boolean = false
     FugSchedulerRuntime.updatingExecutionControl = false
   end
   if Controls.ActionSelect then Controls.ActionSelect.Choices = {} end
-  if Controls.SchedulerSelect then Controls.SchedulerSelect.Choices = {} end
-  if Controls.SchedulerDefaultWeekPattern then Controls.SchedulerDefaultWeekPattern.Choices = {} end
+  if Controls.SchedulerDefinitionSelect then Controls.SchedulerDefinitionSelect.Choices = {} end
+  if Controls.SchedulerDefinitionDefaultWeekPattern then Controls.SchedulerDefinitionDefaultWeekPattern.Choices = {} end
+  if Controls.InspectorSlotSelect then Controls.InspectorSlotSelect.Choices = {} end
   if Controls.DayPatternSelect then Controls.DayPatternSelect.Choices = {} end
   if Controls.EventSelect then Controls.EventSelect.Choices = {} end
   if Controls.EventActionSelect then Controls.EventActionSelect.Choices = {} end
@@ -4545,20 +4659,20 @@ function FugSchedulerRuntime.initialize()
     if Controls[weekday.controlName] then Controls[weekday.controlName].Choices = {} end
   end
   if Controls.ScheduleDataViewer then Controls.ScheduleDataViewer.Choices = {} end
-  if Controls.GlobalSchedulerStatusViewer then Controls.GlobalSchedulerStatusViewer.Choices = {} end
+  if Controls.GlobalSchedulerSlotStatusViewer then Controls.GlobalSchedulerSlotStatusViewer.Choices = {} end
   if Controls.DiagnosticLogViewer then Controls.DiagnosticLogViewer.Choices = {} end
   FugSchedulerRuntime.setText("RegistryStatus", "Checking ActionSource evaluator support")
   FugSchedulerRuntime.setText("RegisteredActionCount", "0")
-  FugSchedulerRuntime.setText("SchedulerCount", "0")
-  FugSchedulerRuntime.setText("GlobalSchedulerStatus", "{}")
+  FugSchedulerRuntime.setText("AssignedSchedulerSlotCount", "0")
+  FugSchedulerRuntime.setText("GlobalSchedulerSlotStatus", "{}")
   FugSchedulerRuntime.setText(
     "ExecutionStatus",
     FugSchedulerRuntime.automaticExecutionEnabled() and
-      "Automatic execution is armed; waiting for live initialization" or
-      "Automatic execution is disabled"
+      "Master Enable is on; waiting for live initialization" or
+      "Master Enable is off"
   )
   FugSchedulerRuntime.setText("ScheduleStatus", "Checking persisted ScheduleData")
-  FugSchedulerRuntime.setText("SchedulerEditorStatus", "Waiting for a valid Scheduler configuration")
+  FugSchedulerRuntime.setText("SchedulerDefinitionEditorStatus", "Waiting for a valid Scheduler Definition configuration")
   FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
   FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
   FugSchedulerRuntime.setText("OverrideEditorStatus", "Waiting for a valid Override configuration")
