@@ -213,9 +213,9 @@ function GetControlLayout(props)
       PrettyName = "Day Patterns~Selected Event Action",
       FontSize = 9
     })
-    ui:label("Attach Action", ui:rect(608, 194, 82, 18), {Color = ui:color("mutedText"), FontSize = 9})
+    ui:label("Attached Action", ui:rect(608, 194, 82, 18), {Color = ui:color("mutedText"), FontSize = 9})
     ui:control("EventActionPicker", "ComboBox", ui:rect(692, 192, 184, 24), {
-      PrettyName = "Day Patterns~Action to Attach"
+      PrettyName = "Day Patterns~Attached Action"
     })
     ui:button("EventActionEnabled", ui:rect(608, 224, 82, 24), {
       ButtonStyle = "Toggle", Legend = "Enabled", Color = ui:color("accent")

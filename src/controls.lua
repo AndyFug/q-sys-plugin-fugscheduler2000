@@ -50,7 +50,7 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "DeleteScheduler", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "SchedulerEditorStatus", ControlType = "Text", Count = 1})
 
-  -- Build Day Patterns by selecting nested Events and attaching registered Actions.
+  -- Build Day Patterns by selecting nested Events and editing their ordered Event Actions.
   table.insert(ctrls, {Name = "DayPatternSelect", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "DayPatternLabel", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "DayPatternSummary", ControlType = "Text", Count = 1})

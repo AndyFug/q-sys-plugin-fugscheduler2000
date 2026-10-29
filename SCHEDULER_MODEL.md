@@ -42,7 +42,7 @@ Event Action execution options are persisted on each assignment:
 - `fireOnResume` — restore the Action when a paused Scheduler resumes while its Event is current
 - `repeatSeconds` — optional interval while the Event remains current
 
-New assignments copy any validated defaults supplied by the registered Action. The copied values then belong to the Event Action and do not change when the Action Registry is reloaded. When no defaults are supplied, assignments are enabled, stateful, do not restore automatically, and do not repeat.
+New Event Action rows use the first registered Action, copy its validated execution defaults, and are always created disabled so the operator can review them before enabling execution. The copied option values then belong to the Event Action and do not change when the Action Registry is reloaded. Changing the attached Action later replaces only the stable Action ID; it preserves the row's current execution options and order. When no defaults are supplied, new rows are disabled, stateful, do not restore automatically, and do not repeat.
 
 ### Event
 

@@ -257,8 +257,8 @@ Use the vendored FugUi framework and separate operator status from configuration
 
 - select/add/rename/copy/delete Day Pattern
 - edit timed Events
-- edit each Event's ordered Event Actions
-- configure one-shot, startup fire, and repeat behavior at the appropriate Event Action level
+- add disabled Event Action rows from the first registered Action, then edit the attached Action in place
+- configure enabled state, one-shot, startup/resume fire, and repeat behavior at the Event Action level
 - row ordering and validation feedback
 
 ### Week Patterns

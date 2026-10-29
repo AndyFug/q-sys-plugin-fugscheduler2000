@@ -142,6 +142,29 @@ QRC deployment findings before the required design reload:
 - The test harness completed 26 primary assertions plus four follow-up assertions, restored the original `ScheduleData` byte-for-byte, and left the plugin at script status `OK` with zero errors.
 - Scrollable line-based ListBox mirrors were validated for `ScheduleData`, `GlobalSchedulerStatus`, and `DiagnosticLog` without changing the underlying Text controls.
 
+### Event Action editor follow-up
+
+Implemented in source after the original Day Patterns acceptance run:
+
+- [x] Changed `EventActionPicker` from an attachment-creation picker to the selected row's **Attached Action** editor.
+- [x] Changed **Add Action** to create and select a row using the first registered Action while forcing the new assignment disabled.
+- [x] Preserved the selected row's execution options and order when its attached Action changes.
+- [x] Removed implicit first-row selection so Event Action editors remain disabled until a row is explicitly selected or newly added.
+- [x] Confirm in Designer/QRC that an existing Event Action can change its attached Action without changing its options or order.
+- [x] Confirm an Event with no Event Actions enables only **Add Action**, with the empty list and all row editors disabled.
+- [x] Confirm a new Event Action uses the first registered Action, is selected automatically, and remains disabled until explicitly enabled.
+- [x] Extended `tests/qrc/validate_execution.py` with repeatable attached-Action reassignment and disabled-by-default Add Action coverage.
+- [x] Ran the updated QRC acceptance test after deploying the new plugin/runtime build: 70 assertions passed with restoration confirmed.
+
+QRC findings:
+
+- With an Event Action list present but no selected row, the Attached Action and row editor controls remained disabled while **Add Action** remained available.
+- A focused empty-Event QRC check confirmed the empty Event Action list and every row editor were disabled while **Add Action** alone remained enabled; the original `ScheduleData` was restored byte-for-byte and momentary controls were left idle.
+- Explicit row selection populated the Attached Action editor with the selected stable Action ID.
+- Reassigning the Attached Action preserved enabled, mode, startup/resume, repeat, ordering, and neighboring Action data.
+- **Add Action** created and selected a third row using the first registered Action while forcing `enabled = false`; deleting it restored the temporary fixture exactly.
+- The complete execution acceptance run restored the original `ScheduleData`, test time, logging preferences, Action Provider source, and Action source, left automatic execution disabled, and finished with all scripts `OK` and zero errors.
+
 ## Week Pattern editor implementation
 
 Implemented in the version 0.1.0 source:

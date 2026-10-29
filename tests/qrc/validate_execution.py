@@ -158,8 +158,9 @@ def main() -> None:
 
     required = [
         "AutomaticExecutionEnabled", "ExecutionStatus", "ScheduleData", "TestDateTime", "ResolveTestTime",
-        "SchedulerSelect", "SchedulerEditorEnabled", "SchedulerPaused", "EventActionEnabled", "EventActionMode",
-        "EventActionFireOnStartup", "EventActionFireOnResume", "EventActionRepeatSeconds",
+        "SchedulerSelect", "SchedulerEditorEnabled", "SchedulerPaused", "EventActionSelect", "EventActionPicker",
+        "EventActionEnabled", "EventActionMode", "EventActionFireOnStartup", "EventActionFireOnResume",
+        "EventActionRepeatSeconds", "AddEventAction", "DeleteEventAction",
         "ActionSelect", "RegisteredActionCount", "GlobalSchedulerStatus", "DiagnosticLog", "Status",
         "DebugLogLevel", "EventLogLevel", "ActionSource", "ReloadActions",
         "script.status", "script.error.count",
@@ -232,6 +233,9 @@ def main() -> None:
         set_value("ScheduleData", json.dumps(model, indent=2), delay=1.3)
         set_value("SchedulerSelect", choice(scheduler_id, "Execution QRC Test"))
         time.sleep(1.2)
+        event_action_list = controls("EventActionSelect")
+        check(len(event_action_list["EventActionSelect"].get("Choices", [])) == 2, "Event Action rows are available for explicit selection")
+        set_value("EventActionSelect", choice("1", "1  Callback 1 [state]"), delay=0.5)
         press("ResolveTestTime")
         plan_status = json.loads(controls("GlobalSchedulerStatus")["GlobalSchedulerStatus"]["String"])
         scheduler_entries = {item["id"]: item for item in plan_status["schedulers"]}
@@ -252,9 +256,10 @@ def main() -> None:
         preserved_phase = scheduler_entries[preserved_scheduler_id]["execution"]["timerPhaseSeconds"]
 
         editor = controls(
-            "EventActionEnabled", "EventActionMode", "EventActionFireOnStartup",
+            "EventActionPicker", "EventActionEnabled", "EventActionMode", "EventActionFireOnStartup",
             "EventActionFireOnResume", "EventActionRepeatSeconds",
         )
+        check(json.loads(editor["EventActionPicker"]["String"])["Id"] == "Callback1", "Attached Action editor shows the selected row's Action")
         check(editor["EventActionEnabled"]["Value"] > 0.5, "selected stateful Event Action is enabled")
         check(json.loads(editor["EventActionMode"]["String"])["Id"] == "Stateful", "selected Event Action mode is Stateful")
         check(
@@ -263,6 +268,55 @@ def main() -> None:
             "startup and resume restoration options are visible",
         )
         check(editor["EventActionRepeatSeconds"]["String"] == "2", "repeat interval is visible in the Event Action editor")
+
+        before_reassignment = json.loads(current_schedule_text())
+        before_scheduler = next(item for item in before_reassignment["schedulers"] if item["id"] == scheduler_id)
+        before_actions = before_scheduler["dayPatterns"][0]["events"][0]["actions"]
+        set_value("EventActionPicker", choice("CallbackRepeat", "Callback Repeat"), delay=1.3)
+        reassigned = json.loads(current_schedule_text())
+        reassigned_scheduler = next(item for item in reassigned["schedulers"] if item["id"] == scheduler_id)
+        reassigned_actions = reassigned_scheduler["dayPatterns"][0]["events"][0]["actions"]
+        check(reassigned_actions[0]["actionId"] == "CallbackRepeat", "Attached Action editor replaces the selected Action ID")
+        check(
+            {key: value for key, value in reassigned_actions[0].items() if key != "actionId"}
+            == {key: value for key, value in before_actions[0].items() if key != "actionId"}
+            and reassigned_actions[1] == before_actions[1],
+            "Attached Action reassignment preserves options, row order, and neighboring Actions",
+        )
+        set_value("EventActionPicker", choice("Callback1", "Callback 1"), delay=1.3)
+        restored_assignment = json.loads(current_schedule_text())
+        restored_scheduler = next(item for item in restored_assignment["schedulers"] if item["id"] == scheduler_id)
+        check(
+            restored_scheduler["dayPatterns"][0]["events"][0]["actions"] == before_actions,
+            "Attached Action can be restored without changing the assignment",
+        )
+
+        press("AddEventAction")
+        time.sleep(1.0)
+        added_assignment = json.loads(current_schedule_text())
+        added_scheduler = next(item for item in added_assignment["schedulers"] if item["id"] == scheduler_id)
+        added_actions = added_scheduler["dayPatterns"][0]["events"][0]["actions"]
+        check(
+            len(added_actions) == 3
+            and added_actions[2]["actionId"] == "Callback1"
+            and added_actions[2]["enabled"] is False,
+            "Add Action creates a selected disabled row using the first registered Action",
+        )
+        added_editor = controls("EventActionSelect", "EventActionPicker", "EventActionEnabled")
+        check(
+            json.loads(added_editor["EventActionSelect"]["String"])["Id"] == "3"
+            and json.loads(added_editor["EventActionPicker"]["String"])["Id"] == "Callback1"
+            and added_editor["EventActionEnabled"]["Value"] < 0.5,
+            "new Event Action row is selected and ready for editing while disabled",
+        )
+        press("DeleteEventAction")
+        time.sleep(1.0)
+        after_add_cleanup = json.loads(current_schedule_text())
+        cleanup_scheduler = next(item for item in after_add_cleanup["schedulers"] if item["id"] == scheduler_id)
+        check(
+            cleanup_scheduler["dayPatterns"][0]["events"][0]["actions"] == before_actions,
+            "temporary added Event Action is deleted before execution testing",
+        )
 
         set_value("AutomaticExecutionEnabled", True, delay=1.3)
         startup = controls("ExecutionStatus", "Status")

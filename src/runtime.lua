@@ -619,17 +619,7 @@ function FugSchedulerRuntime.refreshActionChoices()
   Controls.ActionSelect.String = FugSchedulerRuntime.actionsById[previous] and previous or (choices[1] or "")
 
   if Controls.EventActionPicker then
-    local previousId = FugSchedulerRuntime.choiceId(Controls.EventActionPicker.String)
     Controls.EventActionPicker.Choices = structuredChoices
-    if not FugSchedulerRuntime.actionsById[previousId] then
-      previousId = FugSchedulerRuntime.orderedActions[1] and FugSchedulerRuntime.orderedActions[1].id or nil
-    end
-    if previousId then
-      local action = FugSchedulerRuntime.actionsById[previousId]
-      Controls.EventActionPicker.String = FugSchedulerRuntime.encodeChoice(action.label, action.id)
-    else
-      Controls.EventActionPicker.String = ""
-    end
   end
 end
 
@@ -1795,12 +1785,8 @@ function FugSchedulerRuntime.selectedEventActionIndex()
 
   local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
   local index = FugSchedulerRuntime.selectedEventActionIndexes[key]
-  if not index and Controls.EventActionSelect then
-    index = tonumber(FugSchedulerRuntime.choiceId(Controls.EventActionSelect.String))
-  end
   if #event.actions == 0 then index = nil end
   if index and (index < 1 or index > #event.actions) then index = nil end
-  if not index and #event.actions > 0 then index = 1 end
   FugSchedulerRuntime.selectedEventActionIndexes[key] = index
   return scheduler, event, index
 end
@@ -2000,6 +1986,11 @@ function FugSchedulerRuntime.refreshDayPatternEditor(message)
   end
 
   local selectedEventAction = actionIndex and event.actions[actionIndex] or nil
+  if Controls.EventActionPicker then
+    local attachedAction = selectedEventAction and FugSchedulerRuntime.actionsById[selectedEventAction.actionId] or nil
+    Controls.EventActionPicker.String = attachedAction and
+      FugSchedulerRuntime.encodeChoice(attachedAction.label, attachedAction.id) or ""
+  end
   if Controls.EventActionMode then
     Controls.EventActionMode.Choices = {
       {Text = "Stateful", Id = "Stateful"},
@@ -2032,7 +2023,7 @@ function FugSchedulerRuntime.refreshDayPatternEditor(message)
   FugSchedulerRuntime.setDisabled("DuplicateEvent", not event)
   FugSchedulerRuntime.setDisabled("DeleteEvent", not event)
   FugSchedulerRuntime.setDisabled("EventActionSelect", not event or #event.actions == 0)
-  FugSchedulerRuntime.setDisabled("EventActionPicker", not event or #FugSchedulerRuntime.orderedActions == 0)
+  FugSchedulerRuntime.setDisabled("EventActionPicker", not selectedEventAction or #FugSchedulerRuntime.orderedActions == 0)
   FugSchedulerRuntime.setDisabled("AddEventAction", not event or #FugSchedulerRuntime.orderedActions == 0)
   FugSchedulerRuntime.setDisabled("EventActionEnabled", not selectedEventAction)
   FugSchedulerRuntime.setDisabled("EventActionMode", not selectedEventAction)
@@ -2969,7 +2960,10 @@ end
 -- Apply one validated option edit to the selected Event Action assignment.
 function FugSchedulerRuntime.updateSelectedEventAction(description, editFunction)
   local _, event, eventAction, index = FugSchedulerRuntime.selectedEventAction()
-  if not eventAction or not index then return false end
+  if not eventAction or not index then
+    FugSchedulerRuntime.refreshDayPatternEditor("Edit rejected: select an Event Action first")
+    return false
+  end
 
   return FugSchedulerRuntime.commitScheduleEdit(description, function(candidate)
     local _, _, selectedEvent = FugSchedulerRuntime.candidateSelectedEvent(candidate)
@@ -2980,14 +2974,13 @@ function FugSchedulerRuntime.updateSelectedEventAction(description, editFunction
   end, nil, "DayPatternEditorStatus")
 end
 
--- Attach one registered Action to the selected Event and copy its execution defaults.
+-- Add a disabled Event Action using the first registered Action and select the new row for editing.
 function FugSchedulerRuntime.addEventAction()
   local scheduler, _, event = FugSchedulerRuntime.selectedEvent()
   if not event then return false end
-  local actionId = FugSchedulerRuntime.choiceId(Controls.EventActionPicker and Controls.EventActionPicker.String or "")
-  local action = FugSchedulerRuntime.actionsById[actionId]
+  local action = FugSchedulerRuntime.orderedActions[1]
   if not action then
-    local message = "Add rejected: select an available registered Action"
+    local message = "Add rejected: no registered Actions are available"
     FugSchedulerRuntime.setText("DayPatternEditorStatus", message)
     return false
   end
@@ -2995,12 +2988,12 @@ function FugSchedulerRuntime.addEventAction()
   FugSchedulerRuntime.selectedEventActionIndexes[key] = #event.actions + 1
   local defaults = action.defaults or {}
 
-  return FugSchedulerRuntime.commitScheduleEdit("Event Action attached", function(candidate)
+  return FugSchedulerRuntime.commitScheduleEdit("Event Action added", function(candidate)
     local _, _, selectedEvent = FugSchedulerRuntime.candidateSelectedEvent(candidate)
     if not selectedEvent then return false, "selected Event no longer exists" end
     table.insert(selectedEvent.actions, {
-      actionId = actionId,
-      enabled = defaults.enabled ~= false,
+      actionId = action.id,
+      enabled = false,
       oneShot = defaults.oneShot == true,
       fireOnStartup = defaults.fireOnStartup == true,
       fireOnResume = defaults.fireOnResume == true,
@@ -4114,6 +4107,20 @@ function FugSchedulerRuntime.attachHandlers()
       local key = FugSchedulerRuntime.eventActionSelectionKey(scheduler, event)
       FugSchedulerRuntime.selectedEventActionIndexes[key] = tonumber(FugSchedulerRuntime.choiceId(control.String))
       FugSchedulerRuntime.refreshDayPatternEditor("Event Action selected")
+    end
+  end
+
+  if Controls.EventActionPicker then
+    Controls.EventActionPicker.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingDayPatternEditor then return end
+      local actionId = FugSchedulerRuntime.choiceId(control.String)
+      if not FugSchedulerRuntime.actionsById[actionId] then
+        FugSchedulerRuntime.refreshDayPatternEditor("Attached Action update rejected: select a registered Action")
+        return
+      end
+      FugSchedulerRuntime.updateSelectedEventAction("Attached Action updated", function(eventAction)
+        eventAction.actionId = actionId
+      end)
     end
   end
 
