@@ -164,7 +164,7 @@ function GetControls(_props)
   -- Retain bounded one-shot execution receipts independently from editable schedule configuration.
   table.insert(ctrls, {Name = "OneShotExecutionLedger", ControlType = "Text", Count = 1})
 
-  -- Keep named complete ScheduleData backups in one persistent catalogue and mirror it to Core media storage.
+  -- Keep up to ten persistent Saved Configurations with opaque schedule JSON plus portable file actions.
   table.insert(ctrls, {Name = "ConfigurationBackupCatalog", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ConfigurationBackupSelect", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ConfigurationBackupName", ControlType = "Text", Count = 1})
@@ -175,6 +175,14 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "CancelConfigurationBackupAction", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "ConfigurationBackupSummary", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ConfigurationBackupFileStatus", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "ConfigurationBackupTransfer", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "ExportConfigurationBackup", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "ImportConfigurationBackup", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "ConfigurationBackupFileSelect", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "RefreshConfigurationBackupFiles", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "SaveConfigurationBackupFile", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "ImportConfigurationBackupFile", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "ConfigurationBackupCatalogStatus", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ConfigurationBackupStatus", ControlType = "Text", Count = 1})
 
   table.insert(ctrls, {Name = "ReloadActions", ControlType = "Button", ButtonType = "Momentary", UserPin = true, PinStyle = "Input", Count = 1})

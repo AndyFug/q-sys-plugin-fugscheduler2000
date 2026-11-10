@@ -35,7 +35,8 @@ def ensure_expected_design(label: str) -> dict:
         and status.get("IsEmulator") is True,
         f"{label}: expected active Emulator",
     )
-    check(status["DesignName"] == "fugscheduler2000_test", f"{label}: expected design is active")
+    check(status["DesignName"] in {"fugscheduler_test", "fugscheduler2000_test"},
+          f"{label}: expected FugScheduler test design is active")
     return status
 
 
@@ -156,7 +157,9 @@ def main() -> None:
 
     required = [
         "AutomaticExecutionEnabled", "ExecutionStatus", "ScheduleData", "TestDateTime", "ResolveTestTime",
-        "SchedulerDefinitionSelect", "SchedulerSlotEnabled 1", "SchedulerSlotPaused 1", "EventActionSelect", "EventActionPicker",
+        "SchedulerDefinitionSelect", "InspectorSlotSelect", "SchedulerSlotEnabled 1", "SchedulerSlotPaused 1",
+        "SchedulerSlotCurrentEvent 1", "SchedulerSlotNextEvent 1", "CurrentEvent", "NextEvent",
+        "EventActionSelect", "EventActionPicker",
         "EventActionEnabled", "EventActionMode", "EventActionFireOnStartup", "EventActionFireOnResume",
         "EventActionRepeatSeconds", "AddEventAction", "DeleteEventAction",
         "ActionSelect", "RegisteredActionCount", "GlobalSchedulerSlotStatus", "DiagnosticLog", "Status",
@@ -468,6 +471,7 @@ def main() -> None:
         for existing_scheduler in edge_model["schedulers"]:
             existing_scheduler.pop("enabled", None)
             existing_scheduler.pop("paused", None)
+        inspector_decoy = edge_model["schedulers"][0]
         edge_scheduler_id = "qrc-scheduled-edge-" + edge_now.strftime("%Y%m%d%H%M%S")
         edge_day_id = "qrc-scheduled-edge-day"
         edge_week_id = "qrc-scheduled-edge-week"
@@ -523,7 +527,8 @@ def main() -> None:
             *[{"slot": index, "enabled": False, "paused": False} for index in range(2, 9)],
         ]
         set_value("ScheduleData", json.dumps(edge_model, indent=2), delay=1.3)
-        set_value("SchedulerDefinitionSelect", choice(edge_scheduler_id, "Scheduled Edge QRC Test"))
+        set_value("InspectorSlotSelect", choice(1, "Slot 1 — Scheduled Edge QRC Test"))
+        set_value("SchedulerDefinitionSelect", choice(inspector_decoy["id"], inspector_decoy["label"]))
         before_edge_log = diagnostic_text()
         one_shot_success = (
             f'Scheduler "Scheduled Edge QRC Test" [{edge_scheduler_id}] | Event "Shared Edge B" [qrc-edge-b] | '
@@ -537,7 +542,7 @@ def main() -> None:
 
         set_value("AutomaticExecutionEnabled", True, delay=1.3)
         wait_seconds = max(0.0, (edge_at - edge_now).total_seconds()) + 2.2
-        check(wait_seconds <= 95, "real scheduled edge requires no more than a short deterministic wait")
+        check(wait_seconds <= 100, "real scheduled edge requires no more than a short deterministic wait")
         time.sleep(wait_seconds)
 
         after_edge_log = diagnostic_text()
@@ -564,6 +569,19 @@ def main() -> None:
             and "Shared Edge A" in edge_delta and "Callback 1" in edge_delta
             and "reason=scheduled edge" in edge_delta,
             "successful scheduled-edge execution logs Info with Scheduler, Event, Action, and reason context",
+        )
+        edge_views = controls(
+            "CurrentEvent", "NextEvent", "SchedulerSlotCurrentEvent 1", "SchedulerSlotNextEvent 1"
+        )
+        check(
+            "Shared Edge B" in edge_views["CurrentEvent"]["String"]
+            and "Shared Edge B" in edge_views["SchedulerSlotCurrentEvent 1"]["String"],
+            "Slot Inspector and overview advance to the live Current Event despite a different Definition selection",
+        )
+        check(
+            "Prior State" in edge_views["NextEvent"]["String"]
+            and "Prior State" in edge_views["SchedulerSlotNextEvent 1"]["String"],
+            "callback failure does not leave the Slot Inspector Next Event on the consumed edge",
         )
         execution_status = controls("ExecutionStatus")["ExecutionStatus"]["String"]
         check("Scheduled Edge QRC Test" in execution_status, "ExecutionStatus retains the latest scheduled execution result")

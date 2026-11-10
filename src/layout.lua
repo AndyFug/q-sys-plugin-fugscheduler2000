@@ -436,40 +436,80 @@ function GetControlLayout(props)
 
   elseif page == "Admin" then
     ui:group("Configuration Backups", ui:rect(10, 44, 520, 400))
-    ui:label("Saved configurations", ui:rect(28, 72, 170, 20), {Color = ui:color("mutedText")})
-    ui:label("Stored on filesystem at media/FugScheduler2000/configurations.json", ui:rect(224, 66, 288, 30), {
-      Color = ui:color("mutedText"), HTextAlign = "Right", VTextAlign = "Center",
-      WordWrap = true, FontSize = 8
+    ui:label("Saved configurations", ui:rect(28, 72, 220, 20), {Color = ui:color("mutedText")})
+    ui:label("Persistent catalogue", ui:rect(332, 72, 180, 20), {
+      Color = ui:color("mutedText"), HTextAlign = "Right", FontSize = 8
     })
-    ui:control("ConfigurationBackupSelect", "ListBox", ui:rect(28, 96, 484, 154), {
+    ui:control("ConfigurationBackupSelect", "ListBox", ui:rect(28, 96, 484, 138), {
       PrettyName = "Admin~Saved Configurations", FontSize = 10
     })
-    ui:label("Configuration name", ui:rect(28, 266, 126, 22), {Color = ui:color("mutedText")})
-    ui:textControl("ConfigurationBackupName", ui:rect(160, 262, 352, 28), {
+    ui:label("Configuration name", ui:rect(28, 248, 126, 22), {Color = ui:color("mutedText")})
+    ui:textControl("ConfigurationBackupName", ui:rect(160, 244, 352, 28), {
       PrettyName = "Admin~Configuration Name"
     })
-    ui:button("SaveConfigurationBackup", ui:rect(28, 306, 150, 28), {
+    ui:button("SaveConfigurationBackup", ui:rect(28, 286, 150, 28), {
       ButtonStyle = "Momentary", Legend = "Save Configuration", Color = ui:color("schedule")
     })
-    ui:button("LoadConfigurationBackup", ui:rect(190, 306, 150, 28), {
+    ui:button("LoadConfigurationBackup", ui:rect(190, 286, 150, 28), {
       ButtonStyle = "Momentary", Legend = "Load Configuration", Color = ui:color("warning")
     })
-    ui:button("DeleteConfigurationBackup", ui:rect(352, 306, 160, 28), {
+    ui:button("DeleteConfigurationBackup", ui:rect(352, 286, 160, 28), {
       ButtonStyle = "Momentary", Legend = "Delete Configuration", Color = ui:color("danger")
     })
-    ui:button("ConfirmConfigurationBackupAction", ui:rect(352, 374, 160, 28), {
-      ButtonStyle = "Momentary", Legend = "Confirm", Color = ui:color("danger")
-    })
-    ui:button("CancelConfigurationBackupAction", ui:rect(352, 406, 160, 28), {
-      ButtonStyle = "Momentary", Legend = "Cancel", Color = ui:color("statusBackground"),
-      TextColor = {255, 255, 255}
-    })
-    ui:textControl("ConfigurationBackupSummary", ui:rect(28, 344, 312, 90), {
+    ui:textControl("ConfigurationBackupSummary", ui:rect(28, 342, 312, 88), {
       IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Left", VTextAlign = "Top",
       WordWrap = true, TextColor = ui:color("controlText"), FontSize = 9,
       PrettyName = "Admin~Backup Summary"
     })
+    ui:button("ConfirmConfigurationBackupAction", ui:rect(352, 366, 160, 28), {
+      ButtonStyle = "Momentary", Legend = "Confirm", Color = ui:color("danger")
+    })
+    ui:button("CancelConfigurationBackupAction", ui:rect(352, 402, 160, 28), {
+      ButtonStyle = "Momentary", Legend = "Cancel", Color = ui:color("statusBackground"),
+      TextColor = {255, 255, 255}
+    })
 
+    ui:group("Configuration Import/Export", ui:rect(540, 44, 350, 400))
+    ui:label("JSON Clipboard", ui:rect(558, 68, 180, 20), {
+      Color = ui:color("mutedText"), FontSize = 9
+    })
+    ui:textControl("ConfigurationBackupTransfer", ui:rect(558, 90, 314, 106), {
+      PrettyName = "Admin~Backup JSON Clipboard", HTextAlign = "Left", VTextAlign = "Top",
+      WordWrap = false, FontSize = 8
+    })
+    ui:button("ExportConfigurationBackup", ui:rect(558, 204, 150, 26), {
+      ButtonStyle = "Momentary", Legend = "Export to JSON", Color = ui:color("action")
+    })
+    ui:button("ImportConfigurationBackup", ui:rect(722, 204, 150, 26), {
+      ButtonStyle = "Momentary", Legend = "Import from JSON", Color = ui:color("warning")
+    })
+    ui:label("File Browser (Physical Core Only)", ui:rect(558, 238, 180, 20), {
+      Color = ui:color("mutedText"), FontSize = 9
+    })
+    ui:button("RefreshConfigurationBackupFiles", ui:rect(742, 234, 130, 24), {
+      ButtonStyle = "Momentary", Legend = "Refresh Files", Color = ui:color("action")
+    })
+    ui:control("ConfigurationBackupFileSelect", "ListBox", ui:rect(558, 262, 314, 76), {
+      PrettyName = "Admin~Backup Files", FontSize = 8
+    })
+    ui:button("SaveConfigurationBackupFile", ui:rect(558, 346, 150, 26), {
+      ButtonStyle = "Momentary", Legend = "Export Configuration File", Color = ui:color("schedule"),
+      FontSize = 8
+    })
+    ui:button("ImportConfigurationBackupFile", ui:rect(722, 346, 150, 26), {
+      ButtonStyle = "Momentary", Legend = "Import Configuration File", Color = ui:color("warning"),
+      FontSize = 8
+    })
+    ui:textControl("ConfigurationBackupFileStatus", ui:rect(558, 380, 314, 48), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Left", VTextAlign = "Top",
+      WordWrap = true, TextColor = ui:color("mutedText"), FontSize = 8,
+      PrettyName = "Admin~Backup File Status"
+    })
+    ui:textControl("ConfigurationBackupCatalogStatus", ui:rect(28, 318, 312, 18), {
+      IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Left", VTextAlign = "Center",
+      WordWrap = false, TextColor = ui:color("mutedText"), FontSize = 8,
+      PrettyName = "Admin~Saved Configuration Catalogue Status"
+    })
 
     FugSchedulerUi.editorStatus(ui, "ConfigurationBackupStatus", ui:rect(10, 448, 880, 34), "Admin~Status")
 

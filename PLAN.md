@@ -478,10 +478,13 @@ Exit criterion: the reference controller's Site Music, Site Mute, Ice Rink, Big 
 
 ### Phase 4 — import/export, reset, and operational polish
 
-- [x] Add a first-pass Admin page for named complete Scheduler/Slot backups in one persistent JSON catalogue, mirrored to `media/FugScheduler2000/configurations.json` on physical Cores.
-- [x] Add Confirm/Cancel flows for overwrite, load, and selected-backup deletion.
-- [x] Complete Designer/QRC acceptance for named save, overwrite confirmation, guarded load, and persistent-control restoration.
-- [ ] Validate physical-Core file mirroring, restart persistence, and off-Core retrieval.
+- [x] Keep up to ten Saved Configurations in a persistent control-backed catalogue on both Emulator and physical Cores, with each schedule retained as opaque JSON until confirmed load.
+- [x] Keep catalogue and file scanning outside phased essential startup; automatically refresh catalogue metadata in a deferred post-startup slice without validating stored schedules.
+- [x] Add a Node-RED-style JSON clipboard for selected-backup copy/paste and validate clipboard imports before catalogue insertion.
+- [ ] Decide whether duplicate-name clipboard imports should remain rejected or offer an explicit Replace/Rename choice; never overwrite silently.
+- [x] Add a separate physical-Core backup-file list with explicit Export Configuration File and Import Configuration File actions; export uses the selected Saved Configuration, while validated file imports enter Saved Configurations and arm the shared confirmed-load flow without using the clipboard.
+- [x] Retain Confirm/Cancel flows for overwrite, guarded load, and catalogue deletion.
+- [ ] Validate physical-Core file creation, restart persistence, off-Core retrieval, deletion APIs, atomic replacement, and redundant-Core media replication before enabling physical overwrite/delete.
 - Add staged, validated global JSON export/import with explicit Apply and confirmation behavior.
 - Add selected-Scheduler export/import with a documented transfer envelope and explicit stable-ID conflict handling.
 - Add guarded Reset All Configuration and Reset Selected Scheduler operations that always produce schema-valid models.

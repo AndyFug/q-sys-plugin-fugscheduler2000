@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-11-02T08:25:45Z",
-  BuildTimestamp = 1793607945
+  BuildDate = "2026-11-10T23:37:12Z",
+  BuildTimestamp = 1794353832
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -97,11 +97,17 @@ FugSchedulerRuntime = {
   oneShotLedger = nil,
   oneShotReceiptIndex = {},
   pendingBackupAction = nil,
-  backupCatalog = nil,
+  backupEntries = {},
+  backupCatalogueMaximum = 10,
+  ignoredPreviousBackupCatalogue = false,
+  backupFileEntries = {},
+  selectedBackupFileId = nil,
   selectedBackupId = nil,
-  backupDirectoryPath = "media/FugScheduler2000",
-  backupFileName = "configurations.json",
-  backupFilePath = "media/FugScheduler2000/configurations.json",
+  backupsScanned = false,
+  backupRefreshGeneration = 0,
+  backupRootPath = "media/FugScheduler2000",
+  backupDirectoryPath = "media/FugScheduler2000/backups",
+  startupGeneration = tonumber(PreviousFugSchedulerRuntime and PreviousFugSchedulerRuntime.startupGeneration) or 0,
   overrideDateBuffer = nil,
   selectedDayPatternIds = {},
   selectedWeekPatternIds = {},
@@ -2091,7 +2097,8 @@ function FugSchedulerRuntime.installValidatedSchedule(validated, warnings, selec
   end
 
   local eventCount = FugSchedulerRuntime.scheduleWorkload(validated)
-  if #validated.schedulers > 10 or eventCount > 200 then
+  -- Default-capacity 8-Scheduler/160-Event models exceed one safe UI refresh slice in Designer.
+  if #validated.schedulers >= 8 or eventCount >= 120 then
     FugSchedulerRuntime.setText("ScheduleStatus", summary .. "; refreshing status asynchronously")
     FugSchedulerRuntime.deferInstalledScheduleRefresh(summary)
     FugSchedulerRuntime.refreshStatus()
@@ -4877,7 +4884,7 @@ function FugSchedulerRuntime.publishLiveRuntimeStatus()
   if not FugSchedulerRuntime.activeSchedule then return end
   if Controls.TestDateTime and (Controls.TestDateTime.String or "") ~= "" then return end
   local schedulerStatuses = {}
-  local selectedScheduler, selectedResult = FugSchedulerRuntime.selectedScheduler(), nil
+  local resultsById = {}
   local resolvedTimestamp = FugSchedulerRuntime.executionNow()
   for _, slot in ipairs(FugSchedulerRuntime.activeSchedule.schedulerSlots) do
     local scheduler = slot.schedulerId and FugSchedulerRuntime.activeSchedule._schedulersById[slot.schedulerId] or nil
@@ -4885,12 +4892,12 @@ function FugSchedulerRuntime.publishLiveRuntimeStatus()
     if scheduler and plan then
       local timestamp = plan.lastObservedTimestamp or resolvedTimestamp
       local result = FugSchedulerRuntime.planResolutionResult(plan, timestamp)
+      resultsById[scheduler.id] = result
       table.insert(schedulerStatuses, FugSchedulerRuntime.buildSchedulerStatus(scheduler, result, nil))
-      if selectedScheduler and selectedScheduler.id == scheduler.id then selectedResult = result end
     end
   end
+  FugSchedulerRuntime.resolutionResultsById = resultsById
   FugSchedulerRuntime.publishGlobalStatus(resolvedTimestamp, schedulerStatuses, false)
-  if selectedScheduler and selectedResult then FugSchedulerRuntime.publishResolution(selectedScheduler, selectedResult) end
 end
 
 -- Publish the selected Scheduler's resolver result to human-readable status controls.
@@ -5025,78 +5032,115 @@ function FugSchedulerRuntime.refreshStatus()
   ))
 end
 
--- Return an empty versioned catalogue for named complete ScheduleData backups.
-function FugSchedulerRuntime.emptyBackupCatalog()
+-- Return an empty schema-v2 catalogue whose schedules remain opaque JSON strings.
+function FugSchedulerRuntime.emptyControlBackupCatalogue()
   local configurations = {}
   FugSchedulerRuntime.markJsonArray(configurations)
-  return {schemaVersion = 1, updatedAt = os.date("%Y-%m-%dT%H:%M:%S"), configurations = configurations}
+  return {schemaVersion = 2, configurations = configurations}
 end
 
--- Validate a backup catalogue and every contained ScheduleData document before use.
-function FugSchedulerRuntime.validateBackupCatalog(candidate)
-  if type(candidate) ~= "table" or candidate.schemaVersion ~= 1 then
-    return nil, "Backup catalogue schemaVersion must be 1"
+-- Decode catalogue metadata and schedule strings only after an explicit Admin action.
+function FugSchedulerRuntime.loadControlBackupCatalogue()
+  local source = Controls.ConfigurationBackupCatalog and Controls.ConfigurationBackupCatalog.String or ""
+  FugSchedulerRuntime.ignoredPreviousBackupCatalogue = false
+  if source == "" then return FugSchedulerRuntime.emptyControlBackupCatalogue(), nil end
+
+  -- The previous schema held decoded schedule objects and can be very large. Identify it without decoding it.
+  if string.find(source, '"schemaVersion"%s*:%s*1') then
+    FugSchedulerRuntime.ignoredPreviousBackupCatalogue = true
+    return FugSchedulerRuntime.emptyControlBackupCatalogue(), nil
   end
-  if type(candidate.configurations) ~= "table" then return nil, "Backup catalogue requires configurations" end
-  local validated = FugSchedulerRuntime.copyPersisted(candidate)
-  local names, ids = {}, {}
-  for index, configuration in ipairs(validated.configurations) do
-    if type(configuration) ~= "table" then return nil, "Backup " .. index .. " must be an object" end
-    configuration.id = tostring(configuration.id or "")
-    configuration.name = string.match(tostring(configuration.name or ""), "^%s*(.-)%s*$") or ""
-    if configuration.id == "" or configuration.name == "" then return nil, "Backup " .. index .. " requires an ID and name" end
-    if ids[configuration.id] then return nil, "Duplicate backup ID: " .. configuration.id end
-    if names[configuration.name] then return nil, "Duplicate backup name: " .. configuration.name end
-    ids[configuration.id], names[configuration.name] = true, true
-    local schedule, _, scheduleError = FugSchedulerRuntime.validateSchedule(configuration.schedule)
-    if not schedule then return nil, "Backup " .. configuration.name .. ": " .. tostring(scheduleError) end
-    configuration.schedule = FugSchedulerRuntime.copyPersisted(schedule)
-    FugSchedulerRuntime.normalizeScheduleArrays(configuration.schedule)
-    configuration.savedAt = tostring(configuration.savedAt or "Unknown")
+
+  local decodeOk, candidate, decodeError = pcall(FugSchedulerRuntime.json.decode, source)
+  if not decodeOk then return nil, tostring(candidate) end
+  if candidate == nil then return nil, tostring(decodeError) end
+  if type(candidate) ~= "table" or candidate.schemaVersion ~= 2 or type(candidate.configurations) ~= "table" then
+    return nil, "Saved Configuration catalogue schema is invalid"
   end
-  FugSchedulerRuntime.markJsonArray(validated.configurations)
-  validated.updatedAt = tostring(validated.updatedAt or os.date("%Y-%m-%dT%H:%M:%S"))
-  return validated, nil
+  if #candidate.configurations > FugSchedulerRuntime.backupCatalogueMaximum then
+    return nil, "Saved Configuration catalogue exceeds the ten-backup limit"
+  end
+
+  local catalogue = FugSchedulerRuntime.emptyControlBackupCatalogue()
+  local ids, names = {}, {}
+  for index, configuration in ipairs(candidate.configurations) do
+    if type(configuration) ~= "table" then
+      return nil, "Saved Configuration " .. index .. " metadata is invalid"
+    end
+    local id = tostring(configuration.id or "")
+    local name = string.match(tostring(configuration.name or ""), "^%s*(.-)%s*$") or ""
+    local scheduleJson = configuration.scheduleJson
+    if id == "" or name == "" or ids[id] or names[name] then
+      return nil, "Saved Configuration metadata is missing or duplicated"
+    end
+    if type(scheduleJson) ~= "string" or scheduleJson == "" then
+      return nil, "Saved Configuration " .. name .. " has no schedule JSON"
+    end
+    ids[id], names[name] = true, true
+    table.insert(catalogue.configurations, {
+      id = id,
+      name = name,
+      savedAt = tostring(configuration.savedAt or "Unknown"),
+      scheduleJson = scheduleJson
+    })
+  end
+  FugSchedulerRuntime.markJsonArray(catalogue.configurations)
+  return catalogue, nil
 end
 
--- Return one named backup by stable ID.
+-- Rebuild lightweight list metadata without parsing any stored schedule JSON.
+function FugSchedulerRuntime.rebuildBackupEntries()
+  local entries = {}
+  for _, item in ipairs(FugSchedulerRuntime.backupCatalog and FugSchedulerRuntime.backupCatalog.configurations or {}) do
+    table.insert(entries, {
+      id = item.id,
+      name = item.name,
+      savedAt = item.savedAt,
+      scheduleLength = #item.scheduleJson
+    })
+  end
+  FugSchedulerRuntime.backupEntries = entries
+end
+
+-- Return one Saved Configuration metadata row by stable ID.
 function FugSchedulerRuntime.backupById(id)
-  for _, configuration in ipairs(FugSchedulerRuntime.backupCatalog and
-      FugSchedulerRuntime.backupCatalog.configurations or {}) do
-    if configuration.id == id then return configuration end
+  for _, entry in ipairs(FugSchedulerRuntime.backupEntries or {}) do
+    if entry.id == id then return entry end
   end
   return nil
 end
 
--- Describe one backup without exposing its complete JSON in the Admin UI.
-function FugSchedulerRuntime.backupSummary(configuration)
-  if not configuration then return "Select a saved configuration." end
-  local schedule = configuration.schedule
-  local eventCount, actionCount = FugSchedulerRuntime.scheduleWorkload(schedule)
+-- Return one catalogue item, including its still-opaque schedule JSON, by stable ID.
+function FugSchedulerRuntime.catalogueBackupById(id)
+  for _, item in ipairs(FugSchedulerRuntime.backupCatalog and FugSchedulerRuntime.backupCatalog.configurations or {}) do
+    if item.id == id then return item end
+  end
+  return nil
+end
+
+-- Describe metadata only; selecting a backup never parses or validates its schedule.
+function FugSchedulerRuntime.backupSummary(entry)
+  if not entry then return "Select a Saved Configuration." end
   return string.format(
-    "%s\nSaved %s | %d definitions | %d slots | %d Events | %d Event Actions",
-    configuration.name,
-    configuration.savedAt,
-    #(schedule.schedulers or {}),
-    #(schedule.schedulerSlots or {}),
-    eventCount,
-    actionCount
+    "%s\nSaved %s\nStored schedule JSON: %d characters\nConfiguration is parsed and validated only after confirmed Load.",
+    entry.name,
+    entry.savedAt,
+    tonumber(entry.scheduleLength) or 0
   )
 end
 
--- Refresh the Admin controls from the authoritative in-design backup catalogue.
+-- Refresh Saved Configuration controls from catalogue metadata only.
 function FugSchedulerRuntime.refreshBackupControls(message)
-  local catalog = FugSchedulerRuntime.backupCatalog
-  if not catalog then return end
   local choices = {}
-  for _, configuration in ipairs(catalog.configurations) do
-    table.insert(choices, {Text = configuration.name .. " — " .. configuration.savedAt, Id = configuration.id})
+  for _, entry in ipairs(FugSchedulerRuntime.backupEntries or {}) do
+    table.insert(choices, {Text = entry.name .. " — " .. entry.savedAt, Id = entry.id})
   end
+
   FugSchedulerRuntime.updatingBackupControls = true
   if Controls.ConfigurationBackupSelect then
     Controls.ConfigurationBackupSelect.Choices = choices
-    local selected = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
-    if not selected then selected = catalog.configurations[1] end
+    local selected = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId) or
+      FugSchedulerRuntime.backupEntries[1]
     FugSchedulerRuntime.selectedBackupId = selected and selected.id or nil
     Controls.ConfigurationBackupSelect.String = selected and
       FugSchedulerRuntime.encodeChoice(selected.name .. " — " .. selected.savedAt, selected.id) or ""
@@ -5105,176 +5149,253 @@ function FugSchedulerRuntime.refreshBackupControls(message)
   local selected = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
   if Controls.LoadConfigurationBackup then Controls.LoadConfigurationBackup.IsDisabled = selected == nil end
   if Controls.DeleteConfigurationBackup then Controls.DeleteConfigurationBackup.IsDisabled = selected == nil end
+  if Controls.ExportConfigurationBackup then Controls.ExportConfigurationBackup.IsDisabled = selected == nil end
+  if Controls.SaveConfigurationBackupFile then
+    Controls.SaveConfigurationBackupFile.IsDisabled = selected == nil or (System and System.IsEmulating)
+  end
   local armed = FugSchedulerRuntime.pendingBackupAction ~= nil
   if Controls.ConfirmConfigurationBackupAction then Controls.ConfirmConfigurationBackupAction.IsDisabled = not armed end
   if Controls.CancelConfigurationBackupAction then Controls.CancelConfigurationBackupAction.IsDisabled = not armed end
   FugSchedulerRuntime.updatingBackupControls = false
+
+  local count = #(FugSchedulerRuntime.backupEntries or {})
   FugSchedulerRuntime.setText("ConfigurationBackupSummary", FugSchedulerRuntime.backupSummary(selected))
-  FugSchedulerRuntime.setText("ConfigurationBackupStatus", message or
-    string.format("%d saved configuration%s", #catalog.configurations, #catalog.configurations == 1 and "" or "s"))
+  FugSchedulerRuntime.setText(
+    "ConfigurationBackupCatalogStatus",
+    FugSchedulerRuntime.backupsScanned and string.format(
+      "Persistent catalogue: %d/%d backups | %d characters",
+      count,
+      FugSchedulerRuntime.backupCatalogueMaximum,
+      #(Controls.ConfigurationBackupCatalog and Controls.ConfigurationBackupCatalog.String or "")
+    ) or "Persistent catalogue not loaded"
+  )
+  FugSchedulerRuntime.setText(
+    "ConfigurationBackupStatus",
+    message or (FugSchedulerRuntime.backupsScanned and string.format(
+      "%d/%d Saved Configuration%s",
+      count,
+      FugSchedulerRuntime.backupCatalogueMaximum,
+      count == 1 and "" or "s"
+    ) or "Saved Configurations are loading")
+  )
 end
 
--- Mirror the complete catalogue to the documented Core media location on physical hardware.
-function FugSchedulerRuntime.mirrorBackupCatalogToFile(catalog)
-  if System and System.IsEmulating then
-    FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Designer emulation: file mirror unavailable; persistent control saved.")
+-- Initialise Admin controls without reading the persistent catalogue or physical files.
+function FugSchedulerRuntime.initialiseBackupAdministration()
+  FugSchedulerRuntime.backupCatalog = nil
+  FugSchedulerRuntime.backupEntries = {}
+  FugSchedulerRuntime.selectedBackupId = nil
+  FugSchedulerRuntime.backupsScanned = false
+  FugSchedulerRuntime.pendingBackupAction = nil
+  FugSchedulerRuntime.backupFileEntries = {}
+  FugSchedulerRuntime.selectedBackupFileId = nil
+  if Controls.ConfigurationBackupSelect then Controls.ConfigurationBackupSelect.Choices = {} end
+  if Controls.ConfigurationBackupFileSelect then Controls.ConfigurationBackupFileSelect.Choices = {} end
+  if Controls.RefreshConfigurationBackupFiles then Controls.RefreshConfigurationBackupFiles.IsDisabled = System and System.IsEmulating end
+  if Controls.SaveConfigurationBackupFile then Controls.SaveConfigurationBackupFile.IsDisabled = true end
+  if Controls.ImportConfigurationBackupFile then Controls.ImportConfigurationBackupFile.IsDisabled = true end
+  FugSchedulerRuntime.setText(
+    "ConfigurationBackupFileStatus",
+    System and System.IsEmulating and
+      "Backup files are unavailable in Designer Emulator; use the JSON clipboard for portable transfer." or
+      "Backup files not scanned; press Refresh Files."
+  )
+  FugSchedulerRuntime.refreshBackupControls("Loading Saved Configuration catalogue after scheduler startup")
+  FugSchedulerRuntime.scheduleBackupRefresh()
+end
+
+-- Defer catalogue decoding into its own generation-checked execution slice.
+function FugSchedulerRuntime.scheduleBackupRefresh(message)
+  FugSchedulerRuntime.backupRefreshGeneration = FugSchedulerRuntime.backupRefreshGeneration + 1
+  local refreshGeneration = FugSchedulerRuntime.backupRefreshGeneration
+  local runtime = FugSchedulerRuntime
+  Timer.CallAfter(function()
+    if runtime ~= FugSchedulerRuntime or refreshGeneration ~= runtime.backupRefreshGeneration then return end
+    runtime.refreshBackupList(message)
+  end, 0.05)
+end
+
+-- Load catalogue metadata and opaque schedule strings without parsing any stored schedule.
+function FugSchedulerRuntime.refreshBackupList(message)
+  local catalogue, catalogueError = FugSchedulerRuntime.loadControlBackupCatalogue()
+  if not catalogue then
+    FugSchedulerRuntime.refreshBackupControls("Saved Configuration refresh failed: " .. tostring(catalogueError))
     return false
   end
-  local writeOk, writeError = pcall(function()
-    if dir.get(FugSchedulerRuntime.backupDirectoryPath) == nil then
-      dir.create(FugSchedulerRuntime.backupDirectoryPath)
-    end
-    if dir.get(FugSchedulerRuntime.backupDirectoryPath) == nil then
-      error("could not create " .. FugSchedulerRuntime.backupDirectoryPath)
-    end
-    FugSchedulerRuntime.json.dump(catalog, FugSchedulerRuntime.backupFilePath)
-    local fileFound = false
-    for _, entry in ipairs(dir.get(FugSchedulerRuntime.backupDirectoryPath) or {}) do
-      if entry.type == "file" and entry.name == FugSchedulerRuntime.backupFileName then
-        fileFound = true
-        break
-      end
-    end
-    if not fileFound then
-      error(FugSchedulerRuntime.backupFilePath .. " was not present after writing")
-    end
-  end)
-  if writeOk then
-    FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Core file mirror updated successfully.")
-    return true
+  FugSchedulerRuntime.backupCatalog = catalogue
+  FugSchedulerRuntime.rebuildBackupEntries()
+  FugSchedulerRuntime.backupsScanned = true
+  FugSchedulerRuntime.pendingBackupAction = nil
+  local refreshMessage = message
+  if not refreshMessage and FugSchedulerRuntime.ignoredPreviousBackupCatalogue then
+    refreshMessage = "Previous catalogue format ignored; the first save creates the new ten-backup catalogue"
   end
-  FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Persistent control saved, but Core file mirror failed: " .. tostring(writeError))
-  FugSchedulerRuntime.logLine("Configuration backup file mirror failed: " .. tostring(writeError), LogLevel.ERROR)
-  return false
+  FugSchedulerRuntime.refreshBackupControls(refreshMessage)
+  return true
 end
 
--- Persist a validated catalogue to its hidden control, then update the optional Core file mirror.
-function FugSchedulerRuntime.persistBackupCatalog(catalog, message)
-  catalog.updatedAt = os.date("%Y-%m-%dT%H:%M:%S")
-  FugSchedulerRuntime.markJsonArray(catalog.configurations)
-  local serialized = FugSchedulerRuntime.encodeJson(catalog)
+-- Update metadata-only selection state without opening the selected schedule.
+function FugSchedulerRuntime.inspectSelectedBackup()
+  local selected = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+  FugSchedulerRuntime.refreshBackupControls(selected and "Saved Configuration selected" or "Select a Saved Configuration")
+  return selected ~= nil
+end
+
+-- Ensure an explicit Admin action has loaded the persistent catalogue.
+function FugSchedulerRuntime.ensureBackupCatalogueLoaded()
+  if FugSchedulerRuntime.backupCatalog then return true end
+  return FugSchedulerRuntime.refreshBackupList()
+end
+
+-- Persist a schema-v2 catalogue while retaining every schedule as an opaque string.
+function FugSchedulerRuntime.persistControlBackupCatalogue(catalogue, message)
+  if #catalogue.configurations > FugSchedulerRuntime.backupCatalogueMaximum then
+    FugSchedulerRuntime.refreshBackupControls("Save rejected: maximum of 10 Saved Configurations reached")
+    return false
+  end
+  catalogue.schemaVersion = 2
+  FugSchedulerRuntime.markJsonArray(catalogue.configurations)
+  local serialized = FugSchedulerRuntime.encodeJson(catalogue)
   if serialized == "" then
-    FugSchedulerRuntime.refreshBackupControls("Backup save failed: catalogue JSON serialization failed")
+    FugSchedulerRuntime.refreshBackupControls("Saved Configuration catalogue serialization failed")
     return false
   end
   FugSchedulerRuntime.writingBackupCatalog = true
   local writeOk, writeError = pcall(function() Controls.ConfigurationBackupCatalog.String = serialized end)
   FugSchedulerRuntime.writingBackupCatalog = false
   if not writeOk then
-    FugSchedulerRuntime.refreshBackupControls("Backup save failed: " .. tostring(writeError))
+    FugSchedulerRuntime.refreshBackupControls("Saved Configuration catalogue write failed: " .. tostring(writeError))
     return false
   end
-  FugSchedulerRuntime.backupCatalog = catalog
-  FugSchedulerRuntime.mirrorBackupCatalogToFile(catalog)
+  FugSchedulerRuntime.backupCatalog = catalogue
+  FugSchedulerRuntime.rebuildBackupEntries()
+  FugSchedulerRuntime.backupsScanned = true
   FugSchedulerRuntime.refreshBackupControls(message)
   return true
 end
 
--- Decode the persistent catalogue, falling back to the configured Core file only when the control is empty.
-function FugSchedulerRuntime.reloadBackupCatalog()
-  local source = Controls.ConfigurationBackupCatalog and Controls.ConfigurationBackupCatalog.String or ""
-  local decoded
-  if source ~= "" then
-    local decodeOk, value = pcall(FugSchedulerRuntime.json.decode, source)
-    if not decodeOk or type(value) ~= "table" then
-      FugSchedulerRuntime.setText("ConfigurationBackupStatus", "Backup catalogue JSON is invalid; previous runtime catalogue retained")
-      return false
-    end
-    decoded = value
-  elseif not (System and System.IsEmulating) then
-    local loadOk, value = pcall(FugSchedulerRuntime.json.load, FugSchedulerRuntime.backupFilePath)
-    if loadOk and type(value) == "string" then
-      local decodeOk, decodedValue = pcall(FugSchedulerRuntime.json.decode, value)
-      if decodeOk then value = decodedValue end
-    end
-    if loadOk and type(value) == "table" then
-      decoded = value
-      FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Loaded backup catalogue from " .. FugSchedulerRuntime.backupFilePath .. ".")
-    end
-  end
-  decoded = decoded or FugSchedulerRuntime.emptyBackupCatalog()
-  local validated, validationError = FugSchedulerRuntime.validateBackupCatalog(decoded)
-  if not validated then
-    FugSchedulerRuntime.setText("ConfigurationBackupStatus", "Backup catalogue rejected: " .. tostring(validationError))
-    return false
-  end
-  FugSchedulerRuntime.backupCatalog = validated
-  if source == "" then
-    FugSchedulerRuntime.persistBackupCatalog(validated, "Backup catalogue initialised")
-  else
-    if System and System.IsEmulating then
-      FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Designer emulation: file mirror unavailable; persistent control loaded.")
-    else
-      FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Persistent catalogue loaded; Core file updates on the next save.")
-    end
-    FugSchedulerRuntime.refreshBackupControls()
-  end
-  return true
+-- Serialize the already validated live schedule for catalogue storage.
+function FugSchedulerRuntime.activeScheduleJson()
+  if not FugSchedulerRuntime.activeSchedule then return nil, "no active ScheduleData is installed" end
+  local persisted = FugSchedulerRuntime.copyPersisted(FugSchedulerRuntime.activeSchedule)
+  FugSchedulerRuntime.normalizeScheduleArrays(persisted)
+  local scheduleJson = FugSchedulerRuntime.encodeJson(persisted)
+  if scheduleJson == "" then return nil, "schedule serialization failed" end
+  return scheduleJson, nil
 end
 
--- Save the active Scheduler Definitions and Slot configuration under an operator-supplied name.
+-- Save the active configuration into the ten-entry persistent catalogue.
 function FugSchedulerRuntime.requestSaveBackup()
-  if not FugSchedulerRuntime.activeSchedule or not FugSchedulerRuntime.backupCatalog then return false end
+  if not FugSchedulerRuntime.ensureBackupCatalogueLoaded() then return false end
   local name = string.match(Controls.ConfigurationBackupName and Controls.ConfigurationBackupName.String or "", "^%s*(.-)%s*$") or ""
   if name == "" then
     FugSchedulerRuntime.refreshBackupControls("Save rejected: enter a configuration name")
     return false
   end
-  local existing
-  for _, configuration in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do
-    if configuration.name == name then existing = configuration break end
+  for _, item in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do
+    if item.name == name then
+      FugSchedulerRuntime.pendingBackupAction = {type = "overwrite", id = item.id, name = name}
+      FugSchedulerRuntime.selectedBackupId = item.id
+      FugSchedulerRuntime.refreshBackupControls("Overwrite " .. name .. "? Press Confirm or Cancel.")
+      return true
+    end
   end
-  if existing then
-    FugSchedulerRuntime.pendingBackupAction = {type = "overwrite", id = existing.id, name = name}
-    FugSchedulerRuntime.selectedBackupId = existing.id
-    FugSchedulerRuntime.refreshBackupControls("Overwrite " .. name .. "? Press Confirm or Cancel.")
-    return true
+  if #FugSchedulerRuntime.backupCatalog.configurations >= FugSchedulerRuntime.backupCatalogueMaximum then
+    FugSchedulerRuntime.refreshBackupControls("Save rejected: maximum of 10 Saved Configurations reached")
+    return false
+  end
+  local scheduleJson, scheduleError = FugSchedulerRuntime.activeScheduleJson()
+  if not scheduleJson then
+    FugSchedulerRuntime.refreshBackupControls("Save failed: " .. tostring(scheduleError))
+    return false
   end
   local existingIds = {}
-  for _, saved in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do existingIds[saved.id] = true end
-  local configuration = {
+  for _, item in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do existingIds[item.id] = true end
+  local item = {
     id = FugSchedulerRuntime.generateUuid(existingIds),
     name = name,
-    savedAt = os.date("%Y-%m-%d %H:%M:%S"),
-    schedule = FugSchedulerRuntime.copyPersisted(FugSchedulerRuntime.activeSchedule)
+    savedAt = os.date("%Y-%m-%dT%H:%M:%S"),
+    scheduleJson = scheduleJson
   }
-  FugSchedulerRuntime.normalizeScheduleArrays(configuration.schedule)
-  table.insert(FugSchedulerRuntime.backupCatalog.configurations, configuration)
-  FugSchedulerRuntime.selectedBackupId = configuration.id
-  return FugSchedulerRuntime.persistBackupCatalog(FugSchedulerRuntime.backupCatalog, "Saved configuration " .. name)
+  table.insert(FugSchedulerRuntime.backupCatalog.configurations, item)
+  FugSchedulerRuntime.selectedBackupId = item.id
+  return FugSchedulerRuntime.persistControlBackupCatalogue(
+    FugSchedulerRuntime.backupCatalog,
+    "Saved configuration " .. name
+  )
 end
 
--- Arm a confirmed restore so an accidental ListBox selection cannot replace the live configuration.
+-- Arm a load without parsing the selected schedule; confirmation performs the parse and validation.
 function FugSchedulerRuntime.requestLoadBackup()
-  local configuration = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
-  if not configuration then
-    FugSchedulerRuntime.refreshBackupControls("Load rejected: select a saved configuration")
+  if not FugSchedulerRuntime.ensureBackupCatalogueLoaded() then return false end
+  local entry = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+  if not entry then
+    FugSchedulerRuntime.refreshBackupControls("Load rejected: select a Saved Configuration")
     return false
   end
-  FugSchedulerRuntime.pendingBackupAction = {type = "load", id = configuration.id, name = configuration.name}
-  FugSchedulerRuntime.refreshBackupControls("Load " .. configuration.name .. "? Turn Master Enable off, then press Confirm.")
+  FugSchedulerRuntime.pendingBackupAction = {type = "load", id = entry.id, name = entry.name}
+  FugSchedulerRuntime.refreshBackupControls("Load " .. entry.name .. "? Turn Master Enable off, then press Confirm.")
   return true
 end
 
--- Arm confirmed deletion so a ListBox selection cannot remove a saved configuration accidentally.
+-- Arm deletion of one control-backed Saved Configuration.
 function FugSchedulerRuntime.requestDeleteBackup()
-  local configuration = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
-  if not configuration then
-    FugSchedulerRuntime.refreshBackupControls("Delete rejected: select a saved configuration")
+  if not FugSchedulerRuntime.ensureBackupCatalogueLoaded() then return false end
+  local entry = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+  if not entry then
+    FugSchedulerRuntime.refreshBackupControls("Delete rejected: select a Saved Configuration")
     return false
   end
-  FugSchedulerRuntime.pendingBackupAction = {type = "delete", id = configuration.id, name = configuration.name}
-  FugSchedulerRuntime.refreshBackupControls("Delete " .. configuration.name .. "? Press Confirm or Cancel.")
+  FugSchedulerRuntime.pendingBackupAction = {type = "delete", id = entry.id, name = entry.name}
+  FugSchedulerRuntime.refreshBackupControls("Delete " .. entry.name .. "? Press Confirm or Cancel.")
   return true
+end
+
+-- Validate one complete portable backup envelope and its contained schedule.
+function FugSchedulerRuntime.validateBackupEnvelope(candidate)
+  if type(candidate) ~= "table" or candidate.schemaVersion ~= 1 then
+    return nil, "Backup schemaVersion must be 1"
+  end
+  local id = tostring(candidate.id or "")
+  local name = string.match(tostring(candidate.name or ""), "^%s*(.-)%s*$") or ""
+  if id == "" or name == "" then return nil, "Backup requires an ID and name" end
+  local schedule, _, scheduleError = FugSchedulerRuntime.validateSchedule(candidate.schedule)
+  if not schedule then return nil, tostring(scheduleError) end
+  local envelope = {
+    schemaVersion = 1,
+    id = id,
+    name = name,
+    savedAt = tostring(candidate.savedAt or os.date("%Y-%m-%dT%H:%M:%S")),
+    schedule = FugSchedulerRuntime.copyPersisted(schedule)
+  }
+  FugSchedulerRuntime.normalizeScheduleArrays(envelope.schedule)
+  return envelope, nil
+end
+
+-- Parse and validate only the selected catalogue schedule.
+function FugSchedulerRuntime.loadBackupEnvelope(entry)
+  if not entry then return nil, "select a Saved Configuration" end
+  local item = FugSchedulerRuntime.catalogueBackupById(entry.id)
+  if not item then return nil, "Saved Configuration is no longer present" end
+  local decodeOk, schedule, decodeError = pcall(FugSchedulerRuntime.json.decode, item.scheduleJson)
+  if not decodeOk then return nil, tostring(schedule) end
+  if schedule == nil then return nil, tostring(decodeError) end
+  return FugSchedulerRuntime.validateBackupEnvelope({
+    schemaVersion = 1,
+    id = item.id,
+    name = item.name,
+    savedAt = item.savedAt,
+    schedule = schedule
+  })
 end
 
 -- Atomically install one validated backup with a new local revision while Master Enable is off.
-function FugSchedulerRuntime.loadBackup(configuration)
+function FugSchedulerRuntime.loadBackup(envelope)
   if FugSchedulerRuntime.automaticExecutionEnabled() then
     FugSchedulerRuntime.refreshBackupControls("Load rejected: turn Master Enable off before restoring configuration")
     return false
   end
-  local candidate = FugSchedulerRuntime.copyPersisted(configuration.schedule)
+  local candidate = FugSchedulerRuntime.copyPersisted(envelope.schedule)
   candidate.revision = (tonumber(FugSchedulerRuntime.activeSchedule and FugSchedulerRuntime.activeSchedule.revision) or 0) + 1
   local validated, warnings, validationError = FugSchedulerRuntime.validateSchedule(candidate)
   if not validated then
@@ -5299,64 +5420,378 @@ function FugSchedulerRuntime.loadBackup(configuration)
   local selectedId = FugSchedulerRuntime.selectedSchedulerId
   if not validated._schedulersById[selectedId] then selectedId = validated.schedulers[1].id end
   FugSchedulerRuntime.installValidatedSchedule(validated, warnings, selectedId, "Restored")
-  FugSchedulerRuntime.refreshBackupControls("Loaded configuration " .. configuration.name .. " at revision " .. validated.revision)
+  FugSchedulerRuntime.refreshBackupControls("Loaded configuration " .. envelope.name .. " at revision " .. validated.revision)
   return true
 end
 
--- Execute the currently armed overwrite or restore action.
+-- Confirm an armed catalogue overwrite, selected load, or catalogue deletion.
 function FugSchedulerRuntime.confirmBackupAction()
   local pending = FugSchedulerRuntime.pendingBackupAction
   if not pending then
     FugSchedulerRuntime.refreshBackupControls("Nothing is awaiting confirmation")
     return false
   end
-  local configuration = FugSchedulerRuntime.backupById(pending.id)
-  if not configuration then
+  if not FugSchedulerRuntime.ensureBackupCatalogueLoaded() then return false end
+  local item, itemIndex
+  for index, candidate in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do
+    if candidate.id == pending.id then item, itemIndex = candidate, index break end
+  end
+  if not item then
     FugSchedulerRuntime.pendingBackupAction = nil
-    FugSchedulerRuntime.refreshBackupControls("Confirmation cancelled: saved configuration no longer exists")
+    FugSchedulerRuntime.refreshBackupControls("Confirmation cancelled: Saved Configuration no longer exists")
     return false
   end
+
   if pending.type == "overwrite" then
-    configuration.savedAt = os.date("%Y-%m-%d %H:%M:%S")
-    configuration.schedule = FugSchedulerRuntime.copyPersisted(FugSchedulerRuntime.activeSchedule)
-    FugSchedulerRuntime.normalizeScheduleArrays(configuration.schedule)
+    local scheduleJson, scheduleError = FugSchedulerRuntime.activeScheduleJson()
+    if not scheduleJson then
+      FugSchedulerRuntime.refreshBackupControls("Overwrite failed: " .. tostring(scheduleError))
+      return false
+    end
+    item.savedAt = os.date("%Y-%m-%dT%H:%M:%S")
+    item.scheduleJson = scheduleJson
     FugSchedulerRuntime.pendingBackupAction = nil
-    return FugSchedulerRuntime.persistBackupCatalog(FugSchedulerRuntime.backupCatalog, "Overwrote configuration " .. configuration.name)
+    return FugSchedulerRuntime.persistControlBackupCatalogue(
+      FugSchedulerRuntime.backupCatalog,
+      "Overwrote configuration " .. item.name
+    )
   elseif pending.type == "load" then
-    local loaded = FugSchedulerRuntime.loadBackup(configuration)
+    local envelope, loadError = FugSchedulerRuntime.loadBackupEnvelope(FugSchedulerRuntime.backupById(item.id))
+    if not envelope then
+      FugSchedulerRuntime.refreshBackupControls("Load rejected: " .. tostring(loadError))
+      return false
+    end
+    local loaded = FugSchedulerRuntime.loadBackup(envelope)
     if loaded then FugSchedulerRuntime.pendingBackupAction = nil end
     return loaded
   elseif pending.type == "delete" then
-    local deletedIndex
-    for index, saved in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do
-      if saved.id == configuration.id then deletedIndex = index break end
-    end
-    if not deletedIndex then
-      FugSchedulerRuntime.pendingBackupAction = nil
-      FugSchedulerRuntime.refreshBackupControls("Delete cancelled: saved configuration no longer exists")
-      return false
-    end
-    table.remove(FugSchedulerRuntime.backupCatalog.configurations, deletedIndex)
-    local nextSelection = FugSchedulerRuntime.backupCatalog.configurations[math.min(
-      deletedIndex,
-      #FugSchedulerRuntime.backupCatalog.configurations
-    )]
-    FugSchedulerRuntime.selectedBackupId = nextSelection and nextSelection.id or nil
+    table.remove(FugSchedulerRuntime.backupCatalog.configurations, itemIndex)
     FugSchedulerRuntime.pendingBackupAction = nil
-    return FugSchedulerRuntime.persistBackupCatalog(
+    FugSchedulerRuntime.selectedBackupId = nil
+    return FugSchedulerRuntime.persistControlBackupCatalogue(
       FugSchedulerRuntime.backupCatalog,
-      "Deleted configuration " .. configuration.name
+      "Deleted configuration " .. item.name
     )
   end
+
   FugSchedulerRuntime.pendingBackupAction = nil
   FugSchedulerRuntime.refreshBackupControls("Unknown confirmation action cancelled")
   return false
 end
 
--- Cancel an armed overwrite or restore operation without changing persistent data.
+-- Cancel an armed catalogue action without changing persistent data.
 function FugSchedulerRuntime.cancelBackupAction()
   FugSchedulerRuntime.pendingBackupAction = nil
   FugSchedulerRuntime.refreshBackupControls("Pending backup action cancelled")
+end
+
+-- Return portable envelope JSON while leaving the selected schedule string opaque.
+function FugSchedulerRuntime.selectedBackupTransferJson()
+  if not FugSchedulerRuntime.ensureBackupCatalogueLoaded() then return nil, "Saved Configurations are unavailable" end
+  local item = FugSchedulerRuntime.catalogueBackupById(FugSchedulerRuntime.selectedBackupId)
+  if not item then return nil, "select a Saved Configuration" end
+  local metadata = FugSchedulerRuntime.encodeJson({
+    schemaVersion = 1,
+    id = item.id,
+    name = item.name,
+    savedAt = item.savedAt
+  })
+  if metadata == "" then return nil, "metadata serialization failed" end
+  metadata = string.gsub(metadata, "}%s*$", "")
+  return metadata .. ",\n  \"schedule\": " .. item.scheduleJson .. "\n}", nil
+end
+
+-- Copy the selected Saved Configuration into the JSON clipboard.
+function FugSchedulerRuntime.exportSelectedBackup()
+  local serialized, exportError = FugSchedulerRuntime.selectedBackupTransferJson()
+  if not serialized then
+    FugSchedulerRuntime.refreshBackupControls("Copy rejected: " .. tostring(exportError))
+    return false
+  end
+  FugSchedulerRuntime.setText("ConfigurationBackupTransfer", serialized)
+  FugSchedulerRuntime.refreshBackupControls("Exported selected Saved Configuration to the JSON clipboard")
+  return true
+end
+
+-- Validate complete clipboard JSON before adding it to the catalogue; never change live ScheduleData.
+function FugSchedulerRuntime.importBackupTransfer()
+  if not FugSchedulerRuntime.ensureBackupCatalogueLoaded() then return false end
+  local source = Controls.ConfigurationBackupTransfer and Controls.ConfigurationBackupTransfer.String or ""
+  if source == "" then
+    FugSchedulerRuntime.refreshBackupControls("Import rejected: paste backup JSON first")
+    return false
+  end
+  local decodeOk, decoded, decodeError = pcall(FugSchedulerRuntime.json.decode, source)
+  if not decodeOk then
+    FugSchedulerRuntime.refreshBackupControls("Import rejected: " .. tostring(decoded))
+    return false
+  end
+  if decoded == nil then
+    FugSchedulerRuntime.refreshBackupControls("Import rejected: " .. tostring(decodeError))
+    return false
+  end
+  local envelope, validationError = FugSchedulerRuntime.validateBackupEnvelope(decoded)
+  if not envelope then
+    FugSchedulerRuntime.refreshBackupControls("Import rejected: " .. tostring(validationError))
+    return false
+  end
+  if #FugSchedulerRuntime.backupCatalog.configurations >= FugSchedulerRuntime.backupCatalogueMaximum then
+    FugSchedulerRuntime.refreshBackupControls("Import rejected: maximum of 10 Saved Configurations reached")
+    return false
+  end
+  local existingIds = {}
+  for _, item in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do
+    existingIds[item.id] = true
+    if item.name == envelope.name then
+      FugSchedulerRuntime.refreshBackupControls("Import rejected: a Saved Configuration already uses that name")
+      return false
+    end
+  end
+  if existingIds[envelope.id] then envelope.id = FugSchedulerRuntime.generateUuid(existingIds) end
+  local scheduleJson = FugSchedulerRuntime.encodeJson(envelope.schedule)
+  if scheduleJson == "" then
+    FugSchedulerRuntime.refreshBackupControls("Import rejected: validated schedule serialization failed")
+    return false
+  end
+  table.insert(FugSchedulerRuntime.backupCatalog.configurations, {
+    id = envelope.id,
+    name = envelope.name,
+    savedAt = os.date("%Y-%m-%dT%H:%M:%S"),
+    scheduleJson = scheduleJson
+  })
+  FugSchedulerRuntime.selectedBackupId = envelope.id
+  return FugSchedulerRuntime.persistControlBackupCatalogue(
+    FugSchedulerRuntime.backupCatalog,
+    "Imported from JSON as Saved Configuration " .. envelope.name
+  )
+end
+
+-- Convert an operator name to a conservative filename segment.
+function FugSchedulerRuntime.backupNameSlug(name)
+  local slug = string.lower(tostring(name or ""))
+  slug = string.gsub(slug, "[^%w]+", "-")
+  slug = string.gsub(slug, "^-+", "")
+  slug = string.gsub(slug, "-+$", "")
+  slug = string.sub(slug, 1, 48)
+  return slug ~= "" and slug or "backup"
+end
+
+-- Build one collision-resistant immutable backup filename.
+function FugSchedulerRuntime.backupFileName(envelope)
+  local stamp = string.gsub(tostring(envelope.savedAt or os.date("%Y-%m-%dT%H:%M:%S")), "[^%d]", "")
+  stamp = string.sub(stamp .. "00000000000000", 1, 14)
+  return string.format("%s__%s__%s.json", stamp, FugSchedulerRuntime.backupNameSlug(envelope.name), envelope.id)
+end
+
+-- Return one listed physical backup file by filename ID.
+function FugSchedulerRuntime.backupFileById(id)
+  for _, entry in ipairs(FugSchedulerRuntime.backupFileEntries or {}) do
+    if entry.id == id then return entry end
+  end
+  return nil
+end
+
+-- Refresh physical file controls after a filename-only scan or selection change.
+function FugSchedulerRuntime.refreshBackupFileControls(message)
+  local choices = {}
+  for _, entry in ipairs(FugSchedulerRuntime.backupFileEntries or {}) do
+    table.insert(choices, {Text = entry.fileName, Id = entry.id})
+  end
+  if Controls.ConfigurationBackupFileSelect then
+    Controls.ConfigurationBackupFileSelect.Choices = choices
+    local selected = FugSchedulerRuntime.backupFileById(FugSchedulerRuntime.selectedBackupFileId) or
+      FugSchedulerRuntime.backupFileEntries[1]
+    FugSchedulerRuntime.selectedBackupFileId = selected and selected.id or nil
+    Controls.ConfigurationBackupFileSelect.String = selected and
+      FugSchedulerRuntime.encodeChoice(selected.fileName, selected.id) or ""
+  end
+  local unavailable = System and System.IsEmulating
+  if Controls.RefreshConfigurationBackupFiles then Controls.RefreshConfigurationBackupFiles.IsDisabled = unavailable end
+  if Controls.ImportConfigurationBackupFile then
+    Controls.ImportConfigurationBackupFile.IsDisabled = unavailable or FugSchedulerRuntime.selectedBackupFileId == nil
+  end
+  if Controls.SaveConfigurationBackupFile then
+    Controls.SaveConfigurationBackupFile.IsDisabled = unavailable or FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId) == nil
+  end
+  FugSchedulerRuntime.setText(
+    "ConfigurationBackupFileStatus",
+    message or (unavailable and "Backup files are unavailable in Designer Emulator." or string.format(
+      "%d backup file%s listed",
+      #(FugSchedulerRuntime.backupFileEntries or {}),
+      #(FugSchedulerRuntime.backupFileEntries or {}) == 1 and "" or "s"
+    ))
+  )
+end
+
+-- Refresh the physical backup-file list by filename only; no file is opened.
+function FugSchedulerRuntime.refreshBackupFileList(message)
+  if System and System.IsEmulating then
+    FugSchedulerRuntime.backupFileEntries = {}
+    FugSchedulerRuntime.selectedBackupFileId = nil
+    FugSchedulerRuntime.refreshBackupFileControls("Backup files are unavailable in Designer Emulator.")
+    return false
+  end
+  local listOk, listing = pcall(dir.get, FugSchedulerRuntime.backupDirectoryPath)
+  if not listOk then
+    FugSchedulerRuntime.refreshBackupFileControls("File refresh failed: " .. tostring(listing))
+    return false
+  end
+  local entries = {}
+  for _, fileEntry in ipairs(listing or {}) do
+    if fileEntry.type == "file" and string.match(string.lower(fileEntry.name or ""), "%.json$") then
+      table.insert(entries, {id = fileEntry.name, fileName = fileEntry.name})
+    end
+  end
+  table.sort(entries, function(a, b) return a.fileName < b.fileName end)
+  FugSchedulerRuntime.backupFileEntries = entries
+  if not FugSchedulerRuntime.backupFileById(FugSchedulerRuntime.selectedBackupFileId) then
+    FugSchedulerRuntime.selectedBackupFileId = entries[1] and entries[1].id or nil
+  end
+  FugSchedulerRuntime.refreshBackupFileControls(message)
+  return true
+end
+
+-- Ensure the physical backup directory exists before writing a new file.
+function FugSchedulerRuntime.ensureBackupDirectory()
+  local ok, result = pcall(function()
+    if dir.get(FugSchedulerRuntime.backupRootPath) == nil then dir.create(FugSchedulerRuntime.backupRootPath) end
+    if dir.get(FugSchedulerRuntime.backupDirectoryPath) == nil then dir.create(FugSchedulerRuntime.backupDirectoryPath) end
+    if dir.get(FugSchedulerRuntime.backupDirectoryPath) == nil then
+      error("could not create " .. FugSchedulerRuntime.backupDirectoryPath)
+    end
+  end)
+  return ok, result
+end
+
+-- Read one selected physical JSON file without touching any other listed file.
+function FugSchedulerRuntime.readBackupFile(entry)
+  local path = FugSchedulerRuntime.backupDirectoryPath .. "/" .. tostring(entry and entry.fileName or "")
+  local loadOk, value = pcall(FugSchedulerRuntime.json.load, path)
+  if not loadOk then return nil, tostring(value) end
+  if type(value) == "string" then
+    local decodeOk, decoded, decodeError = pcall(FugSchedulerRuntime.json.decode, value)
+    if not decodeOk then return nil, tostring(decoded) end
+    if decoded == nil then return nil, tostring(decodeError) end
+    value = decoded
+  end
+  if type(value) ~= "table" then return nil, "backup file did not contain a JSON object" end
+  return value, nil
+end
+
+-- Export the selected catalogue backup as a new immutable physical file.
+function FugSchedulerRuntime.saveSelectedBackupFile()
+  if System and System.IsEmulating then
+    FugSchedulerRuntime.refreshBackupFileControls("Configuration file export is unavailable in Designer Emulator.")
+    return false
+  end
+  if not FugSchedulerRuntime.ensureBackupCatalogueLoaded() then return false end
+  local entry = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
+  local envelope, envelopeError = FugSchedulerRuntime.loadBackupEnvelope(entry)
+  if not envelope then
+    FugSchedulerRuntime.refreshBackupFileControls("File export rejected: " .. tostring(envelopeError))
+    return false
+  end
+  envelope.id = FugSchedulerRuntime.generateUuid({})
+  envelope.savedAt = os.date("%Y-%m-%dT%H:%M:%S")
+  local directoryOk, directoryError = FugSchedulerRuntime.ensureBackupDirectory()
+  if not directoryOk then
+    FugSchedulerRuntime.refreshBackupFileControls("File export failed: " .. tostring(directoryError))
+    return false
+  end
+  local fileName = FugSchedulerRuntime.backupFileName(envelope)
+  local listOk, listing = pcall(dir.get, FugSchedulerRuntime.backupDirectoryPath)
+  if not listOk then
+    FugSchedulerRuntime.refreshBackupFileControls("File export failed: " .. tostring(listing))
+    return false
+  end
+  for _, existing in ipairs(listing or {}) do
+    if existing.type == "file" and existing.name == fileName then
+      FugSchedulerRuntime.refreshBackupFileControls("File already exists; no replacement was attempted")
+      return false
+    end
+  end
+  local writeOk, writeError = pcall(
+    FugSchedulerRuntime.json.dump,
+    envelope,
+    FugSchedulerRuntime.backupDirectoryPath .. "/" .. fileName
+  )
+  if not writeOk then
+    FugSchedulerRuntime.refreshBackupFileControls("File export failed: " .. tostring(writeError))
+    return false
+  end
+  FugSchedulerRuntime.refreshBackupFileList("Exported selected configuration to " .. fileName)
+  return true
+end
+
+-- Validate the selected physical file, import it into the catalogue, and arm confirmed loading.
+function FugSchedulerRuntime.importSelectedBackupFile()
+  if System and System.IsEmulating then
+    FugSchedulerRuntime.refreshBackupFileControls("Importing backup files is unavailable in Designer Emulator.")
+    return false
+  end
+  local entry = FugSchedulerRuntime.backupFileById(FugSchedulerRuntime.selectedBackupFileId)
+  if not entry then
+    FugSchedulerRuntime.refreshBackupFileControls("Select a backup file")
+    return false
+  end
+  local candidate, readError = FugSchedulerRuntime.readBackupFile(entry)
+  if not candidate then
+    FugSchedulerRuntime.refreshBackupFileControls("File import rejected: " .. tostring(readError))
+    return false
+  end
+  local envelope, validationError = FugSchedulerRuntime.validateBackupEnvelope(candidate)
+  if not envelope then
+    FugSchedulerRuntime.refreshBackupFileControls(
+      "File import rejected; catalogue and live configuration unchanged: " .. tostring(validationError)
+    )
+    return false
+  end
+  if not FugSchedulerRuntime.ensureBackupCatalogueLoaded() then return false end
+  if #FugSchedulerRuntime.backupCatalog.configurations >= FugSchedulerRuntime.backupCatalogueMaximum then
+    FugSchedulerRuntime.refreshBackupFileControls("File import rejected: maximum of 10 Saved Configurations reached")
+    return false
+  end
+  local existingIds = {}
+  for _, item in ipairs(FugSchedulerRuntime.backupCatalog.configurations) do
+    existingIds[item.id] = true
+    if item.name == envelope.name then
+      FugSchedulerRuntime.refreshBackupFileControls(
+        "File import rejected: a Saved Configuration already uses that name"
+      )
+      return false
+    end
+  end
+  if existingIds[envelope.id] then envelope.id = FugSchedulerRuntime.generateUuid(existingIds) end
+  local scheduleJson = FugSchedulerRuntime.encodeJson(envelope.schedule)
+  if scheduleJson == "" then
+    FugSchedulerRuntime.refreshBackupFileControls("File import rejected: validated schedule serialization failed")
+    return false
+  end
+  local previousSelection = FugSchedulerRuntime.selectedBackupId
+  table.insert(FugSchedulerRuntime.backupCatalog.configurations, {
+    id = envelope.id,
+    name = envelope.name,
+    savedAt = os.date("%Y-%m-%dT%H:%M:%S"),
+    scheduleJson = scheduleJson
+  })
+  FugSchedulerRuntime.selectedBackupId = envelope.id
+  if not FugSchedulerRuntime.persistControlBackupCatalogue(
+      FugSchedulerRuntime.backupCatalog,
+      "Imported file as Saved Configuration " .. envelope.name
+    ) then
+    table.remove(FugSchedulerRuntime.backupCatalog.configurations)
+    FugSchedulerRuntime.selectedBackupId = previousSelection
+    FugSchedulerRuntime.rebuildBackupEntries()
+    return false
+  end
+  FugSchedulerRuntime.pendingBackupAction = {type = "load", id = envelope.id, name = envelope.name}
+  FugSchedulerRuntime.refreshBackupControls(
+    "Imported " .. envelope.name .. "; turn Master Enable off, then press Confirm to load it"
+  )
+  FugSchedulerRuntime.refreshBackupFileControls(
+    "Imported " .. entry.fileName .. " into Saved Configurations and armed confirmed loading"
+  )
+  return true
 end
 
 -- Populate persistent presentation and logging preferences without touching schedule configuration.
@@ -6134,18 +6569,20 @@ function FugSchedulerRuntime.attachHandlers()
 
   if Controls.ConfigurationBackupCatalog then
     Controls.ConfigurationBackupCatalog.EventHandler = function()
-      if not FugSchedulerRuntime.writingBackupCatalog then FugSchedulerRuntime.reloadBackupCatalog() end
+      if FugSchedulerRuntime.writingBackupCatalog then return end
+      FugSchedulerRuntime.backupCatalog = nil
+      FugSchedulerRuntime.backupEntries = {}
+      FugSchedulerRuntime.backupsScanned = false
+      FugSchedulerRuntime.selectedBackupId = nil
+      FugSchedulerRuntime.refreshBackupControls("Saved Configuration catalogue changed; refreshing metadata")
+      FugSchedulerRuntime.scheduleBackupRefresh()
     end
   end
   if Controls.ConfigurationBackupSelect then
     Controls.ConfigurationBackupSelect.EventHandler = function(control)
       if FugSchedulerRuntime.updatingBackupControls then return end
       FugSchedulerRuntime.selectedBackupId = FugSchedulerRuntime.choiceId(control.String)
-      local configuration = FugSchedulerRuntime.backupById(FugSchedulerRuntime.selectedBackupId)
-      FugSchedulerRuntime.updatingBackupControls = true
-      if Controls.ConfigurationBackupName and configuration then Controls.ConfigurationBackupName.String = configuration.name end
-      FugSchedulerRuntime.updatingBackupControls = false
-      FugSchedulerRuntime.setText("ConfigurationBackupSummary", FugSchedulerRuntime.backupSummary(configuration))
+      FugSchedulerRuntime.inspectSelectedBackup()
     end
   end
   if Controls.SaveConfigurationBackup then
@@ -6171,6 +6608,37 @@ function FugSchedulerRuntime.attachHandlers()
   if Controls.CancelConfigurationBackupAction then
     Controls.CancelConfigurationBackupAction.EventHandler = function(control)
       if control.Boolean then FugSchedulerRuntime.cancelBackupAction() end
+    end
+  end
+  if Controls.ExportConfigurationBackup then
+    Controls.ExportConfigurationBackup.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.exportSelectedBackup() end
+    end
+  end
+  if Controls.ImportConfigurationBackup then
+    Controls.ImportConfigurationBackup.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.importBackupTransfer() end
+    end
+  end
+  if Controls.ConfigurationBackupFileSelect then
+    Controls.ConfigurationBackupFileSelect.EventHandler = function(control)
+      FugSchedulerRuntime.selectedBackupFileId = FugSchedulerRuntime.choiceId(control.String)
+      FugSchedulerRuntime.refreshBackupFileControls("Backup file selected; Import Configuration File validates only this file")
+    end
+  end
+  if Controls.RefreshConfigurationBackupFiles then
+    Controls.RefreshConfigurationBackupFiles.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.refreshBackupFileList() end
+    end
+  end
+  if Controls.SaveConfigurationBackupFile then
+    Controls.SaveConfigurationBackupFile.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.saveSelectedBackupFile() end
+    end
+  end
+  if Controls.ImportConfigurationBackupFile then
+    Controls.ImportConfigurationBackupFile.EventHandler = function(control)
+      if control.Boolean then FugSchedulerRuntime.importSelectedBackupFile() end
     end
   end
 
@@ -6209,6 +6677,8 @@ end
 
 -- Initialize sample persistence, registries, status, and the first resolution result.
 function FugSchedulerRuntime.initialize()
+  FugSchedulerRuntime.startupGeneration = FugSchedulerRuntime.startupGeneration + 1
+  local startupGeneration = FugSchedulerRuntime.startupGeneration
   -- Deterministic preview and execution-clock injection are developer-only runtime aids.
   FugSchedulerRuntime.clearDiagnosticTestTime("plugin runtime started", false)
   if Controls.ExecutionTestClockOffsetSeconds then
@@ -6240,6 +6710,7 @@ function FugSchedulerRuntime.initialize()
   if Controls.DebugLogLevel then Controls.DebugLogLevel.Choices = {} end
   if Controls.EventLogLevel then Controls.EventLogLevel.Choices = {} end
   if Controls.ConfigurationBackupSelect then Controls.ConfigurationBackupSelect.Choices = {} end
+  if Controls.ConfigurationBackupFileSelect then Controls.ConfigurationBackupFileSelect.Choices = {} end
   for _, weekday in ipairs(FugSchedulerWeekdays) do
     if Controls[weekday.controlName] then Controls[weekday.controlName].Choices = {} end
   end
@@ -6263,8 +6734,9 @@ function FugSchedulerRuntime.initialize()
   FugSchedulerRuntime.setText("DayPatternEditorStatus", "Waiting for a valid Day Pattern configuration")
   FugSchedulerRuntime.setText("WeekPatternEditorStatus", "Waiting for a valid Week Pattern configuration")
   FugSchedulerRuntime.setText("OverrideEditorStatus", "Waiting for a valid Override configuration")
-  FugSchedulerRuntime.setText("ConfigurationBackupStatus", "Loading named configuration backups")
-  FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Checking Core file mirror availability")
+  FugSchedulerRuntime.setText("ConfigurationBackupStatus", "Saved Configurations will load after essential scheduler startup")
+  FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Backup files not initialised")
+  FugSchedulerRuntime.setText("ConfigurationBackupCatalogStatus", "Persistent catalogue not loaded")
   FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Waiting for a runnable Scheduler Slot")
   FugSchedulerRuntime.setText("PreferencesStatus", "Loading preferences")
   FugSchedulerRuntime.setText("BuildDateDisplay", FugSchedulerRuntime.formatBuildDate(FugSchedulerPluginInfo.BuildTimestamp))
@@ -6285,15 +6757,27 @@ function FugSchedulerRuntime.initialize()
   if Controls.EventLogLevel and (Controls.EventLogLevel.String or "") == "" then
     Controls.EventLogLevel.String = FugSchedulerRuntime.encodeChoice("Off", LogLevel.OFF)
   end
-  FugSchedulerRuntime.refreshPreferences()
-  FugSchedulerRuntime.reloadOneShotLedger()
-  FugSchedulerRuntime.reloadBackupCatalog()
-  FugSchedulerRuntime.logLine("FugScheduler 2000 scheduler runtime initialised.")
-
-  FugSchedulerRuntime.reloadActions()
-  FugSchedulerRuntime.scheduleInitialized = true
-  FugSchedulerRuntime.reloadSchedule()
+  -- Attach handlers and load essential state in short generation-checked slices.
+  Timer.CallAfter(function()
+    if startupGeneration ~= FugSchedulerRuntime.startupGeneration then return end
+    FugSchedulerRuntime.attachHandlers()
+    FugSchedulerRuntime.refreshPreferences()
+    FugSchedulerRuntime.reloadOneShotLedger()
+    Timer.CallAfter(function()
+      if startupGeneration ~= FugSchedulerRuntime.startupGeneration then return end
+      FugSchedulerRuntime.reloadActions()
+      Timer.CallAfter(function()
+        if startupGeneration ~= FugSchedulerRuntime.startupGeneration then return end
+        FugSchedulerRuntime.scheduleInitialized = true
+        FugSchedulerRuntime.reloadSchedule()
+        FugSchedulerRuntime.logLine("FugScheduler 2000 essential scheduler runtime initialised.")
+        Timer.CallAfter(function()
+          if startupGeneration ~= FugSchedulerRuntime.startupGeneration then return end
+          FugSchedulerRuntime.initialiseBackupAdministration()
+        end, 0.02)
+      end, 0.02)
+    end, 0.02)
+  end, 0.02)
 end
 
-FugSchedulerRuntime.attachHandlers()
 FugSchedulerRuntime.initialize()

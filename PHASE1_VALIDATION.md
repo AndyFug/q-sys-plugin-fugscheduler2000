@@ -438,7 +438,47 @@ Validated in development build `0.1.0.28` against the active `fugscheduler2000_t
 - Build `0.1.0.30` removed the Admin file-mirror information panel, renamed the group to Configuration Backups, moved Confirm/Cancel into a tighter lower pair, and made left alignment the FugUi default for every ListBox. The generated/deployed SHA-256 matched `2df7352bf0769564489f4f0f7af2a0e88a42e2fbc12075a4c855aa056ba29abc`; the reloaded component fingerprint is `8cfdc5ff2f54bbaf84804c3a2313796d`, with the original two-backup catalogue retained and both scripts healthy.
 - Build `0.1.0.31` added the compact top-right filesystem-location note requested for the Admin group. The generated/deployed SHA-256 matched `7e48b263a381b46e22aa8fbde3ae81f83366ce71a0ca63f879e8599f6da48ccd`; physical-Core path validation remains deferred.
 
-The file approach follows the official SDK JSON read/write example in `.agents/skills/qsys-plugin-sdk/references/official-sdk/Code Examples/19-JSON-Object.md`; that reference explicitly notes that file operations do not work in emulation. Directory creation follows the Q-SYS `dir` documentation at <https://help.qsys.com/content/Control_Scripting/Using_Lua_in_Q-Sys/Directory.htm>.
+The original file approach followed the official SDK JSON read/write example in `.agents/skills/qsys-plugin-sdk/references/official-sdk/Code Examples/19-JSON-Object.md`; that reference explicitly notes that file operations do not work in emulation. Directory creation follows the Q-SYS `dir` documentation at <https://help.qsys.com/content/Control_Scripting/Using_Lua_in_Q-Sys/Directory.htm>.
+
+### Backup storage and cold-start refactor
+
+Implemented after production-sized cold-start testing exposed execution-limit failure in the monolithic catalogue loader. Build `0.1.0.36` validated the first file-primary/session-memory response; the current undeployed source now implements the agreed second design:
+
+- [x] Keep `ConfigurationBackupCatalog` as the persistent primary store on Emulator and physical Cores, limited to ten entries.
+- [x] Retain each stored schedule as opaque `scheduleJson`; essential startup does not decode the catalogue, a deferred post-startup slice automatically restores list metadata, and selection remains metadata-only.
+- [x] Phase essential startup with generation-checked delayed slices before nonessential Admin initialisation.
+- [x] Parse and validate only the selected schedule after confirmed Load.
+- [x] Validate complete clipboard imports before catalogue insertion without changing live `ScheduleData`.
+- [x] Add a separate physical-Core filename-only list, new-file save, and selected-file validation-to-clipboard workflow.
+- [x] Disable physical file actions in Emulator and leave physical overwrite/delete unavailable pending API and atomicity validation.
+- [x] Remove superseded monolithic, session-memory, migration, and duplicate runtime implementations.
+- [x] Add updated Admin, cold-start, backup-isolation, physical corrupt-selected-file, selected-file contract, and Slot Inspector regression coverage.
+- [ ] Deploy a new numbered build after emulation is stopped and run the revised cold-start/Admin regressions.
+- [ ] Validate physical file creation/readback, corrupt selected-file isolation, and redundant-Core media behaviour without enabling physical overwrite/delete.
+
+QRC findings for build `0.1.0.36` against `fugscheduler2000_test`:
+
+- Cold runtime reload with a temporary 190,000-character legacy catalogue completed with script status `OK`, zero errors, active ScheduleData installed, aggregate Slot status published, and backup status still `Backups not scanned`; the original catalogue was restored byte-for-byte. `validate_cold_start.py`: 9 assertions.
+- The Designer session-memory backend saved, selected, exported, loaded, and deleted an isolated backup without changing the legacy catalogue. A malformed transfer envelope was rejected without changing ScheduleData or the valid selected backup. `validate_admin_backups.py`: 19 assertions.
+- The selected Slot Inspector remained tied to Slot 1 while the Scheduler Definition editor selected a different Definition. After a genuine shared-time edge containing missing and failing Actions, Inspector and overview both advanced to `Shared Edge B`, Next advanced correctly, and later Actions/repeats continued. `validate_execution.py`: 76 assertions.
+- The first 8 Scheduler × 20 Event scale run exposed a synchronous editor/status refresh execution-limit fault. Default-capacity models now use the existing chunked deferred refresh path at 8 Schedulers or 120 Events. The repeated scale test passed at 5×10 and 8×20 with zero delayed polls and byte-for-byte restoration. `validate_execution_scale.py`: 25 assertions.
+- Regression suites passed with restoration confirmed: Scheduler Slots/Inspector 29, pause modes 17, Week Patterns 42, Overrides 48, Override Dates 54, and logging 18 assertions.
+- Automatic execution finished disabled, and plugin, runtime provider, and Action Provider finished healthy with zero script errors.
+
+QRC findings for the revised persistent-catalogue implementation in build `0.1.0.37` against `fugscheduler2000_test`:
+
+- New Admin controls loaded with component fingerprint `47aa465c097fbd059e49d878cd85ee7d`; the plugin and runtime provider reported `OK` with zero errors.
+- The first Admin run exposed previous-schema detection that inspected only the first 512 characters. Detection now scans the opaque catalogue text for the root schema marker without decoding it; the current bundled artifact includes this correction.
+- Build `0.1.0.37` cold startup with a production-sized ten-entry schema-v2 catalogue passed 10 assertions, installed active `ScheduleData`, published Slot status, left backups unloaded under the then-current explicit-refresh design, and restored persistent controls byte-for-byte. The next build changes this final step to deferred automatic metadata refresh and updates the regression accordingly.
+- Persistent Admin backup validation passed 24 assertions covering opaque `scheduleJson`, restart persistence, metadata-only selection, overwrite cancellation, clipboard rejection/import isolation, corrupt selected-schedule isolation, Master Enable guarding, atomic confirmed load, the ten-entry limit, deletion, disabled Emulator file actions, restoration, and script health.
+- Execution scale passed 25 assertions at 5 Definitions × 10 Events and 8 × 20 with zero delayed polls and restoration confirmed.
+- Guarded execution and the Slot Inspector callback-failure regression passed 76 assertions with all providers healthy and automatic execution disabled after restoration.
+- Post-deployment regressions passed with restoration confirmed: Scheduler Slots/Inspector 29, pause modes 17, Week Patterns 42, Overrides 48, Override Dates 54, logging 18, execution-plan lifecycle 24, detached resolution 21, and clock discontinuities 34 assertions.
+- Advance to Next Event encountered one transient future-occurrence assertion failure on its first timing-sensitive run, restored all fixtures, and then passed all 15 assertions on immediate rerun through the real scheduled edge. Retain this as a timing-boundary watch item rather than a confirmed runtime defect.
+- The corrected `0.1.0.37` artifact was redeployed while emulation was stopped; local and deployed SHA-256 matched `e1b9c12e5e2a46eec7384b5b35052263b28499160c4abf962c8ec11a63f8f50d`.
+- After Designer restart, QRC reported active Emulator design `fugscheduler2000_test`; plugin, runtime provider, and Action Provider were all `OK` with zero errors. The active schedule loaded with zero warnings, backups remained unloaded, Emulator file actions reported unavailable, and Master Enable remained off.
+
+Build `0.1.0.38` was deployed to Designer for the follow-up usability change that removes the manual Refresh Backups control and automatically restores catalogue metadata in a deferred post-essential-startup slice; QRC validation was blocked because the Designer QRC service accepted connections but did not answer requests. The next local build also changes the physical file action from Load File to JSON to Import Configuration File: the selected file validates into Saved Configurations and then arms the shared confirmed-load flow without using the clipboard. Offline and live validation of these latest changes remains pending.
 
 ## Centralized logging implementation
 
