@@ -24,9 +24,10 @@ function GetControls(_props)
 
   local slotCount = propValue(_props, "Scheduler Slot Count", 8)
 
-  -- Provide stable runnable slot controls; only these operational controls are public pins.
-  table.insert(ctrls, {Name = "AutomaticExecutionEnabled", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Input", Count = 1})
-  table.insert(ctrls, {Name = "ExecutionStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  -- Provide stable runnable Slot controls as the public automation contract.
+  -- Master Enable defaults off only when first created; its saved control state is retained across runtime restarts.
+  table.insert(ctrls, {Name = "AutomaticExecutionEnabled", ControlType = "Button", ButtonType = "Toggle", DefaultValue = false, UserPin = true, PinStyle = "Both", Count = 1})
+  table.insert(ctrls, {Name = "ExecutionStatus", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "SchedulerSlotNumber", ControlType = "Text", Count = slotCount})
   table.insert(ctrls, {Name = "SchedulerSlotDefinition", ControlType = "Text", Count = slotCount})
   table.insert(ctrls, {Name = "SchedulerSlotAssignedId", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = slotCount})
@@ -145,11 +146,23 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "MoveOverrideDown", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "OverrideEditorStatus", ControlType = "Text", Count = 1})
 
-  -- Persist presentation and logging preferences separately from canonical ScheduleData.
+  -- Persist presentation, execution, and logging preferences separately from canonical ScheduleData.
   table.insert(ctrls, {Name = "DateFormatPreference", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {
+    Name = "OneShotLateToleranceSeconds",
+    ControlType = "Knob",
+    ControlUnit = "Integer",
+    Min = 0,
+    Max = 14400,
+    DefaultValue = 0,
+    Count = 1
+  })
   table.insert(ctrls, {Name = "DebugLogLevel", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "EventLogLevel", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "PreferencesStatus", ControlType = "Text", Count = 1})
+
+  -- Retain bounded one-shot execution receipts independently from editable schedule configuration.
+  table.insert(ctrls, {Name = "OneShotExecutionLedger", ControlType = "Text", Count = 1})
 
   -- Keep named complete ScheduleData backups in one persistent catalogue and mirror it to Core media storage.
   table.insert(ctrls, {Name = "ConfigurationBackupCatalog", ControlType = "Text", Count = 1})
@@ -175,28 +188,39 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "TestDateTime", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "ResolveTestTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "UseLiveTime", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {
+    Name = "ExecutionTestClockOffsetSeconds",
+    ControlType = "Knob",
+    ControlUnit = "Integer",
+    Min = -86400,
+    Max = 86400,
+    DefaultValue = 0,
+    Count = 1
+  })
 
   -- Display build metadata formatted in the Core or emulator's local timezone.
   table.insert(ctrls, {Name = "BuildDateDisplay", ControlType = "Text", Count = 1})
 
-  table.insert(ctrls, {Name = "Status", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "RegistryStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "RegisteredActionCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "ScheduleStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "AssignedSchedulerSlotCount", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  -- Keep page-only status and selected-Slot display controls internal. Stable per-Slot pins and
+  -- the aggregate JSON output remain public so integrations do not depend on editor selection.
+  table.insert(ctrls, {Name = "Status", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "RegistryStatus", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "RegisteredActionCount", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "ScheduleStatus", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "AssignedSchedulerSlotCount", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "GlobalSchedulerSlotStatus", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
   table.insert(ctrls, {Name = "GlobalSchedulerSlotStatusViewer", ControlType = "Text", Count = 1})
-  table.insert(ctrls, {Name = "ResolutionSource", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "ResolvedDayPattern", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "PreviousEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "CurrentEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "CurrentEventActions", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "ResolutionSource", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "ResolvedDayPattern", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "PreviousEvent", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "CurrentEvent", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "CurrentEventActions", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "CurrentEventActionsViewer", ControlType = "Text", Count = 1})
-  table.insert(ctrls, {Name = "NextEvent", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "NextEventActions", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "NextEvent", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "NextEventActions", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "NextEventActionsViewer", ControlType = "Text", Count = 1})
-  table.insert(ctrls, {Name = "NextEventTime", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
-  table.insert(ctrls, {Name = "Countdown", ControlType = "Text", UserPin = true, PinStyle = "Output", Count = 1})
+  table.insert(ctrls, {Name = "NextEventTime", ControlType = "Text", Count = 1})
+  table.insert(ctrls, {Name = "Countdown", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "DiagnosticLog", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "DiagnosticLogViewer", ControlType = "Text", Count = 1})
 

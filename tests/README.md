@@ -23,6 +23,7 @@ python3 tests/qrc/validate_execution.py
 python3 tests/qrc/validate_execution_plan_lifecycle.py
 python3 tests/qrc/validate_execution_resolution.py
 python3 tests/qrc/validate_execution_scale.py
+python3 tests/qrc/validate_clock_discontinuities.py
 # Run shortly before local midnight; this intentionally waits for 00:00.
 python3 tests/qrc/validate_execution_midnight.py
 python3 tests/qrc/validate_logging.py
@@ -40,6 +41,8 @@ The execution test also inspects runtime-plan diagnostics in `GlobalSchedulerSlo
 
 `validate_execution_scale.py` replaces the schedule temporarily with disabled assigned-Slot fixtures at 5 Definitions × 10 Events and the default-capacity maximum of 8 × 20. It measures QRC install elapsed time plus average/maximum poll, delayed-poll, and rebuild diagnostics. All Event Actions use a safe callback ID, every Slot remains disabled, and Master Enable must remain off. The test restores `ScheduleData` and `TestDateTime` byte-for-byte.
 
+`validate_clock_discontinuities.py` uses the hidden emulator-only execution-clock offset to validate latest-Event late recovery, zero tolerance, stateful forward/backward reconciliation, persistent one-shot receipts, repeated-edge suppression, and runtime-reload suppression. It snapshots and restores `ScheduleData`, the receipt ledger, tolerance, clock offset, logging preferences, TestDateTime, and the complete Action Provider source. The offset is ignored on physical Cores and reset to zero whenever the runtime starts.
+
 `validate_overview.py` validates eight stable Slot rows, filtered and forced-duplicate assignment behavior, unassigned Slot behavior, stable Slot Enable/Pause controls, Slot Inspector mirroring, the Unassign helper, and both visual and forced deletion guards.
 
 `validate_pause_modes.py` keeps Master Enable off while validating Manual, Duration, Until Time, Next Event, and Through Day configuration; immediate active-intent re-arming; persisted target snapshots; schedule-edit retargeting; stable per-Slot controls; aggregate pause status; reload persistence; and byte-for-byte restoration.
@@ -54,7 +57,7 @@ The execution test also inspects runtime-plan diagnostics in `GlobalSchedulerSlo
 
 `validate_execution_midnight.py` is a long-running acceptance test that must start 20 seconds to 25 minutes before the emulator's local midnight. It installs one safe temporary Scheduler, arms execution, and waits for genuine 23:59 and 00:00 Events without changing any clock. Do not interrupt it after fixture installation; if the harness is forcibly killed, immediately disable `AutomaticExecutionEnabled` and restore the saved fixture controls before any further testing.
 
-`TestDateTime` is a developer-only deterministic resolver preview; live execution polling uses Core-local `os.time()`. Runtime start, Master Enable, and Scheduler Slot enable clear it before normal operational status is shown. The current design has no validated clock-discontinuity injection mechanism. Do not change the host/emulator/Core clock to test jumps. Backward and forward discontinuity acceptance remains blocked unless a dedicated test seam is proposed and approved.
+`TestDateTime` is a developer-only deterministic resolver preview; live execution polling uses Core-local `os.time()`. Runtime start, Master Enable, and Scheduler Slot enable clear it before normal operational status is shown. `ExecutionTestClockOffsetSeconds` is a separate hidden emulator-only execution seam used by the discontinuity test; it is ignored on physical Cores and reset to zero on every runtime start. Do not change the host, emulator, or Core clock to test jumps.
 
 `validate_logging.py` checks normalized numeric preference IDs, basic Debug Output filtering through `log.history`, unconditional bounded DiagnosticLog routing, and preference handlers. Core Event Log visibility still requires a brief Designer observation because the current test design does not expose an Event Log component through QRC.
 

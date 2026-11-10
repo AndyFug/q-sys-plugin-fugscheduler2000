@@ -8,6 +8,8 @@ The plugin maintains the latest snapshot in the global Lua table `FugSchedulerSt
 
 Third-party integrations should address runnable schedulers by stable Slot number. Each assigned Slot status also reports the assigned Scheduler Definition's stable `schedulerId`; definition labels and library array positions are not runtime identity.
 
+The public control-pin contract exposes the global Master Enable, Action source/reload controls, aggregate JSON, and stable counted Scheduler Slot controls. Counted pins use Q-SYS hierarchical pretty names grouped by control, for example `SchedulerSlotEnabled~Slot 01` and `SchedulerSlotCurrentEvent~Slot 01`. Page-only status bars, diagnostics, selected-Slot mirrors, and viewer controls remain internal to avoid duplicate display-only pins.
+
 The initial status schema is:
 
 ```json
@@ -17,6 +19,12 @@ The initial status schema is:
   "resolvedFor": "2026-12-25 12:00:00",
   "configurationRevision": 1,
   "automaticExecutionEnabled": false,
+  "oneShotPolicy": {
+    "lateToleranceSeconds": 0,
+    "receiptCount": 0,
+    "receiptRetentionSeconds": 14400,
+    "receiptMaximumCount": 1024
+  },
   "health": {
     "state": "OK",
     "configurationValid": true,
@@ -148,7 +156,7 @@ Event Actions remain ordered and report whether their registered Action is curre
 
 These fields reflect the explicit persisted Event Action values. New assignments copy validated Action defaults once when attached; later Action Registry reloads do not rewrite schedule configuration.
 
-The root status also reports whether the plugin-wide automatic-execution safety control is enabled and a `performance` summary containing Scheduler/Event/Action counts, total poll count, average and maximum measured poll duration, delayed-poll count, and total plan-rebuild duration. `Timer.Now()` supplies elapsed measurements only; these values are diagnostics rather than scheduling timestamps.
+The root status also reports whether the plugin-wide automatic-execution safety control is enabled, the active global one-shot late tolerance and bounded persistent receipt count, and a `performance` summary containing Scheduler/Event/Action counts, total poll count, average and maximum measured poll duration, delayed-poll count, and total plan-rebuild duration. `Timer.Now()` supplies elapsed measurements only; these values are diagnostics rather than scheduling timestamps.
 
 Each Scheduler status includes its plan generation, configuration revision, stagger phase, per-plan performance counters, active occurrence, last transition reason, and most recent callback result. Plan generations and timer phases are runtime diagnostics and are not stable integration identity. Resolver status remains available while execution is disabled, while a Scheduler is disabled, and while it is paused.
 

@@ -329,7 +329,7 @@ Implemented in source; design reload and QRC acceptance remain pending:
 - [x] Confirm the master execution guard remains off across initial design reload and blocks callbacks and repeats.
 - [x] Validate normal edge ordering, duplicate-time ordering, callback failure isolation, and unavailable Action handling.
 - [x] Validate startup, Scheduler enable, pause, resume, and repeat behavior for stateful Event Actions.
-- [ ] Validate that one-shots are not replayed on startup, enable, resume, or forward clock discontinuity; startup, enable, resume, and schedule-change coverage are complete, while deterministic forward-discontinuity injection remains blocked.
+- [x] Validate that one-shots are not replayed on startup, enable, resume, or schedule change under the original zero-tolerance policy; the later receipt/tolerance implementation has its own acceptance section below.
 - [x] Validate repeat timers restart from resume time without catch-up bursts.
 - [x] Run existing Week Pattern and Override regression tests with the execution guard off and restore persistent controls byte-for-byte.
 
@@ -371,11 +371,11 @@ Validated against the active `fugscheduler2000_test` Designer emulator on 2026-1
 - The local compile succeeded and `FugScheduler2000.qplug` contained no unresolved include directives. No design-time declarations changed, so no `.qplug` redeployment or emulation restart was required.
 - The expanded execution test completed 56 assertions. `tests/qrc/validate_logging.py` then completed 18 regression assertions. Both tests confirmed restoration.
 - During test development, four rapid post-edge visual-editor transactions caused Q-SYS `Max execution limits exceeded` diagnostics. The acceptance test was corrected to avoid unnecessary rapid editor mutations; no product runtime change was required. The plugin script was explicitly reloaded, the corrected test passed, and final script health returned to `OK` with zero errors.
-- `TestDateTime` is resolver-only, while live execution polling calls `os.time()` directly. No existing validated QRC, control, or documented Q-SYS API can inject a backward or forward live clock discontinuity. Host, emulator, and Core clocks were not changed. Backward-reset and forward-skip/state-restoration behavior therefore remain code-reviewed but not deterministically QRC-validated; implementing a test seam requires a separate proposal and approval.
+- `TestDateTime` is resolver-only, while live execution polling calls `os.time()` directly. At the time of this run there was no validated clock-discontinuity injection control, so host, emulator, and Core clocks were not changed. The approved emulator-only offset seam documented below was added later.
 - Final observed persistent states after byte-for-byte restoration were Debug Output `Info` and Event Log `Info`, matching the values present at test start. This differs from the documented default Event Log `Off` but was preserved as required rather than overwritten. Automatic execution finished false.
 - Final health: `AndyFugFugScheduler2000`, `SchedulerRuntimeProvider`, and `ActionProvider` all reported `OK` with zero script errors.
 
-Remaining execution validation is limited to deterministic backward/forward clock-discontinuity behavior once a safe supported injection mechanism or approved test seam exists.
+At the time of this acceptance run, remaining execution validation was limited to deterministic backward/forward clock-discontinuity behavior. The later one-shot tolerance implementation below adds an approved emulator-only offset seam and supersedes that blocker.
 
 ## Advance to Next Event implementation
 
@@ -411,9 +411,9 @@ Implemented in source; physical-Core file behavior and QRC acceptance remain pen
 - [x] Snapshot only the complete Scheduler Definition and Scheduler Slot `ScheduleData` root; preferences and runtime-only state remain excluded.
 - [x] Validate every catalogue entry and complete schedule before use.
 - [x] Load backups atomically with a new local revision and reject loads while Master Enable is on.
-- [x] Attempt to mirror the complete catalogue to `/FugScheduler2000/configurations.json` on a physical Core; report that file writes are unavailable in emulation.
+- [x] Attempt to mirror the complete catalogue to `media/FugScheduler2000/configurations.json` on a physical Core, creating the media subdirectory when required; report that file writes are unavailable in emulation.
 - [x] When the persistent control is empty on a physical Core, attempt to seed it from the same file.
-- [ ] Determine whether the requested absolute folder path maps to writable Core storage; the official SDK examples document `media/` and `design/` paths instead.
+- [x] Use the documented writable `media/` location rather than an unsupported absolute root path.
 - [x] Added `tests/qrc/validate_admin_backups.py` with byte-for-byte restoration.
 - [x] Validate UI controls and persistent catalogue behavior in Designer/QRC.
 - [ ] Validate file creation, replacement, Core restart persistence, and off-Core file retrieval on a physical Core.
@@ -438,7 +438,7 @@ Validated in development build `0.1.0.28` against the active `fugscheduler2000_t
 - Build `0.1.0.30` removed the Admin file-mirror information panel, renamed the group to Configuration Backups, moved Confirm/Cancel into a tighter lower pair, and made left alignment the FugUi default for every ListBox. The generated/deployed SHA-256 matched `2df7352bf0769564489f4f0f7af2a0e88a42e2fbc12075a4c855aa056ba29abc`; the reloaded component fingerprint is `8cfdc5ff2f54bbaf84804c3a2313796d`, with the original two-backup catalogue retained and both scripts healthy.
 - Build `0.1.0.31` added the compact top-right filesystem-location note requested for the Admin group. The generated/deployed SHA-256 matched `7e48b263a381b46e22aa8fbde3ae81f83366ce71a0ca63f879e8599f6da48ccd`; physical-Core path validation remains deferred.
 
-The file approach follows the official SDK JSON read/write example in `.agents/skills/qsys-plugin-sdk/references/official-sdk/Code Examples/19-JSON-Object.md`; that reference explicitly notes that file operations do not work in emulation.
+The file approach follows the official SDK JSON read/write example in `.agents/skills/qsys-plugin-sdk/references/official-sdk/Code Examples/19-JSON-Object.md`; that reference explicitly notes that file operations do not work in emulation. Directory creation follows the Q-SYS `dir` documentation at <https://help.qsys.com/content/Control_Scripting/Using_Lua_in_Q-Sys/Directory.htm>.
 
 ## Centralized logging implementation
 
@@ -512,7 +512,7 @@ Final QRC findings against the active `fugscheduler2000_test` emulator:
 - During detached-resolver test development, live transition status briefly overwrote explicit `TestDateTime` output. Live cached status publication is suppressed whenever `TestDateTime` is non-empty; runtime start, Master Enable, and Slot enable now clear the developer-only preview before normal operation.
 - Every completed acceptance test restored its changed persistent controls byte-for-byte. Automatic execution finished false. Final observed logging preferences were Debug Output `Info` and Event Log `Info`, matching the values present at test start.
 - The historical post-test restart retained revision `79`, the expected four Scheduler IDs and `2/4` enabled state, and `TestDateTime = 2030-01-02 12:00`. The runtime now deliberately clears that developer-only preview on start; schedule, logging preferences, runtime-field exclusion, false momentaries, and automatic execution safety remain unchanged. `AndyFugFugScheduler2000`, `SchedulerRuntimeProvider`, and `ActionProvider` all restarted `OK` with zero errors.
-- Deterministic backward/forward live clock-discontinuity injection remains blocked exactly as before; no host, emulator, or Core clock was changed and no unsupported Q-SYS clock API or test seam was introduced.
+- At the time of this refactor acceptance, deterministic backward/forward live clock-discontinuity injection remained blocked; the later one-shot tolerance implementation below adds the emulator-only test seam without changing the host, emulator, or Core clock.
 
 ## Banked Overview and Inspector refactor
 
@@ -595,6 +595,48 @@ Designer/QRC findings:
 - Every suite restored changed persistent controls byte-for-byte. Master Enable finished off, and the plugin, runtime provider, and Action provider all finished `OK` with zero errors.
 - The final pinned-status and UK-English runtime corrections were deployed in both the bundled `.qplug` and `SchedulerRuntimeProvider`. The generated/deployed artifact SHA-256 matched `670dc6346904f9cfef7e762874b7a303288379c964d8d8788ac5e5ce30919a04`; the plugin, runtime provider, and Action provider restarted `OK` with zero errors and Master Enable off.
 - Build `0.1.0.27` deployed as SHA-256 `43539394450550147ccb194031ca164306921ea15edb18eae8852e8b1c6acff2`. The final Inspector presents Scheduler, bold Enable status, resolution, Day Pattern, pause details, aligned Current/Next groups, typed scrollable Action rows, and live countdowns. Final QRC regression counts were Week Patterns 42, Overrides 48, Override Dates 54, Scheduler Slots/Inspector 29, Pause Modes 17, Execution 73, Plan Lifecycle 24, Resolution 21, Scale 25, and Logging 18 assertions; all completed suites restored their fixtures and finished with scripts `OK` and zero errors. The live midnight-edge suite restored safely but was not executed because the emulator time was outside its required 25-minute pre-midnight window.
+
+## One-shot tolerance and clock-discontinuity receipts
+
+Implemented and QRC-validated against the active `fugscheduler2000_test` emulator:
+
+- [x] Added a persistent global One-shot Late Tolerance preference in seconds, defaulting to `0` and capped at `14400` seconds (four hours).
+- [x] Limited discontinuity/startup recovery to the latest resolved Event rather than replaying every skipped Event.
+- [x] Added a separate schema-versioned persistent receipt ledger with a four-hour retention and 1,024-receipt bound.
+- [x] Claim one-shot receipts before callback invocation to provide at-most-once behavior; unavailable and failing callbacks remain consumed rather than retried automatically.
+- [x] Apply receipts to ordinary edges, manual Advance, startup/enable recovery, forward clock jumps, and repeated edge crossings after backward movement.
+- [x] Reconcile changed stateful Current Events after forward or backward clock movement and restart repeats without catch-up bursts.
+- [x] Added an emulator-only execution-clock offset control that resets on runtime start and is ignored on physical Cores.
+- [x] Added `tests/qrc/validate_clock_discontinuities.py` with guaranteed restoration of schedule, ledger, tolerance, clock offset, logging preferences, TestDateTime, and Action Provider source.
+- [x] Local include compilation succeeds and the generated artifact contains no unresolved include directives.
+- [x] Deploy the changed design-time controls while emulation is stopped and restart the expected test design.
+- [x] Run the clock-discontinuity QRC acceptance test and record assertion count, receipt persistence, callback counts, restoration, poll timing, and script health.
+- [x] Re-run guarded execution, Advance, scale, logging, and editor regressions after the execution-path change.
+- [ ] Validate receipt persistence across a physical-Core restart without changing the Core clock.
+
+Designer/QRC findings:
+
+- The final generated and deployed `.qplug` SHA-256 matched `6bf199286516d43cdf56812c117bcde61179b55bf1cf644f7278a042964b9031`; the reloaded component fingerprint is `1b39425f489484573a3e67df87ab7f76`.
+- The Preferences page renders One-shot Late Tolerance as a plain integer field rather than a graphical knob. QRC reports the raw integer string `0`; the control defaults to zero and clamps values above four hours to `14400` seconds.
+- `tests/qrc/validate_clock_discontinuities.py` completed 34 assertions. It confirmed latest-Event-only recovery, older skipped Event suppression, forward stateful reconciliation, one persistent receipt, repeated-edge suppression after backward movement, runtime-reload suppression, zero-tolerance behaviour, four-hour clamping, and complete restoration.
+- Post-change regressions passed: guarded execution `74`, Advance to Next Event `15`, scale `25`, logging `18`, Week Patterns `42`, Overrides `48`, Override Dates `54`, Scheduler Slots/Inspector `29`, and Pause Modes `17` assertions.
+- Scale diagnostics remained healthy. At 5 × 10, average/maximum poll duration was `0.000800323`/`0.002000809` seconds with zero delayed polls. At 8 × 20, average/maximum was `0.000625372`/`0.004001617` seconds with zero delayed polls.
+- Every suite restored its changed persistent controls byte-for-byte, including the one-shot ledger where applicable. Final state was Master Enable false, execution-test offset zero, tolerance zero, an empty schema-version-1 ledger, and all three scripts `OK` with zero errors.
+
+## Master Enable persistence and public pin organisation
+
+Implemented in source; Designer/Core restart acceptance remains pending:
+
+- [x] Removed the runtime-start write that forced Master Enable off.
+- [x] Kept Master Enable safely off for newly created plugin instances with `DefaultValue = false`.
+- [x] Changed the Master Enable pin to `Both` so its retained state is visible as well as writable.
+- [x] Grouped every stable counted Slot pin by control name using labels such as `SchedulerSlotEnabled~Slot 01`.
+- [x] Removed page-only, selected-Slot, status-bar, and diagnostic display controls from the public control-pin list.
+- [x] Retained stable per-Slot operational/status pins plus the aggregate `GlobalSchedulerSlotStatus` JSON output.
+- [x] Run the local include compiler and confirm no unresolved include directives.
+- [ ] Confirm Master Enable retains both on and off states across a physical-Core stop/start cycle.
+- [ ] Confirm the Designer Control Pins tree shows one parent per counted Slot control and zero-padded Slot children.
+- [ ] Confirm existing exposed-pin wiring is reviewed after the design-time control-pin contract changes.
 
 ## Build validation
 

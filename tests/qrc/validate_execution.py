@@ -162,6 +162,7 @@ def main() -> None:
         "ActionSelect", "RegisteredActionCount", "GlobalSchedulerSlotStatus", "DiagnosticLog", "Status",
         "CurrentEventActions", "CurrentEventActionsViewer", "NextEventActions", "NextEventActionsViewer", "Countdown",
         "DebugLogLevel", "EventLogLevel", "ActionSource", "ReloadActions",
+        "OneShotLateToleranceSeconds", "OneShotExecutionLedger", "ExecutionTestClockOffsetSeconds",
         "script.status", "script.error.count",
     ]
     initial = controls(*required)
@@ -177,6 +178,7 @@ def main() -> None:
         "runtime provider is OK with zero errors",
     )
     check(initial["AutomaticExecutionEnabled"]["Value"] < 0.5, "automatic execution guard is off before testing")
+    check(initial["ExecutionTestClockOffsetSeconds"]["Value"] == 0, "execution test clock is zero before testing")
 
     provider_initial = controls("code", "script.status", "script.error.count", component=ACTION_PROVIDER)
     check(
@@ -191,9 +193,13 @@ def main() -> None:
     original_event = initial["EventLogLevel"]["String"]
     original_action_source = initial["ActionSource"]["String"]
     original_provider_source = provider_initial["code"]["String"]
+    original_one_shot_tolerance = initial["OneShotLateToleranceSeconds"]["Value"]
+    original_one_shot_ledger = initial["OneShotExecutionLedger"]["String"]
     restored = False
 
     try:
+        set_value("OneShotLateToleranceSeconds", 0)
+        set_value("ExecutionTestClockOffsetSeconds", 0)
         ensure_expected_design("provider mutation")
         set_value("code", provider_source(), delay=1.0, component=ACTION_PROVIDER)
         provider_after = controls("code", "script.status", "script.error.count", component=ACTION_PROVIDER)
@@ -584,12 +590,16 @@ def main() -> None:
         ensure_expected_design("cleanup")
         set_value("AutomaticExecutionEnabled", False, delay=0.3)
         set_value("ScheduleData", original_schedule, delay=0.5)
+        set_value("OneShotExecutionLedger", original_one_shot_ledger, delay=0.2)
+        set_value("OneShotLateToleranceSeconds", original_one_shot_tolerance, delay=0.2)
+        set_value("ExecutionTestClockOffsetSeconds", 0, delay=0.2)
         set_value("TestDateTime", original_test_time, delay=0.2)
         set_value("DebugLogLevel", original_debug, delay=0.2)
         set_value("EventLogLevel", original_event, delay=0.2)
         set_value("code", original_provider_source, delay=1.0, component=ACTION_PROVIDER)
         final_controls = controls(
             "ScheduleData", "TestDateTime", "DebugLogLevel", "EventLogLevel", "ActionSource",
+            "OneShotLateToleranceSeconds", "OneShotExecutionLedger", "ExecutionTestClockOffsetSeconds",
             "AutomaticExecutionEnabled", "ResolveTestTime", "ReloadActions",
         )
         final_provider = controls("code", "script.status", "script.error.count", component=ACTION_PROVIDER)
@@ -599,6 +609,9 @@ def main() -> None:
             and final_controls["DebugLogLevel"]["String"] == original_debug
             and final_controls["EventLogLevel"]["String"] == original_event
             and final_controls["ActionSource"]["String"] == original_action_source
+            and final_controls["OneShotLateToleranceSeconds"]["Value"] == original_one_shot_tolerance
+            and final_controls["OneShotExecutionLedger"]["String"] == original_one_shot_ledger
+            and final_controls["ExecutionTestClockOffsetSeconds"]["Value"] == 0
             and final_provider["code"]["String"] == original_provider_source
             and final_controls["AutomaticExecutionEnabled"]["Value"] < 0.5
             and final_controls["ResolveTestTime"]["Value"] < 0.5

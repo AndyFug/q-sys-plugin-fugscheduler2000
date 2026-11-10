@@ -5,4 +5,7 @@
 __pycache__/
 *.pyc
 
+# Local temporary files and screenshots
+temp/
+
 # Keep generated qplug committed for easy deploy/review unless project policy changes.

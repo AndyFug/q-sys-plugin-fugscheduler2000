@@ -319,7 +319,7 @@ The rolling resolver extends dates only as the cursor approaches its cached boun
 
 Configuration installation compares Scheduler-scoped persisted models. Unchanged Schedulers retain their plan, cursor, generation, timer, phase, metrics, and runtime status. Added or changed Schedulers receive new generation-tokened plans; replaced/deleted timers are stopped, and obsolete callbacks verify the current generation before doing work. When a changed plan's Current occurrence changes, only eligible stateful Actions reconcile; one-shots remain edge-only and repeats restart from reconciliation time.
 
-Backward wall-clock movement repositions the cursor and clears repeat state without replay. Forward discontinuities or delayed runtime beyond the ordinary-edge threshold re-anchor directly, skip historical one-shots, restore only eligible Current stateful Actions under the existing startup policy, and restart repeats without catch-up bursts. `Timer.Now()` is used only for elapsed performance measurements; `os.time()` remains the Core-local scheduling clock.
+Backward wall-clock movement repositions the cursor, reconciles a changed Current Event's stateful Actions, and relies on persistent receipts to suppress repeated one-shots when an edge is crossed again. Forward discontinuities or delayed runtime beyond the ordinary-edge threshold re-anchor directly, reconcile a changed Current Event's stateful Actions, optionally recover only the latest Event's unreceipted one-shots inside the global tolerance, and restart repeats without catch-up bursts. `Timer.Now()` is used only for elapsed performance measurements; Core-local `os.time()` remains the production scheduling clock.
 
 ## Deferred Stage and Commit model
 
@@ -387,7 +387,7 @@ Import/export/reset acceptance tests should cover:
 
 Before completing the engine, document and test:
 
-- validate that a current one-shot never replays on startup, enable, resume, or clock discontinuity
+- validate that a current one-shot replays on startup, enable, or forward clock discontinuity only when it is the latest Event, falls inside the global 0-14,400-second tolerance, and has no persistent execution receipt
 - validate explicit `fireOnStartup` and `fireOnResume` state-restoration options
 - validate repeats beginning at a scheduled edge and restarting from startup/resume activation time without catch-up bursts
 - behavior after a clock jump, Core reboot, design restart, or long execution stall
@@ -413,7 +413,7 @@ Before enabling automatic scheduled callback execution, add explicit emulator/Co
 - nonexistent local Event times during the spring-forward transition
 - repeated local Event times during the autumn fallback transition, including whether an Event edge may execute once or twice
 - previous/current/next Event resolution on both sides of each DST transition
-- Core clock jumps forwards and backwards, including missed one-shot and state-restoring Action policy
+- Core clock jumps forwards and backwards, including latest-Event one-shot tolerance, persistent duplicate suppression, and stateful reconciliation policy
 - Designer emulator versus physical Core behavior where their local timezone settings differ
 
 Record the Q-SYS version, configured local timezone, observed platform normalization, and chosen execution policy in validation documentation. Do not replace Q-SYS local-time handling with a custom calendar implementation; use the platform date/time functions and document any platform-specific edge behavior.
@@ -462,6 +462,9 @@ Exit criterion: multiple Schedulers can resolve concurrently and one selected Sc
 - [x] Complete Designer/QRC acceptance for all pause modes, restart persistence, target updates, automatic expiry, and execution-budget health.
 - [x] Add Advance to Next Event as an explicit runtime transition that executes the next occurrence once, makes it current, clears an active pause, persists the consumed occurrence, and suppresses its later scheduled edge.
 - [x] Complete Designer/QRC acceptance for Advance to Next Event pause clearing, persisted occurrence identity, scheduled-edge suppression, and stable per-Slot transport; physical-Core restart persistence remains part of live-Core validation.
+- [x] Add a global one-shot late tolerance in seconds, defaulting to zero and capped at four hours.
+- [x] Add a bounded persistent at-most-once receipt ledger for ordinary edges, late recovery, runtime reloads, and repeated edges after backward clock movement.
+- [ ] Complete emulator clock-discontinuity acceptance using the emulator-only offset seam and complete physical-Core restart validation.
 - Keep Action testing separate from Scheduler transport state.
 
 ### Phase 3 — scalable editing
@@ -475,7 +478,7 @@ Exit criterion: the reference controller's Site Music, Site Mute, Ice Rink, Big 
 
 ### Phase 4 — import/export, reset, and operational polish
 
-- [x] Add a first-pass Admin page for named complete Scheduler/Slot backups in one persistent JSON catalogue, mirrored experimentally to `/FugScheduler2000/configurations.json` on physical Cores.
+- [x] Add a first-pass Admin page for named complete Scheduler/Slot backups in one persistent JSON catalogue, mirrored to `media/FugScheduler2000/configurations.json` on physical Cores.
 - [x] Add Confirm/Cancel flows for overwrite, load, and selected-backup deletion.
 - [x] Complete Designer/QRC acceptance for named save, overwrite confirmation, guarded load, and persistent-control restoration.
 - [ ] Validate physical-Core file mirroring, restart persistence, and off-Core retrieval.

@@ -5,8 +5,9 @@ function GetControlLayout(props)
 
   ui:background()
   ui:header(page, "Version " .. tostring(PluginInfo.Version))
-  ui:hiddenControl("code")
-  ui:hiddenControl("ActionSource")
+  FugSchedulerUi.hiddenPin(ui, "code", "Development~Runtime Code")
+  FugSchedulerUi.hiddenPin(ui, "ActionSource", "Actions~Action Source")
+  FugSchedulerUi.hiddenPin(ui, "GlobalSchedulerSlotStatus", "Scheduler Status~All Slots JSON")
   ui:statusBar("Status")
 
   if page == "Scheduler Slots" then
@@ -15,7 +16,8 @@ function GetControlLayout(props)
     toolbar:group("", {Fill = ui:color("panel"), StrokeColor = ui:color("stroke"), CornerRadius = 5})
     local master, execution = toolbar:splitRow({{width = 178}, {grow = 1}}, {gap = 6})
     ui:button("AutomaticExecutionEnabled", master:fill(), {
-      ButtonStyle = "Toggle", Legend = "Master Enable", Color = ui:color("danger")
+      ButtonStyle = "Toggle", Legend = "Master Enable", Color = ui:color("danger"),
+      PrettyName = "Scheduler~Master Enable"
     })
     ui:textControl("ExecutionStatus", execution:fill(), {
       IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
@@ -27,6 +29,21 @@ function GetControlLayout(props)
     for slotNumber = 1, slotCount do
       local rowIndex = ((slotNumber - 1) % FugSchedulerSlotRowsPerBank) + 1
       FugSchedulerUi.slotRow(ui, slotRows[rowIndex], slotNumber)
+      for _, controlName in ipairs({
+        "SchedulerSlotAssignedId",
+        "SchedulerSlotAdvance",
+        "SchedulerSlotPauseMode",
+        "SchedulerSlotPauseDurationMinutes",
+        "SchedulerSlotPauseUntilTime",
+        "SchedulerSlotPauseStatus",
+        "SchedulerSlotNextTime"
+      }) do
+        FugSchedulerUi.hiddenPin(
+          ui,
+          countedControlName(controlName, slotNumber),
+          FugSchedulerUi.slotPinPrettyName(controlName, slotNumber)
+        )
+      end
     end
     ui:button("SchedulerSlotsPreviousBank", ui:rect(582, 442, 28, 22), {
       ButtonStyle = "Momentary", Legend = "◀", Color = ui:color("statusBackground"),
@@ -404,7 +421,8 @@ function GetControlLayout(props)
     ui:button("ReloadActions", ui:rect(28, 132, 130, 26), {
       ButtonStyle = "Momentary",
       Legend = "Reload Actions",
-      Color = ui:color("action", ui:color("warning"))
+      Color = ui:color("action", ui:color("warning")),
+      PrettyName = "Actions~Reload"
     })
     ui:label("Registered Action", ui:rect(28, 176, 130, 24), {Color = ui:color("mutedText")})
     ui:control("ActionSelect", "ComboBox", ui:rect(164, 176, 360, 26), {PrettyName = "Actions~Selected Action"})
@@ -419,7 +437,7 @@ function GetControlLayout(props)
   elseif page == "Admin" then
     ui:group("Configuration Backups", ui:rect(10, 44, 520, 400))
     ui:label("Saved configurations", ui:rect(28, 72, 170, 20), {Color = ui:color("mutedText")})
-    ui:label("Stored on filesystem at /FugScheduler2000/configurations.json", ui:rect(224, 66, 288, 30), {
+    ui:label("Stored on filesystem at media/FugScheduler2000/configurations.json", ui:rect(224, 66, 288, 30), {
       Color = ui:color("mutedText"), HTextAlign = "Right", VTextAlign = "Center",
       WordWrap = true, FontSize = 8
     })
@@ -456,25 +474,35 @@ function GetControlLayout(props)
     FugSchedulerUi.editorStatus(ui, "ConfigurationBackupStatus", ui:rect(10, 448, 880, 34), "Admin~Status")
 
   elseif page == "Preferences" then
-    ui:group("Presentation Preferences", ui:rect(10, 44, 430, 236))
-    ui:label("Date format", ui:rect(32, 82, 160, 24), {Color = ui:color("mutedText")})
-    ui:control("DateFormatPreference", "ComboBox", ui:rect(202, 80, 216, 28), {
+    ui:group("Presentation Preferences", ui:rect(10, 44, 280, 236))
+    ui:label("Date format", ui:rect(32, 82, 92, 24), {Color = ui:color("mutedText")})
+    ui:control("DateFormatPreference", "ComboBox", ui:rect(130, 80, 138, 28), {
       PrettyName = "Preferences~Date Format"
     })
-    ui:label("Controls how Override dates are entered and displayed. Persisted ScheduleData always uses ISO YYYY-MM-DD.", ui:rect(32, 132, 386, 72), {
+    ui:label("Controls how Override dates are entered and displayed. Persisted ScheduleData always uses ISO YYYY-MM-DD.", ui:rect(32, 132, 236, 88), {
       VTextAlign = "Top", WordWrap = true, Color = ui:color("mutedText")
     })
 
-    ui:group("Logging Preferences", ui:rect(450, 44, 440, 236))
-    ui:label("Debug Output level", ui:rect(472, 82, 170, 24), {Color = ui:color("mutedText")})
-    ui:control("DebugLogLevel", "ComboBox", ui:rect(652, 80, 216, 28), {
+    ui:group("Execution Preferences", ui:rect(300, 44, 280, 236))
+    ui:label("One-shot late tolerance", ui:rect(322, 82, 150, 24), {Color = ui:color("mutedText")})
+    ui:control("OneShotLateToleranceSeconds", "Text", ui:rect(478, 80, 80, 28), {
+      PrettyName = "Preferences~One-Shot Late Tolerance",
+      TextBoxStyle = "Normal", HTextAlign = "Center", FontSize = 10
+    })
+    ui:label("Seconds allowed for the latest missed Event's one-shots after startup or a forward clock jump. Set to 0 to disable late recovery. Maximum 4 hours.", ui:rect(322, 132, 236, 96), {
+      VTextAlign = "Top", WordWrap = true, Color = ui:color("mutedText")
+    })
+
+    ui:group("Logging Preferences", ui:rect(590, 44, 300, 236))
+    ui:label("Debug Output", ui:rect(612, 82, 110, 24), {Color = ui:color("mutedText")})
+    ui:control("DebugLogLevel", "ComboBox", ui:rect(728, 80, 140, 28), {
       PrettyName = "Preferences~Debug Output Level"
     })
-    ui:label("Event Log level", ui:rect(472, 124, 170, 24), {Color = ui:color("mutedText")})
-    ui:control("EventLogLevel", "ComboBox", ui:rect(652, 122, 216, 28), {
+    ui:label("Event Log", ui:rect(612, 124, 110, 24), {Color = ui:color("mutedText")})
+    ui:control("EventLogLevel", "ComboBox", ui:rect(728, 122, 140, 28), {
       PrettyName = "Preferences~Event Log Level"
     })
-    ui:label("Debug Output uses print. Event Log uses Log.Message and Log.Error. The bounded DiagnosticLog always records every severity.", ui:rect(472, 172, 396, 74), {
+    ui:label("Debug Output uses print. Event Log uses Log.Message and Log.Error. DiagnosticLog always records every severity.", ui:rect(612, 172, 256, 74), {
       VTextAlign = "Top", WordWrap = true, Color = ui:color("mutedText")
     })
 

@@ -73,15 +73,19 @@ def main() -> None:
         "ScheduleData", "AutomaticExecutionEnabled", "InspectorSlotSelect", "InspectorSlotPaused",
         "InspectorAdvanceNextEvent", "InspectorAdvanceStatus", "SchedulerSlotAdvance 1",
         "CurrentEvent", "NextEvent", "ExecutionStatus", "DiagnosticLog", "GlobalSchedulerSlotStatus",
-        "ActionSource", "script.status", "script.error.count",
+        "ActionSource", "OneShotLateToleranceSeconds", "OneShotExecutionLedger",
+        "ExecutionTestClockOffsetSeconds", "script.status", "script.error.count",
     ]
     initial = controls(*required)
     check(all(name in initial for name in required), "Inspector and stable per-Slot advance controls exist")
     check(initial["AutomaticExecutionEnabled"]["Value"] < 0.5, "Master Enable is off before advance testing")
+    check(initial["ExecutionTestClockOffsetSeconds"]["Value"] == 0, "execution test clock is zero before testing")
     provider_initial = controls("code", "script.status", "script.error.count", component=ACTION_PROVIDER)
     original_schedule = initial["ScheduleData"]["String"]
     original_provider = provider_initial["code"]["String"]
     original_action_source = initial["ActionSource"]["String"]
+    original_tolerance = initial["OneShotLateToleranceSeconds"]["Value"]
+    original_ledger = initial["OneShotExecutionLedger"]["String"]
 
     global_status = json.loads(initial["GlobalSchedulerSlotStatus"]["String"])
     now = datetime.strptime(global_status["resolvedFor"], "%Y-%m-%d %H:%M:%S")
@@ -120,6 +124,8 @@ def main() -> None:
     }
 
     try:
+        set_value("OneShotLateToleranceSeconds", 0)
+        set_value("ExecutionTestClockOffsetSeconds", 0)
         set_value("code", provider_source(), 1.0, component=ACTION_PROVIDER)
         set_value("ScheduleData", json.dumps(fixture, separators=(",", ":")), 1.4)
         set_value("InspectorSlotSelect", json.dumps({"Text": "Slot 1 — Advance Test", "Id": 1}, separators=(",", ":")))
@@ -169,12 +175,24 @@ def main() -> None:
     finally:
         set_value("AutomaticExecutionEnabled", False, 0.3)
         set_value("ScheduleData", original_schedule, 1.2)
+        set_value("OneShotExecutionLedger", original_ledger, 0.3)
+        set_value("OneShotLateToleranceSeconds", original_tolerance, 0.2)
+        set_value("ExecutionTestClockOffsetSeconds", 0, 0.2)
         set_value("code", original_provider, 1.0, component=ACTION_PROVIDER)
         set_value("ActionSource", original_action_source, 0.8)
         for control in ["InspectorAdvanceNextEvent", "SchedulerSlotAdvance 1"]:
             set_value(control, False, 0.1)
-        final = controls("ScheduleData", "AutomaticExecutionEnabled")
-        restored = final["ScheduleData"]["String"] == original_schedule and final["AutomaticExecutionEnabled"]["Value"] < 0.5
+        final = controls(
+            "ScheduleData", "AutomaticExecutionEnabled", "OneShotExecutionLedger",
+            "OneShotLateToleranceSeconds", "ExecutionTestClockOffsetSeconds",
+        )
+        restored = (
+            final["ScheduleData"]["String"] == original_schedule
+            and final["OneShotExecutionLedger"]["String"] == original_ledger
+            and final["OneShotLateToleranceSeconds"]["Value"] == original_tolerance
+            and final["ExecutionTestClockOffsetSeconds"]["Value"] == 0
+            and final["AutomaticExecutionEnabled"]["Value"] < 0.5
+        )
         print(f"RESTORE: {'PASS' if restored else 'FAIL'} advance fixture restored byte-for-byte")
         if not restored:
             raise AssertionError("failed to restore Advance to Next Event fixture")

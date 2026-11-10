@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-10-29T16:46:09Z",
-  BuildTimestamp = 1793292369
+  BuildDate = "2026-11-02T08:25:45Z",
+  BuildTimestamp = 1793607945
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -90,12 +90,18 @@ FugSchedulerRuntime = {
   updatingOverrideEditor = false,
   updatingPreferences = false,
   updatingExecutionControl = false,
+  updatingExecutionTestClock = false,
   updatingBackupControls = false,
   writingBackupCatalog = false,
+  writingOneShotLedger = false,
+  oneShotLedger = nil,
+  oneShotReceiptIndex = {},
   pendingBackupAction = nil,
   backupCatalog = nil,
   selectedBackupId = nil,
-  backupFilePath = "/FugScheduler2000/configurations.json",
+  backupDirectoryPath = "media/FugScheduler2000",
+  backupFileName = "configurations.json",
+  backupFilePath = "media/FugScheduler2000/configurations.json",
   overrideDateBuffer = nil,
   selectedDayPatternIds = {},
   selectedWeekPatternIds = {},
@@ -106,6 +112,9 @@ FugSchedulerRuntime = {
   nextPlanGeneration = 0,
   executionPollSeconds = 1,
   normalEdgeMaxDelaySeconds = 90,
+  maximumOneShotToleranceSeconds = 14400,
+  oneShotLedgerRetentionSeconds = 14400,
+  oneShotLedgerMaximumReceipts = 1024,
   occurrenceSafetyHorizonDays = 400,
   rollingFutureDateCount = 2,
   deferredRefreshGeneration = 0,
@@ -113,6 +122,16 @@ FugSchedulerRuntime = {
   uuidCounter = 0,
   uuidSeeded = false
 }
+
+-- Return the live scheduling clock, with an emulator-only offset for deterministic discontinuity tests.
+function FugSchedulerRuntime.executionNow()
+  local now = os.time()
+  if System and System.IsEmulating and Controls.ExecutionTestClockOffsetSeconds then
+    local offset = math.floor(tonumber(Controls.ExecutionTestClockOffsetSeconds.Value) or 0)
+    return now + offset
+  end
+  return now
+end
 
 -- Populate a scrollable ListBox mirror from the individual lines of a Text source.
 function FugSchedulerRuntime.refreshLineViewer(viewerName, value)
@@ -755,6 +774,13 @@ function FugSchedulerRuntime.dateFormatPreference()
   local value = Controls.DateFormatPreference and FugSchedulerRuntime.choiceId(Controls.DateFormatPreference.String) or nil
   if value == "DMY" or value == "MDY" or value == "ISO" then return value end
   return "ISO"
+end
+
+-- Return the global late-recovery window for the latest missed Event's one-shot Actions.
+function FugSchedulerRuntime.oneShotToleranceSeconds()
+  local value = Controls.OneShotLateToleranceSeconds and
+    tonumber(Controls.OneShotLateToleranceSeconds.Value) or 0
+  return math.max(0, math.min(FugSchedulerRuntime.maximumOneShotToleranceSeconds, math.floor(value or 0)))
 end
 
 -- Parse a preference-formatted date and return canonical ISO text plus its local-midday timestamp.
@@ -3761,6 +3787,168 @@ function FugSchedulerRuntime.occurrenceKey(item)
   }, "\31")
 end
 
+-- Return a new schema-valid persistent one-shot execution ledger.
+function FugSchedulerRuntime.emptyOneShotLedger()
+  local ledger = {schemaVersion = 1, receipts = {}}
+  FugSchedulerRuntime.markJsonArray(ledger.receipts)
+  return ledger
+end
+
+-- Build one stable receipt identity for a dated one-shot Event Action assignment.
+function FugSchedulerRuntime.oneShotReceiptKey(scheduler, occurrence, eventAction, actionIndex)
+  return table.concat({
+    tostring(scheduler and scheduler.id),
+    tostring(FugSchedulerRuntime.occurrenceKey(occurrence)),
+    tostring(actionIndex),
+    tostring(eventAction and eventAction.actionId)
+  }, "\30")
+end
+
+-- Validate one persisted ledger and return a clean copy without installing it.
+function FugSchedulerRuntime.validateOneShotLedger(candidate)
+  if type(candidate) ~= "table" or tonumber(candidate.schemaVersion) ~= 1 or
+      type(candidate.receipts) ~= "table" then
+    return nil, "expected one-shot ledger schema version 1"
+  end
+  local validated = {schemaVersion = 1, receipts = {}}
+  local seen = {}
+  for index, receipt in ipairs(candidate.receipts) do
+    if type(receipt) ~= "table" or type(receipt.key) ~= "string" or receipt.key == "" or
+        type(receipt.executedAt) ~= "number" or type(receipt.occurrenceTimestamp) ~= "number" then
+      return nil, "invalid one-shot receipt at index " .. tostring(index)
+    end
+    if not seen[receipt.key] then
+      seen[receipt.key] = true
+      table.insert(validated.receipts, {
+        key = receipt.key,
+        executedAt = math.floor(receipt.executedAt),
+        occurrenceTimestamp = math.floor(receipt.occurrenceTimestamp)
+      })
+    end
+  end
+  FugSchedulerRuntime.markJsonArray(validated.receipts)
+  return validated, nil
+end
+
+-- Bound ledger age and count in one linear pass while retaining future-dated receipts after clock movement.
+function FugSchedulerRuntime.pruneOneShotLedger(ledger, now)
+  local cutoff = now - FugSchedulerRuntime.oneShotLedgerRetentionSeconds
+  local retained = {}
+  for _, receipt in ipairs(ledger.receipts or {}) do
+    if receipt.executedAt >= cutoff then table.insert(retained, receipt) end
+  end
+  if #retained > FugSchedulerRuntime.oneShotLedgerMaximumReceipts then
+    local bounded = {}
+    local first = #retained - FugSchedulerRuntime.oneShotLedgerMaximumReceipts + 1
+    for index = first, #retained do table.insert(bounded, retained[index]) end
+    retained = bounded
+  end
+  ledger.receipts = retained
+  FugSchedulerRuntime.markJsonArray(ledger.receipts)
+  return ledger
+end
+
+-- Install one validated ledger in its persistent control and rebuild its runtime lookup index.
+function FugSchedulerRuntime.persistOneShotLedger(candidate)
+  local validated, validationError = FugSchedulerRuntime.validateOneShotLedger(candidate)
+  if not validated then return false, validationError end
+  local encodeOk, serialized = pcall(FugSchedulerRuntime.json.encode, validated)
+  if not encodeOk or not serialized or serialized == "" then
+    return false, "ledger JSON serialization failed"
+  end
+  if not Controls.OneShotExecutionLedger then return false, "one-shot ledger control is unavailable" end
+
+  FugSchedulerRuntime.writingOneShotLedger = true
+  local writeOk, writeError = pcall(function() Controls.OneShotExecutionLedger.String = serialized end)
+  FugSchedulerRuntime.writingOneShotLedger = false
+  if not writeOk then return false, tostring(writeError) end
+
+  FugSchedulerRuntime.oneShotLedger = validated
+  FugSchedulerRuntime.oneShotReceiptIndex = {}
+  for _, receipt in ipairs(validated.receipts) do
+    FugSchedulerRuntime.oneShotReceiptIndex[receipt.key] = receipt
+  end
+  return true, nil
+end
+
+-- Load the persistent one-shot ledger without allowing malformed data to replace valid runtime state.
+function FugSchedulerRuntime.reloadOneShotLedger()
+  local source = Controls.OneShotExecutionLedger and Controls.OneShotExecutionLedger.String or ""
+  local candidate
+  if source == "" then
+    candidate = FugSchedulerRuntime.emptyOneShotLedger()
+  else
+    local decodeOk, decoded = pcall(FugSchedulerRuntime.json.decode, source)
+    if not decodeOk then
+      FugSchedulerRuntime.logLine("One-shot ledger JSON is invalid; previous ledger retained", LogLevel.ERROR)
+      return false
+    end
+    candidate = decoded
+  end
+  local validated, validationError = FugSchedulerRuntime.validateOneShotLedger(candidate)
+  if not validated then
+    FugSchedulerRuntime.logLine("One-shot ledger rejected: " .. tostring(validationError), LogLevel.ERROR)
+    return false
+  end
+  FugSchedulerRuntime.pruneOneShotLedger(validated, FugSchedulerRuntime.executionNow())
+  local persisted, persistError = FugSchedulerRuntime.persistOneShotLedger(validated)
+  if not persisted then
+    FugSchedulerRuntime.logLine("One-shot ledger could not be loaded: " .. tostring(persistError), LogLevel.ERROR)
+    return false
+  end
+  return true
+end
+
+-- Atomically claim unrecorded one-shot assignments before any callback is invoked.
+function FugSchedulerRuntime.claimOneShotActions(scheduler, occurrence, actionIndexes, now)
+  local claimed = {}
+  if #actionIndexes == 0 then return claimed, true end
+  if not FugSchedulerRuntime.oneShotLedger then return claimed, false, "one-shot ledger is unavailable" end
+
+  local missing = {}
+  for _, actionIndex in ipairs(actionIndexes) do
+    local eventAction = occurrence.event.actions[actionIndex]
+    local key = FugSchedulerRuntime.oneShotReceiptKey(scheduler, occurrence, eventAction, actionIndex)
+    local receipt = FugSchedulerRuntime.oneShotReceiptIndex[key]
+    if not receipt or receipt.executedAt < now - FugSchedulerRuntime.oneShotLedgerRetentionSeconds then
+      table.insert(missing, {actionIndex = actionIndex, key = key})
+    end
+  end
+  if #missing == 0 then return claimed, true end
+
+  local candidate = FugSchedulerRuntime.copyPersisted(FugSchedulerRuntime.oneShotLedger)
+  FugSchedulerRuntime.pruneOneShotLedger(candidate, now)
+  local existing = {}
+  for _, receipt in ipairs(candidate.receipts or {}) do existing[receipt.key] = true end
+
+  for _, item in ipairs(missing) do
+    if not existing[item.key] then
+      existing[item.key] = true
+      claimed[item.actionIndex] = true
+      table.insert(candidate.receipts, {
+        key = item.key,
+        executedAt = now,
+        occurrenceTimestamp = occurrence.timestamp
+      })
+    end
+  end
+  if next(claimed) == nil then return claimed, true end
+
+  FugSchedulerRuntime.pruneOneShotLedger(candidate, now)
+  local retained = {}
+  for _, receipt in ipairs(candidate.receipts or {}) do retained[receipt.key] = true end
+  for actionIndex in pairs(claimed) do
+    local eventAction = occurrence.event.actions[actionIndex]
+    local key = FugSchedulerRuntime.oneShotReceiptKey(scheduler, occurrence, eventAction, actionIndex)
+    if not retained[key] then
+      return {}, false, "one-shot ledger capacity could not retain the new receipt"
+    end
+  end
+  local persisted, persistError = FugSchedulerRuntime.persistOneShotLedger(candidate)
+  if not persisted then return {}, false, persistError end
+  return claimed, true
+end
+
 -- Copy the stable identity needed to retain a manually advanced occurrence across runtime restarts.
 function FugSchedulerRuntime.occurrenceSnapshot(item, advancedAt)
   if not item then return nil end
@@ -3919,6 +4107,24 @@ function FugSchedulerRuntime.scheduleRepeats(state, occurrence, now)
   end
 end
 
+-- Claim every enabled one-shot assignment in an occurrence before callback execution begins.
+function FugSchedulerRuntime.claimOccurrenceOneShots(scheduler, occurrence, now)
+  local indexes = {}
+  for actionIndex, eventAction in ipairs(occurrence.event.actions or {}) do
+    if eventAction.enabled ~= false and eventAction.oneShot then table.insert(indexes, actionIndex) end
+  end
+  local claimed, claimOk, claimError = FugSchedulerRuntime.claimOneShotActions(
+    scheduler, occurrence, indexes, now)
+  if not claimOk then
+    FugSchedulerRuntime.setExecutionMessage(
+      "One-shot execution blocked because its receipt could not be persisted: " .. tostring(claimError),
+      LogLevel.ERROR,
+      {schedulerLabel = scheduler.label, schedulerId = scheduler.id, reason = "one-shot ledger"}
+    )
+  end
+  return claimed, claimOk
+end
+
 -- Execute every enabled Event Action at a normally observed Event edge.
 function FugSchedulerRuntime.executeOccurrence(scheduler, state, occurrence, reason, now)
   state.activeOccurrence = occurrence
@@ -3926,12 +4132,41 @@ function FugSchedulerRuntime.executeOccurrence(scheduler, state, occurrence, rea
   state.lastTransitionReason = reason
   FugSchedulerRuntime.clearRepeats(state)
 
+  local claimedOneShots = FugSchedulerRuntime.claimOccurrenceOneShots(scheduler, occurrence, now)
   for actionIndex, eventAction in ipairs(occurrence.event.actions or {}) do
-    if eventAction.enabled ~= false then
+    if eventAction.enabled ~= false and (not eventAction.oneShot or claimedOneShots[actionIndex]) then
       FugSchedulerRuntime.executeEventAction(scheduler, occurrence, eventAction, actionIndex, reason)
     end
   end
   FugSchedulerRuntime.scheduleRepeats(state, occurrence, now)
+end
+
+-- Recover only the latest occurrence's unrecorded one-shots when it falls inside the global tolerance.
+function FugSchedulerRuntime.recoverCurrentOneShots(scheduler, state, occurrence, reason, now, afterTimestamp)
+  local tolerance = FugSchedulerRuntime.oneShotToleranceSeconds()
+  if tolerance <= 0 or not occurrence then return false end
+  if afterTimestamp and occurrence.timestamp <= afterTimestamp then return false end
+  local lateness = now - occurrence.timestamp
+  if lateness < 0 or lateness > tolerance then return false end
+
+  local claimedOneShots = FugSchedulerRuntime.claimOccurrenceOneShots(scheduler, occurrence, now)
+  local executed = false
+  for actionIndex, eventAction in ipairs(occurrence.event.actions or {}) do
+    if eventAction.enabled ~= false and eventAction.oneShot and claimedOneShots[actionIndex] then
+      FugSchedulerRuntime.executeEventAction(scheduler, occurrence, eventAction, actionIndex, reason)
+      executed = true
+    end
+  end
+  if executed then
+    state.lastTransitionReason = reason
+    FugSchedulerRuntime.logLine(
+      string.format("Recovered latest one-shot Event %d seconds late", lateness),
+      LogLevel.INFO,
+      {schedulerLabel = scheduler.label, schedulerId = scheduler.id,
+       eventLabel = occurrence.event.label, eventId = occurrence.event.id, reason = reason}
+    )
+  end
+  return executed
 end
 
 -- Activate the already-current Event after lifecycle or configuration transitions.
@@ -3974,7 +4209,7 @@ function FugSchedulerRuntime.advanceSlotToNextEvent(slotNumber)
     FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advance rejected: runtime plan is unavailable")
     return false
   end
-  local now = os.time()
+  local now = FugSchedulerRuntime.executionNow()
   if not plan.initialized then
     FugSchedulerRuntime.positionPlanCursor(plan, now)
     plan.initialized = true
@@ -4106,7 +4341,7 @@ end
 -- Process one Scheduler from its cached cursor; this is the only steady-state execution path.
 function FugSchedulerRuntime.processSchedulerExecution(plan)
   local scheduler = plan.scheduler
-  local now = os.time()
+  local now = FugSchedulerRuntime.executionNow()
   local automaticEnabled = FugSchedulerRuntime.automaticExecutionEnabled()
 
   if not plan.initialized then
@@ -4124,6 +4359,10 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
       local optionName = expiry and "fireOnResume" or "fireOnStartup"
       local reason = expiry and "pause expired during startup" or "startup"
       FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, optionName, reason, now)
+      if not expiry then
+        FugSchedulerRuntime.recoverCurrentOneShots(
+          scheduler, plan, plan.currentOccurrence, "startup late recovery", now, nil)
+      end
     end
     plan.lastEnabled = scheduler._enabled
     plan.lastPaused = scheduler._paused
@@ -4137,41 +4376,67 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
   end
 
   local elapsed = now - plan.lastObservedTimestamp
+  local previousObservedTimestamp = plan.lastObservedTimestamp
+  local previousActiveOccurrenceKey = plan.activeOccurrenceKey
   if elapsed < 0 then
     FugSchedulerRuntime.positionPlanCursor(plan, now)
     FugSchedulerRuntime.applyPersistedAdvance(plan, now)
-    plan.activeOccurrence = plan.currentOccurrence
-    plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
-    plan.lastTransitionReason = "Clock moved backwards"
-    FugSchedulerRuntime.clearRepeats(plan)
+    local currentKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+    local allowed = automaticEnabled and scheduler._enabled and not scheduler._paused
+    if allowed and currentKey ~= previousActiveOccurrenceKey then
+      FugSchedulerRuntime.restoreCurrentOccurrence(
+        scheduler, plan, plan.currentOccurrence, nil, "backward clock jump", now)
+    else
+      plan.activeOccurrence = plan.currentOccurrence
+      plan.activeOccurrenceKey = currentKey
+      plan.lastTransitionReason = "Clock moved backwards"
+      if allowed then
+        FugSchedulerRuntime.scheduleRepeats(plan, plan.currentOccurrence, now)
+      else
+        FugSchedulerRuntime.clearRepeats(plan)
+      end
+    end
     FugSchedulerRuntime.setExecutionMessage(
-      "Clock moved backwards; execution state reset without replay",
+      "Clock moved backwards; current state reconciled without replaying one-shots",
       LogLevel.INFO,
       {schedulerLabel = scheduler.label, schedulerId = scheduler.id, reason = "clock moved backwards"}
     )
   elseif elapsed > FugSchedulerRuntime.normalEdgeMaxDelaySeconds then
     FugSchedulerRuntime.positionPlanCursor(plan, now)
     FugSchedulerRuntime.applyPersistedAdvance(plan, now)
-    plan.activeOccurrence = plan.currentOccurrence
-    plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+    local currentKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
     FugSchedulerRuntime.clearRepeats(plan)
     local expiry = FugSchedulerRuntime.pauseExpiryForPoll(plan, {}, now)
     if expiry then FugSchedulerRuntime.expirePlanPause(plan, expiry.reason) end
     local allowed = automaticEnabled and scheduler._enabled and not scheduler._paused
     if allowed then
-      FugSchedulerRuntime.restoreCurrentOccurrence(
-        scheduler,
-        plan,
-        plan.currentOccurrence,
-        expiry and "fireOnResume" or "fireOnStartup",
-        expiry and "pause expired after clock discontinuity" or "forward clock jump or delayed poll",
-        now
-      )
+      if expiry then
+        FugSchedulerRuntime.restoreCurrentOccurrence(
+          scheduler, plan, plan.currentOccurrence, "fireOnResume",
+          "pause expired after clock discontinuity", now)
+      elseif currentKey ~= previousActiveOccurrenceKey then
+        FugSchedulerRuntime.restoreCurrentOccurrence(
+          scheduler, plan, plan.currentOccurrence, nil, "forward clock jump or delayed poll", now)
+      else
+        plan.activeOccurrence = plan.currentOccurrence
+        plan.activeOccurrenceKey = currentKey
+        plan.lastTransitionReason = "Forward clock jump within current Event"
+        FugSchedulerRuntime.scheduleRepeats(plan, plan.currentOccurrence, now)
+      end
+      if not expiry then
+        FugSchedulerRuntime.recoverCurrentOneShots(
+          scheduler, plan, plan.currentOccurrence, "clock-jump late recovery", now,
+          previousObservedTimestamp)
+      end
     else
+      plan.activeOccurrence = plan.currentOccurrence
+      plan.activeOccurrenceKey = currentKey
       plan.lastTransitionReason = "Forward clock jump while execution blocked"
     end
     FugSchedulerRuntime.setExecutionMessage(
-      string.format("%s skipped historical one-shots after a %d-second clock discontinuity", scheduler.label, elapsed),
+      string.format(
+        "%s applied the %d-second one-shot tolerance after a %d-second clock discontinuity",
+        scheduler.label, FugSchedulerRuntime.oneShotToleranceSeconds(), elapsed),
       LogLevel.INFO,
       {schedulerLabel = scheduler.label, schedulerId = scheduler.id, reason = "clock discontinuity"}
     )
@@ -4207,8 +4472,12 @@ function FugSchedulerRuntime.processSchedulerExecution(plan)
       end
     elseif plan.lastAutomaticEnabled == false and automaticEnabled then
       FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "startup", now)
+      FugSchedulerRuntime.recoverCurrentOneShots(
+        scheduler, plan, plan.currentOccurrence, "startup late recovery", now, nil)
     elseif plan.lastEnabled == false and scheduler._enabled then
       FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnStartup", "enabled", now)
+      FugSchedulerRuntime.recoverCurrentOneShots(
+        scheduler, plan, plan.currentOccurrence, "enable late recovery", now, nil)
     elseif plan.lastPaused == true and not scheduler._paused then
       FugSchedulerRuntime.restoreCurrentOccurrence(scheduler, plan, plan.currentOccurrence, "fireOnResume", "resume", now)
     else
@@ -4360,7 +4629,7 @@ end
 -- Reuse unchanged plans and create timers only for assigned runnable Scheduler Slots.
 function FugSchedulerRuntime.synchronizeRuntimePlans(schedule)
   local existing, nextPlans, assigned = FugSchedulerRuntime.runtimePlans, {}, {}
-  local now = os.time()
+  local now = FugSchedulerRuntime.executionNow()
   for _, slot in ipairs(schedule.schedulerSlots) do
     if slot.schedulerId then table.insert(assigned, schedule._schedulersById[slot.schedulerId]) end
   end
@@ -4585,6 +4854,12 @@ function FugSchedulerRuntime.publishGlobalStatus(timestamp, schedulerStatuses, h
       warningCount = #FugSchedulerRuntime.scheduleWarnings
     },
     automaticExecutionEnabled = Controls.AutomaticExecutionEnabled and Controls.AutomaticExecutionEnabled.Boolean == true or false,
+    oneShotPolicy = {
+      lateToleranceSeconds = FugSchedulerRuntime.oneShotToleranceSeconds(),
+      receiptCount = FugSchedulerRuntime.oneShotLedger and #(FugSchedulerRuntime.oneShotLedger.receipts or {}) or 0,
+      receiptRetentionSeconds = FugSchedulerRuntime.oneShotLedgerRetentionSeconds,
+      receiptMaximumCount = FugSchedulerRuntime.oneShotLedgerMaximumReceipts
+    },
     performance = performance,
     slots = schedulerStatuses
   }
@@ -4603,7 +4878,7 @@ function FugSchedulerRuntime.publishLiveRuntimeStatus()
   if Controls.TestDateTime and (Controls.TestDateTime.String or "") ~= "" then return end
   local schedulerStatuses = {}
   local selectedScheduler, selectedResult = FugSchedulerRuntime.selectedScheduler(), nil
-  local resolvedTimestamp = os.time()
+  local resolvedTimestamp = FugSchedulerRuntime.executionNow()
   for _, slot in ipairs(FugSchedulerRuntime.activeSchedule.schedulerSlots) do
     local scheduler = slot.schedulerId and FugSchedulerRuntime.activeSchedule._schedulersById[slot.schedulerId] or nil
     local plan = scheduler and FugSchedulerRuntime.runtimePlans[scheduler.id] or nil
@@ -4839,13 +5114,31 @@ function FugSchedulerRuntime.refreshBackupControls(message)
     string.format("%d saved configuration%s", #catalog.configurations, #catalog.configurations == 1 and "" or "s"))
 end
 
--- Mirror the complete catalogue to the configured experimental Core JSON path on physical hardware.
+-- Mirror the complete catalogue to the documented Core media location on physical hardware.
 function FugSchedulerRuntime.mirrorBackupCatalogToFile(catalog)
   if System and System.IsEmulating then
     FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Designer emulation: file mirror unavailable; persistent control saved.")
     return false
   end
-  local writeOk, writeError = pcall(FugSchedulerRuntime.json.dump, catalog, FugSchedulerRuntime.backupFilePath)
+  local writeOk, writeError = pcall(function()
+    if dir.get(FugSchedulerRuntime.backupDirectoryPath) == nil then
+      dir.create(FugSchedulerRuntime.backupDirectoryPath)
+    end
+    if dir.get(FugSchedulerRuntime.backupDirectoryPath) == nil then
+      error("could not create " .. FugSchedulerRuntime.backupDirectoryPath)
+    end
+    FugSchedulerRuntime.json.dump(catalog, FugSchedulerRuntime.backupFilePath)
+    local fileFound = false
+    for _, entry in ipairs(dir.get(FugSchedulerRuntime.backupDirectoryPath) or {}) do
+      if entry.type == "file" and entry.name == FugSchedulerRuntime.backupFileName then
+        fileFound = true
+        break
+      end
+    end
+    if not fileFound then
+      error(FugSchedulerRuntime.backupFilePath .. " was not present after writing")
+    end
+  end)
   if writeOk then
     FugSchedulerRuntime.setText("ConfigurationBackupFileStatus", "Core file mirror updated successfully.")
     return true
@@ -5087,6 +5380,11 @@ function FugSchedulerRuntime.refreshPreferences(message)
     {Text = LogLevelLabels[LogLevel.ERROR], Id = LogLevel.ERROR},
     {Text = LogLevelLabels[LogLevel.OFF], Id = LogLevel.OFF}
   }
+  local tolerance = FugSchedulerRuntime.oneShotToleranceSeconds()
+  if Controls.OneShotLateToleranceSeconds then
+    Controls.OneShotLateToleranceSeconds.Value = tolerance
+  end
+
   local debugLevel = FugSchedulerRuntime.loggingLevel("DebugLogLevel", LogLevel.INFO)
   local eventLevel = FugSchedulerRuntime.loggingLevel("EventLogLevel", LogLevel.OFF)
   if Controls.DebugLogLevel then
@@ -5103,8 +5401,9 @@ function FugSchedulerRuntime.refreshPreferences(message)
   FugSchedulerRuntime.setText(
     "PreferencesStatus",
     message or string.format(
-      "Date format: %s | Debug Output: %s | Event Log: %s | DiagnosticLog: all levels",
+      "Date format: %s | One-shot tolerance: %d seconds | Debug Output: %s | Event Log: %s",
       dateLabels[format],
+      tolerance,
       LogLevelLabels[debugLevel],
       LogLevelLabels[eventLevel]
     )
@@ -5777,6 +6076,21 @@ function FugSchedulerRuntime.attachHandlers()
     end
   end
 
+  if Controls.OneShotLateToleranceSeconds then
+    Controls.OneShotLateToleranceSeconds.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingPreferences then return end
+      local value = math.max(0, math.min(
+        FugSchedulerRuntime.maximumOneShotToleranceSeconds,
+        math.floor((tonumber(control.Value) or 0) + 0.5)
+      ))
+      FugSchedulerRuntime.updatingPreferences = true
+      control.Value = value
+      FugSchedulerRuntime.updatingPreferences = false
+      FugSchedulerRuntime.refreshPreferences("One-shot late tolerance: " .. value .. " seconds")
+      FugSchedulerRuntime.logLine("One-shot late tolerance changed to " .. value .. " seconds")
+    end
+  end
+
   -- Validate and retain one destination's normalized numeric threshold selection.
   local function attachLogLevelHandler(controlName, destinationName)
     if not Controls[controlName] then return end
@@ -5793,6 +6107,30 @@ function FugSchedulerRuntime.attachHandlers()
   end
   attachLogLevelHandler("DebugLogLevel", "Debug Output")
   attachLogLevelHandler("EventLogLevel", "Event Log")
+
+  if Controls.OneShotExecutionLedger then
+    Controls.OneShotExecutionLedger.EventHandler = function()
+      if not FugSchedulerRuntime.writingOneShotLedger then FugSchedulerRuntime.reloadOneShotLedger() end
+    end
+  end
+
+  if Controls.ExecutionTestClockOffsetSeconds then
+    Controls.ExecutionTestClockOffsetSeconds.EventHandler = function(control)
+      if FugSchedulerRuntime.updatingExecutionTestClock then return end
+      FugSchedulerRuntime.updatingExecutionTestClock = true
+      if System and System.IsEmulating then
+        control.Value = math.max(-86400, math.min(86400, math.floor(tonumber(control.Value) or 0)))
+        FugSchedulerRuntime.logLine(
+          "Execution test clock offset set to " .. tostring(control.Value) .. " seconds",
+          LogLevel.INFO,
+          {reason = "execution clock test"}
+        )
+      else
+        control.Value = 0
+      end
+      FugSchedulerRuntime.updatingExecutionTestClock = false
+    end
+  end
 
   if Controls.ConfigurationBackupCatalog then
     Controls.ConfigurationBackupCatalog.EventHandler = function()
@@ -5871,14 +6209,15 @@ end
 
 -- Initialize sample persistence, registries, status, and the first resolution result.
 function FugSchedulerRuntime.initialize()
-  -- Deterministic preview is developer-only and must never survive into a new runtime session.
+  -- Deterministic preview and execution-clock injection are developer-only runtime aids.
   FugSchedulerRuntime.clearDiagnosticTestTime("plugin runtime started", false)
-  -- Master Enable is deliberately fail-safe and must be turned on after every runtime start.
-  if Controls.AutomaticExecutionEnabled then
-    FugSchedulerRuntime.updatingExecutionControl = true
-    Controls.AutomaticExecutionEnabled.Boolean = false
-    FugSchedulerRuntime.updatingExecutionControl = false
+  if Controls.ExecutionTestClockOffsetSeconds then
+    FugSchedulerRuntime.updatingExecutionTestClock = true
+    Controls.ExecutionTestClockOffsetSeconds.Value = 0
+    FugSchedulerRuntime.updatingExecutionTestClock = false
   end
+  -- Retain the persisted Master Enable state so a Core or runtime restart resumes the operator's saved intent.
+  -- The control's DefaultValue keeps newly created plugin instances safely disabled.
   if Controls.ActionSelect then Controls.ActionSelect.Choices = {} end
   if Controls.SchedulerDefinitionSelect then Controls.SchedulerDefinitionSelect.Choices = {} end
   if Controls.SchedulerDefinitionDefaultWeekPattern then Controls.SchedulerDefinitionDefaultWeekPattern.Choices = {} end
@@ -5947,6 +6286,7 @@ function FugSchedulerRuntime.initialize()
     Controls.EventLogLevel.String = FugSchedulerRuntime.encodeChoice("Off", LogLevel.OFF)
   end
   FugSchedulerRuntime.refreshPreferences()
+  FugSchedulerRuntime.reloadOneShotLedger()
   FugSchedulerRuntime.reloadBackupCatalog()
   FugSchedulerRuntime.logLine("FugScheduler 2000 scheduler runtime initialised.")
 

@@ -1,5 +1,15 @@
 FugSchedulerUi = FugSchedulerUi or {}
 
+-- Return the hierarchical control-pin label for one stable counted Scheduler Slot control.
+function FugSchedulerUi.slotPinPrettyName(controlName, slotNumber)
+  return controlName .. "~Slot " .. string.format("%02d", slotNumber)
+end
+
+-- Add a hidden layout entry that supplies a hierarchical name for a public control pin.
+function FugSchedulerUi.hiddenPin(ui, controlName, prettyName)
+  ui:control(controlName, "None", ui:rect(0, 0, 0, 0), {PrettyName = prettyName})
+end
+
 -- Return the retained-container column specifications for Scheduler Slot rows.
 function FugSchedulerUi.slotColumnSpecs()
   return {
@@ -40,22 +50,27 @@ function FugSchedulerUi.slotRow(ui, rect, slotNumber)
   local enableCell = cells[3]:fill()
   local pauseCell = cells[4]:fill()
   ui:button(countedControlName("SchedulerSlotEnabled", slotNumber), ui:center(enableCell, 30, enableCell.h), {
-    ButtonStyle = "Toggle", Legend = "", Color = ui:color("ok")
+    ButtonStyle = "Toggle", Legend = "", Color = ui:color("ok"),
+    PrettyName = FugSchedulerUi.slotPinPrettyName("SchedulerSlotEnabled", slotNumber)
   })
   ui:button(countedControlName("SchedulerSlotPaused", slotNumber), ui:center(pauseCell, 30, pauseCell.h), {
-    ButtonStyle = "Toggle", Legend = "M", Color = ui:color("warning")
+    ButtonStyle = "Toggle", Legend = "M", Color = ui:color("warning"),
+    PrettyName = FugSchedulerUi.slotPinPrettyName("SchedulerSlotPaused", slotNumber)
   })
   ui:textControl(countedControlName("SchedulerSlotCurrentPattern", slotNumber), cells[5]:fill(), {
     IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
-    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
+    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8,
+    PrettyName = FugSchedulerUi.slotPinPrettyName("SchedulerSlotCurrentPattern", slotNumber)
   })
   ui:textControl(countedControlName("SchedulerSlotCurrentEvent", slotNumber), cells[6]:fill(), {
     IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
-    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
+    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8,
+    PrettyName = FugSchedulerUi.slotPinPrettyName("SchedulerSlotCurrentEvent", slotNumber)
   })
   ui:textControl(countedControlName("SchedulerSlotNextEvent", slotNumber), cells[7]:fill(), {
     IsReadOnly = true, TextBoxStyle = "NoBackground", TextColor = ui:color("controlText"),
-    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8
+    HTextAlign = "Left", VTextAlign = "Center", WordWrap = true, FontSize = 8,
+    PrettyName = FugSchedulerUi.slotPinPrettyName("SchedulerSlotNextEvent", slotNumber)
   })
   return row
 end

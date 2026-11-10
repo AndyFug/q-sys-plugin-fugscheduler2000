@@ -232,7 +232,7 @@ Each occurrence includes its Core-local timestamp, calendar date, configured tim
 
 The occurrence window grows date-by-date near its future boundary and discards obsolete history while retaining Previous for status. Empty dates and long gaps are resolved incrementally. Re-anchor and detached resolver searches use a 400-calendar-day safety horizon in each direction; a live cursor with no Event inside that horizon extends the search by another horizon as wall time reaches the cached boundary. A Scheduler with no configured Events bypasses horizon scanning entirely.
 
-Compiled Event order, date caches, occurrence windows/indexes, timer objects, generation tokens, callback functions, repeat deadlines, performance counters, and lifecycle state are runtime-only and never enter `ScheduleData`.
+Compiled Event order, date caches, occurrence windows/indexes, timer objects, generation tokens, callback functions, repeat deadlines, performance counters, and lifecycle state are runtime-only and never enter `ScheduleData`. The bounded one-shot receipt ledger is persistent but remains in its own control rather than becoming editable schedule configuration.
 
 ## Event execution
 
@@ -262,7 +262,11 @@ Examples include selecting a music mode, muting a site, or enabling a de-icer. I
 
 ### One-shot Action
 
-Examples include playing an announcement or sending a pulse. A one-shot Event Action executes only when the Scheduler observes its scheduled edge. Starting, enabling, or resuming after that edge must not replay it automatically. One-shot assignments cannot use startup firing, resume firing, or repeat intervals.
+Examples include playing an announcement or sending a pulse. A one-shot Event Action normally executes when the Scheduler observes its scheduled edge. One-shot assignments cannot use startup firing, resume firing, or repeat intervals.
+
+The global **One-shot late tolerance** preference optionally allows only the latest resolved Event's one-shot Actions to recover after startup, enable, or a detected forward clock discontinuity. The tolerance is expressed in seconds, defaults to `0`, and is limited to `14400` seconds (four hours). `0` disables late recovery. An occurrence is eligible only when its lateness is within the tolerance; earlier skipped Events are never replayed in a burst.
+
+Before invoking an eligible one-shot callback, the runtime persistently records a receipt for that Scheduler Definition, dated ordered occurrence, and Event Action assignment. Receipts are retained for four hours, matching the maximum tolerance, and provide at-most-once execution across runtime/Core reloads and repeated edge crossings within that window after backward clock movement. A receipt is consumed even when the registered callback is unavailable or fails, because automatically retrying a potentially physical operation is less safe than reporting the failure.
 
 ## Pause behavior
 
@@ -305,7 +309,7 @@ The command is rejected when the Slot is unassigned or disabled, Master Enable i
 
 The Admin backup catalogue stores named snapshots of the complete persisted `ScheduleData` root, including Scheduler Definitions, Scheduler Slot assignment and operational configuration, pause intents, and any active manual-advance marker. It deliberately excludes callback functions, Action Registry state, editor selections, diagnostics, and presentation/logging preferences.
 
-The first implementation keeps the complete catalogue in one persistent hidden Text control and attempts to mirror the same schema-versioned JSON document to `/FugScheduler2000/configurations.json` on a physical Core. This absolute folder path is an intentional physical-Core experiment; the bundled SDK examples document `media/` and `design/` paths rather than an absolute root path. Q-SYS file writes are unavailable in Designer emulation, so the persistent control remains authoritative. Loading and deleting backups require explicit confirmation. Loading is rejected while Master Enable is on, validates the complete candidate, and assigns a new local configuration revision.
+The implementation keeps the complete catalogue in one persistent hidden Text control and attempts to mirror the same schema-versioned JSON document to `media/FugScheduler2000/configurations.json` on a physical Core. It creates the `media/FugScheduler2000` directory when required using the documented Q-SYS `dir` API. Q-SYS file writes are unavailable in Designer emulation, so the persistent control remains authoritative. Loading and deleting backups require explicit confirmation. Loading is rejected while Master Enable is on, validates the complete candidate, and assigns a new local configuration revision.
 
 ## Persisted versus runtime data
 
@@ -339,7 +343,15 @@ Runtime-only data includes:
 - poll/rebuild performance measurements
 - validation and callback errors
 
-Automatic execution is additionally protected by the plugin-wide Master Enable safety toggle that defaults off on runtime start. A Scheduler Slot must be assigned, enabled, unpaused, and covered by that master toggle before callbacks can execute.
+Automatic execution is additionally protected by the plugin-wide Master Enable safety toggle. New plugin instances default it off, while its saved control state is retained across Core and runtime restarts so the scheduler resumes the operator's previous intent. A Scheduler Slot must be assigned, enabled, unpaused, and covered by that master toggle before callbacks can execute.
+
+## Clock discontinuities
+
+A forward movement greater than the ordinary delayed-poll threshold repositions the occurrence cursor directly rather than iterating every historical Event. When the resolved Current occurrence changes, its enabled stateful Actions reconcile immediately and repeat deadlines restart from the new time without catch-up bursts. Only the latest Current Event's one-shots may recover, subject to the global tolerance and persistent receipt ledger.
+
+A backward movement also repositions Previous/Current/Next. If Current changes, its stateful Actions reconcile immediately. The jump itself never executes one-shots. If wall time later crosses a previously observed edge again, persistent receipts suppress one-shot assignments that already executed.
+
+These rules also cover daylight-saving changes. Spring-forward one-shots require a tolerance large enough to include their actual lateness; autumn fallback does not duplicate an already receipted one-shot occurrence.
 
 ## Worked example
 

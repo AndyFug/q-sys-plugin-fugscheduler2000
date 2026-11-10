@@ -118,11 +118,13 @@ def main() -> None:
     ensure_design("preflight")
     initial = controls(
         "ScheduleData", "TestDateTime", "AutomaticExecutionEnabled", "ResolveTestTime",
+        "OneShotLateToleranceSeconds", "OneShotExecutionLedger", "ExecutionTestClockOffsetSeconds",
         "GlobalSchedulerSlotStatus", "DiagnosticLog", "script.status", "script.error.count",
     )
     runtime = controls("script.status", "script.error.count", component=RUNTIME_PROVIDER)
     provider = controls("script.status", "script.error.count", component=ACTION_PROVIDER)
     check(initial["AutomaticExecutionEnabled"]["Value"] < 0.5, "automatic execution is off before midnight testing")
+    check(initial["ExecutionTestClockOffsetSeconds"]["Value"] == 0, "execution test clock is zero before midnight testing")
     check(initial["script.status"]["String"] == "OK" and initial["script.error.count"]["Value"] == 0
           and runtime["script.status"]["String"] == "OK" and runtime["script.error.count"]["Value"] == 0
           and provider["script.status"]["String"] == "OK" and provider["script.error.count"]["Value"] == 0,
@@ -130,9 +132,13 @@ def main() -> None:
 
     original_schedule = initial["ScheduleData"]["String"]
     original_test_time = initial["TestDateTime"]["String"]
+    original_tolerance = initial["OneShotLateToleranceSeconds"]["Value"]
+    original_ledger = initial["OneShotExecutionLedger"]["String"]
     scheduler_id = "qrc-live-midnight-" + datetime.now().strftime("%Y%m%d%H%M%S")
 
     try:
+        set_value("OneShotLateToleranceSeconds", 0)
+        set_value("ExecutionTestClockOffsetSeconds", 0)
         now = qsys_now()
         midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         wait_seconds = (midnight - now).total_seconds()
@@ -206,15 +212,22 @@ def main() -> None:
         ensure_design("cleanup")
         set_value("AutomaticExecutionEnabled", False, 0.2)
         set_value("ScheduleData", original_schedule, 0.8)
+        set_value("OneShotExecutionLedger", original_ledger, 0.3)
+        set_value("OneShotLateToleranceSeconds", original_tolerance, 0.2)
+        set_value("ExecutionTestClockOffsetSeconds", 0, 0.2)
         set_value("TestDateTime", original_test_time, 0.3)
         final = controls(
             "ScheduleData", "TestDateTime", "AutomaticExecutionEnabled", "ResolveTestTime",
+            "OneShotExecutionLedger", "OneShotLateToleranceSeconds", "ExecutionTestClockOffsetSeconds",
             "script.status", "script.error.count",
         )
         final_runtime = controls("script.status", "script.error.count", component=RUNTIME_PROVIDER)
         final_provider = controls("script.status", "script.error.count", component=ACTION_PROVIDER)
         restored = (final["ScheduleData"]["String"] == original_schedule
                     and final["TestDateTime"]["String"] == original_test_time
+                    and final["OneShotExecutionLedger"]["String"] == original_ledger
+                    and final["OneShotLateToleranceSeconds"]["Value"] == original_tolerance
+                    and final["ExecutionTestClockOffsetSeconds"]["Value"] == 0
                     and final["AutomaticExecutionEnabled"]["Value"] < 0.5
                     and final["ResolveTestTime"]["Value"] < 0.5)
         print(f"RESTORE: {'PASS' if restored else 'FAIL'} midnight fixtures restored byte-for-byte", flush=True)
