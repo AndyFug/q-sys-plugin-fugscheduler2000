@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-11-10T23:37:12Z",
-  BuildTimestamp = 1794353832
+  BuildDate = "2026-11-11T11:56:07Z",
+  BuildTimestamp = 1794398167
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {

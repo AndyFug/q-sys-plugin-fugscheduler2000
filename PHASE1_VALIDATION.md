@@ -673,7 +673,9 @@ Implemented in source; Designer/Core restart acceptance remains pending:
 - [x] Grouped every stable counted Slot pin by control name using labels such as `SchedulerSlotEnabled~Slot 01`.
 - [x] Removed page-only, selected-Slot, status-bar, and diagnostic display controls from the public control-pin list.
 - [x] Retained stable per-Slot operational/status pins plus the aggregate `GlobalSchedulerSlotStatus` JSON output.
+- [x] Rendered the actual `GlobalSchedulerSlotStatus` Text control as a read-only Diagnostics text area so it can be dragged into Q-SYS Named Controls for integrations such as Bitfocus Companion.
 - [x] Run the local include compiler and confirm no unresolved include directives.
+- [ ] Confirm the Diagnostics JSON text area can be added to Named Controls and read as a complete string through the intended external integration.
 - [ ] Confirm Master Enable retains both on and off states across a physical-Core stop/start cycle.
 - [ ] Confirm the Designer Control Pins tree shows one parent per counted Slot control and zero-padded Slot children.
 - [ ] Confirm existing exposed-pin wiring is reviewed after the design-time control-pin contract changes.

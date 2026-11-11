@@ -574,13 +574,19 @@ function GetControlLayout(props)
       true
     )
     ui:group("Global Scheduler Slot Status JSON", ui:rect(450, 146, 440, 298))
-    FugSchedulerUi.dataViewer(
-      ui,
-      "GlobalSchedulerSlotStatusViewer",
-      ui:rect(468, 180, 404, 230),
-      "Diagnostics~Global Scheduler Slot Status",
-      true
-    )
+    -- Expose the actual aggregate Text control so designers can drag it into Named Controls.
+    ui:textControl("GlobalSchedulerSlotStatus", ui:rect(468, 180, 404, 230), {
+      IsReadOnly = true,
+      TextBoxStyle = "Normal",
+      TextColor = ui:color("statusText"),
+      Color = ui:color("statusBackground"),
+      HTextAlign = "Left",
+      VTextAlign = "Top",
+      WordWrap = true,
+      Font = "Roboto Mono",
+      FontSize = 9,
+      PrettyName = "Diagnostics~Global Scheduler Slot Status JSON"
+    })
 
   elseif page == "About" then
     ui:group("FugScheduler 2000", ui:rect(10, 44, 880, 400))

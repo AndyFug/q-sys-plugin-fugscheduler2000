@@ -11,9 +11,9 @@
 PluginInfo = {
   Name = "AndyFug~FugScheduler 2000",
   Version = "0.1.0",
-  BuildVersion = "0.1.0.42",
-  BuildDate = "2026-11-10T23:37:12Z",
-  BuildTimestamp = 1794353832,
+  BuildVersion = "0.1.0.43",
+  BuildDate = "2026-11-11T11:56:07Z",
+  BuildTimestamp = 1794398167,
   Id = "1da6035f-30fd-41ca-8cff-828ea21c1dee",
   Author = "FugScheduler 2000 Contributors",
   Description = "UI-driven Q-SYS scheduler with actions loaded from trusted Lua source."
@@ -2321,13 +2321,19 @@ function GetControlLayout(props)
       true
     )
     ui:group("Global Scheduler Slot Status JSON", ui:rect(450, 146, 440, 298))
-    FugSchedulerUi.dataViewer(
-      ui,
-      "GlobalSchedulerSlotStatusViewer",
-      ui:rect(468, 180, 404, 230),
-      "Diagnostics~Global Scheduler Slot Status",
-      true
-    )
+    -- Expose the actual aggregate Text control so designers can drag it into Named Controls.
+    ui:textControl("GlobalSchedulerSlotStatus", ui:rect(468, 180, 404, 230), {
+      IsReadOnly = true,
+      TextBoxStyle = "Normal",
+      TextColor = ui:color("statusText"),
+      Color = ui:color("statusBackground"),
+      HTextAlign = "Left",
+      VTextAlign = "Top",
+      WordWrap = true,
+      Font = "Roboto Mono",
+      FontSize = 9,
+      PrettyName = "Diagnostics~Global Scheduler Slot Status JSON"
+    })
 
   elseif page == "About" then
     ui:group("FugScheduler 2000", ui:rect(10, 44, 880, 400))
@@ -2395,8 +2401,8 @@ if Controls then
   -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
   -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
   local FugSchedulerPluginInfo = PluginInfo or {
-    BuildDate = "2026-11-10T23:37:12Z",
-    BuildTimestamp = 1794353832
+    BuildDate = "2026-11-11T11:56:07Z",
+    BuildTimestamp = 1794398167
   }
 
   FugSchedulerWeekdays = FugSchedulerWeekdays or {
