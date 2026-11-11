@@ -680,6 +680,28 @@ Implemented in source; Designer/Core restart acceptance remains pending:
 - [ ] Confirm the Designer Control Pins tree shows one parent per counted Slot control and zero-padded Slot children.
 - [ ] Confirm existing exposed-pin wiring is reviewed after the design-time control-pin contract changes.
 
+## Physical-Core one-shot ledger JSON compatibility
+
+Investigated read-only against production Core `172.16.11.15`, design `hpww26_v1.0-dev27`, running build `0.1.0.43`:
+
+- The plugin, Action Provider, and Ice Rink Message Controller all reported `OK` with zero script errors; Slot 5 was assigned, enabled, unpaused, and covered by Master Enable.
+- The 13:37 Ice Rink Event was blocked with `One-shot execution blocked because its receipt could not be persisted: one-shot ledger is unavailable`.
+- `OneShotExecutionLedger` contained three valid historical receipts semantically, but its JSON text contained raw ASCII 30/31 bytes inside receipt keys and failed strict decoding at character 114.
+- The failure appeared after the 12:10 runtime restart: build `0.1.0.43` used `"\30"` and `"\31"` key separators, and the physical Core's RapidJSON encoder persisted those bytes without JSON escaping.
+- Source now uses percent-escaped printable identity fields separated by `|`, sanitises and migrates legacy raw-separator ledgers during load, and rejects any future encoded ledger containing those unsafe bytes.
+- Added `tests/unit/test_one_shot_ledger_contract.py`; it and the existing backup contract test pass, and local include compilation succeeds.
+- [ ] Produce a numbered build only when deployment is approved.
+- [x] Validate migration of the existing production ledger and future one-shot execution during an agreed maintenance window.
+- [ ] Validate a subsequent physical-Core/runtime restart retains a decodable ledger and suppresses duplicate one-shots.
+
+Production validation for build `0.1.0.44`:
+
+- QRC confirmed physical Core 510i design `hpww26_v1.0-dev28`; the plugin fingerprint changed to `8d2c6db97248ea82712345c1fe0543f0` and the local build date displayed as 11 November 2026 13:48.
+- The plugin, Action Provider, and Ice Rink Message Controller all reported `OK` with zero script errors. The Scheduler reported 5/5 assigned Slots enabled, Master Enable armed, 18 Actions loaded, and zero schedule warnings.
+- Startup migrated all three legacy receipt keys to printable `|`-separated identities. The 625-byte ledger then passed strict JSON decoding with zero ASCII 30/31 bytes.
+- A naturally scheduled Ice Rink `15 Mins` one-shot executed successfully at 14:01 without any QRC mutation. The ledger atomically gained a fourth JSON-safe receipt, and passive observation confirmed `Ice Rink 15 Mins AI Female.wav` played to completion.
+- No controls were written or triggered during post-deployment validation. A later physical runtime/Core restart remains required to prove the newly written ledger reloads and suppresses duplicates.
+
 ## Build validation
 
 - [x] Run `python3 scripts/compile_plugin.py` successfully.

@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-11-11T11:56:07Z",
-  BuildTimestamp = 1794398167
+  BuildDate = "2026-11-11T13:48:56Z",
+  BuildTimestamp = 1794404936
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -3782,16 +3782,23 @@ function FugSchedulerRuntime.automaticExecutionEnabled()
   return Controls.AutomaticExecutionEnabled and Controls.AutomaticExecutionEnabled.Boolean == true or false
 end
 
+-- Encode one identity field with printable ASCII so persisted receipt keys remain valid JSON on every Core.
+function FugSchedulerRuntime.stableIdentityPart(value)
+  return (tostring(value):gsub("[^%w%-_%.~]", function(character)
+    return string.format("%%%02X", string.byte(character))
+  end))
+end
+
 -- Build a stable runtime-only identity for one dated, ordered Event occurrence.
 function FugSchedulerRuntime.occurrenceKey(item)
   if not item then return nil end
   return table.concat({
-    tostring(item.timestamp),
-    tostring(item.date),
-    tostring(item.dayPatternId or (item.dayPattern and item.dayPattern.id)),
-    tostring(item.eventId or (item.event and item.event.id)),
-    tostring(item.sequence)
-  }, "\31")
+    FugSchedulerRuntime.stableIdentityPart(item.timestamp),
+    FugSchedulerRuntime.stableIdentityPart(item.date),
+    FugSchedulerRuntime.stableIdentityPart(item.dayPatternId or (item.dayPattern and item.dayPattern.id)),
+    FugSchedulerRuntime.stableIdentityPart(item.eventId or (item.event and item.event.id)),
+    FugSchedulerRuntime.stableIdentityPart(item.sequence)
+  }, "|")
 end
 
 -- Return a new schema-valid persistent one-shot execution ledger.
@@ -3804,11 +3811,27 @@ end
 -- Build one stable receipt identity for a dated one-shot Event Action assignment.
 function FugSchedulerRuntime.oneShotReceiptKey(scheduler, occurrence, eventAction, actionIndex)
   return table.concat({
-    tostring(scheduler and scheduler.id),
-    tostring(FugSchedulerRuntime.occurrenceKey(occurrence)),
-    tostring(actionIndex),
-    tostring(eventAction and eventAction.actionId)
-  }, "\30")
+    FugSchedulerRuntime.stableIdentityPart(scheduler and scheduler.id),
+    FugSchedulerRuntime.stableIdentityPart(occurrence and occurrence.timestamp),
+    FugSchedulerRuntime.stableIdentityPart(occurrence and occurrence.date),
+    FugSchedulerRuntime.stableIdentityPart(occurrence and
+      (occurrence.dayPatternId or (occurrence.dayPattern and occurrence.dayPattern.id))),
+    FugSchedulerRuntime.stableIdentityPart(occurrence and
+      (occurrence.eventId or (occurrence.event and occurrence.event.id))),
+    FugSchedulerRuntime.stableIdentityPart(occurrence and occurrence.sequence),
+    FugSchedulerRuntime.stableIdentityPart(actionIndex),
+    FugSchedulerRuntime.stableIdentityPart(eventAction and eventAction.actionId)
+  }, "|")
+end
+
+-- Convert legacy control-character receipt separators into the printable current key format.
+function FugSchedulerRuntime.normaliseOneShotReceiptKey(key)
+  if type(key) ~= "string" or not key:find("[\30\31]") then return key end
+  local parts = {}
+  for part in key:gmatch("[^\30\31]+") do
+    table.insert(parts, FugSchedulerRuntime.stableIdentityPart(part))
+  end
+  return table.concat(parts, "|")
 end
 
 -- Validate one persisted ledger and return a clean copy without installing it.
@@ -3824,10 +3847,11 @@ function FugSchedulerRuntime.validateOneShotLedger(candidate)
         type(receipt.executedAt) ~= "number" or type(receipt.occurrenceTimestamp) ~= "number" then
       return nil, "invalid one-shot receipt at index " .. tostring(index)
     end
-    if not seen[receipt.key] then
-      seen[receipt.key] = true
+    local normalisedKey = FugSchedulerRuntime.normaliseOneShotReceiptKey(receipt.key)
+    if not seen[normalisedKey] then
+      seen[normalisedKey] = true
       table.insert(validated.receipts, {
-        key = receipt.key,
+        key = normalisedKey,
         executedAt = math.floor(receipt.executedAt),
         occurrenceTimestamp = math.floor(receipt.occurrenceTimestamp)
       })
@@ -3863,6 +3887,9 @@ function FugSchedulerRuntime.persistOneShotLedger(candidate)
   if not encodeOk or not serialized or serialized == "" then
     return false, "ledger JSON serialization failed"
   end
+  if serialized:find("[\30\31]") then
+    return false, "ledger JSON serialization contained unsafe control characters"
+  end
   if not Controls.OneShotExecutionLedger then return false, "one-shot ledger control is unavailable" end
 
   FugSchedulerRuntime.writingOneShotLedger = true
@@ -3881,11 +3908,15 @@ end
 -- Load the persistent one-shot ledger without allowing malformed data to replace valid runtime state.
 function FugSchedulerRuntime.reloadOneShotLedger()
   local source = Controls.OneShotExecutionLedger and Controls.OneShotExecutionLedger.String or ""
+  local legacySeparators = source:find("[\30\31]") ~= nil
   local candidate
   if source == "" then
     candidate = FugSchedulerRuntime.emptyOneShotLedger()
   else
-    local decodeOk, decoded = pcall(FugSchedulerRuntime.json.decode, source)
+    -- Build 0.1.0.43 and earlier could persist raw ASCII 30/31 separators on physical Cores.
+    -- Escape those bytes before decoding; validation then migrates every legacy key to printable form.
+    local decodableSource = source:gsub("\30", "\\u001E"):gsub("\31", "\\u001F")
+    local decodeOk, decoded = pcall(FugSchedulerRuntime.json.decode, decodableSource)
     if not decodeOk then
       FugSchedulerRuntime.logLine("One-shot ledger JSON is invalid; previous ledger retained", LogLevel.ERROR)
       return false
@@ -3902,6 +3933,9 @@ function FugSchedulerRuntime.reloadOneShotLedger()
   if not persisted then
     FugSchedulerRuntime.logLine("One-shot ledger could not be loaded: " .. tostring(persistError), LogLevel.ERROR)
     return false
+  end
+  if legacySeparators then
+    FugSchedulerRuntime.logLine("Legacy one-shot ledger receipt keys migrated to JSON-safe format", LogLevel.INFO)
   end
   return true
 end
@@ -4308,10 +4342,7 @@ function FugSchedulerRuntime.pauseExpiryForPoll(plan, crossed, now)
   end
   local target = intent.target
   if not target or not tonumber(target.timestamp) then return nil end
-  local targetKey = table.concat({
-    tostring(target.timestamp), tostring(target.date), tostring(target.dayPatternId),
-    tostring(target.eventId), tostring(target.sequence)
-  }, "\31")
+  local targetKey = FugSchedulerRuntime.occurrenceKey(target)
   for index, occurrence in ipairs(crossed or {}) do
     if FugSchedulerRuntime.occurrenceKey(occurrence) == targetKey then
       return {reason = "automatic " .. PauseModes[intent.mode].label .. " pause expired", resumeIndex = index}
@@ -4619,14 +4650,8 @@ function FugSchedulerRuntime.refreshPlanPauseTarget(plan, now)
     plan.lastTransitionReason = "Pause target unavailable: " .. tostring(targetError)
     return false
   end
-  local previousKey = intent.target and table.concat({
-    tostring(intent.target.timestamp), tostring(intent.target.date), tostring(intent.target.dayPatternId),
-    tostring(intent.target.eventId), tostring(intent.target.sequence)
-  }, "\31") or nil
-  local targetKey = table.concat({
-    tostring(target.timestamp), tostring(target.date), tostring(target.dayPatternId),
-    tostring(target.eventId), tostring(target.sequence)
-  }, "\31")
+  local previousKey = FugSchedulerRuntime.occurrenceKey(intent.target)
+  local targetKey = FugSchedulerRuntime.occurrenceKey(target)
   if previousKey == targetKey then return false end
   intent.target = target
   plan.lastTransitionReason = "Active pause target updated after schedule change"

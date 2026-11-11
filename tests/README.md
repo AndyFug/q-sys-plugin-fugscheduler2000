@@ -60,9 +60,12 @@ Offline backup-contract coverage is directly runnable with:
 
 ```bash
 python3 tests/unit/test_backup_runtime_contract.py
+python3 tests/unit/test_one_shot_ledger_contract.py
 ```
 
-It rejects duplicate backup implementations and checks that essential startup does not synchronously decode the catalogue, automatic metadata refresh is deferred, selection does not parse schedules, file refresh is filename-only, selected-file validation precedes catalogue persistence and confirmed-load arming, physical file import bypasses the clipboard and direct live installation, and clipboard import cannot change live `ScheduleData`.
+The backup contract test rejects duplicate implementations and checks that essential startup does not synchronously decode the catalogue, automatic metadata refresh is deferred, selection does not parse schedules, file refresh is filename-only, selected-file validation precedes catalogue persistence and confirmed-load arming, physical file import bypasses the clipboard and direct live installation, and clipboard import cannot change live `ScheduleData`.
+
+The one-shot ledger contract test reproduces the malformed physical-Core JSON fixture, checks legacy-key migration, and prevents control-character separators from returning to persisted receipt identities.
 
 `validate_backup_file_isolation.py` is a physical-Core-only regression for a pre-provisioned corrupt `.json` fixture. It refuses to run without explicit `QSYS_HOST`, `QSYS_DESIGN_NAME`, and `FUGSCHEDULER_CORRUPT_BACKUP_FILE` environment variables, requires Master Enable off, and verifies that importing the selected corrupt file changes neither live `ScheduleData`, the catalogue, nor the clipboard. Run it only on a safe non-production physical-Core test design; it does not deploy plugin code or create/delete files.
 
