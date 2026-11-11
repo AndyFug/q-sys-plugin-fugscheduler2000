@@ -483,24 +483,24 @@ function GetControlLayout(props)
     ui:button("ImportConfigurationBackup", ui:rect(722, 204, 150, 26), {
       ButtonStyle = "Momentary", Legend = "Import from JSON", Color = ui:color("warning")
     })
-    ui:label("File Browser (Physical Core Only)", ui:rect(558, 238, 180, 20), {
+    ui:label("File Browser (Physical Core Only)", ui:rect(558, 250, 180, 20), {
       Color = ui:color("mutedText"), FontSize = 9
     })
-    ui:button("RefreshConfigurationBackupFiles", ui:rect(742, 234, 130, 24), {
+    ui:button("RefreshConfigurationBackupFiles", ui:rect(742, 246, 130, 24), {
       ButtonStyle = "Momentary", Legend = "Refresh Files", Color = ui:color("action")
     })
-    ui:control("ConfigurationBackupFileSelect", "ListBox", ui:rect(558, 262, 314, 76), {
+    ui:control("ConfigurationBackupFileSelect", "ListBox", ui:rect(558, 274, 314, 76), {
       PrettyName = "Admin~Backup Files", FontSize = 8
     })
-    ui:button("SaveConfigurationBackupFile", ui:rect(558, 346, 150, 26), {
+    ui:button("SaveConfigurationBackupFile", ui:rect(558, 358, 150, 26), {
       ButtonStyle = "Momentary", Legend = "Export Configuration File", Color = ui:color("schedule"),
       FontSize = 8
     })
-    ui:button("ImportConfigurationBackupFile", ui:rect(722, 346, 150, 26), {
+    ui:button("ImportConfigurationBackupFile", ui:rect(722, 358, 150, 26), {
       ButtonStyle = "Momentary", Legend = "Import Configuration File", Color = ui:color("warning"),
       FontSize = 8
     })
-    ui:textControl("ConfigurationBackupFileStatus", ui:rect(558, 380, 314, 48), {
+    ui:textControl("ConfigurationBackupFileStatus", ui:rect(558, 392, 314, 48), {
       IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Left", VTextAlign = "Top",
       WordWrap = true, TextColor = ui:color("mutedText"), FontSize = 8,
       PrettyName = "Admin~Backup File Status"

@@ -1,8 +1,8 @@
 -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
 -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
 local FugSchedulerPluginInfo = PluginInfo or {
-  BuildDate = "2026-11-11T13:48:56Z",
-  BuildTimestamp = 1794404936
+  BuildDate = "2026-11-11T14:11:03Z",
+  BuildTimestamp = 1794406263
 }
 
 FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -105,6 +105,7 @@ FugSchedulerRuntime = {
   selectedBackupId = nil,
   backupsScanned = false,
   backupRefreshGeneration = 0,
+  backupFileRefreshGeneration = 0,
   backupRootPath = "media/FugScheduler2000",
   backupDirectoryPath = "media/FugScheduler2000/backups",
   startupGeneration = tonumber(PreviousFugSchedulerRuntime and PreviousFugSchedulerRuntime.startupGeneration) or 0,
@@ -5226,7 +5227,7 @@ function FugSchedulerRuntime.initialiseBackupAdministration()
       "Backup files not scanned; press Refresh Files."
   )
   FugSchedulerRuntime.refreshBackupControls("Loading Saved Configuration catalogue after scheduler startup")
-  FugSchedulerRuntime.scheduleBackupRefresh()
+  FugSchedulerRuntime.scheduleBackupRefresh("Saved Configurations refreshed after scheduler startup")
 end
 
 -- Defer catalogue decoding into its own generation-checked execution slice.
@@ -5238,6 +5239,17 @@ function FugSchedulerRuntime.scheduleBackupRefresh(message)
     if runtime ~= FugSchedulerRuntime or refreshGeneration ~= runtime.backupRefreshGeneration then return end
     runtime.refreshBackupList(message)
   end, 0.05)
+end
+
+-- Defer a filename-only physical backup scan so startup and configuration actions remain lightweight.
+function FugSchedulerRuntime.scheduleBackupFileRefresh(message, delaySeconds)
+  FugSchedulerRuntime.backupFileRefreshGeneration = FugSchedulerRuntime.backupFileRefreshGeneration + 1
+  local refreshGeneration = FugSchedulerRuntime.backupFileRefreshGeneration
+  local runtime = FugSchedulerRuntime
+  Timer.CallAfter(function()
+    if runtime ~= FugSchedulerRuntime or refreshGeneration ~= runtime.backupFileRefreshGeneration then return end
+    runtime.refreshBackupFileList(message)
+  end, tonumber(delaySeconds) or 0.05)
 end
 
 -- Load catalogue metadata and opaque schedule strings without parsing any stored schedule.
@@ -5256,6 +5268,7 @@ function FugSchedulerRuntime.refreshBackupList(message)
     refreshMessage = "Previous catalogue format ignored; the first save creates the new ten-backup catalogue"
   end
   FugSchedulerRuntime.refreshBackupControls(refreshMessage)
+  FugSchedulerRuntime.scheduleBackupFileRefresh("Backup files refreshed after Saved Configuration refresh")
   return true
 end
 
@@ -5296,6 +5309,7 @@ function FugSchedulerRuntime.persistControlBackupCatalogue(catalogue, message)
   FugSchedulerRuntime.rebuildBackupEntries()
   FugSchedulerRuntime.backupsScanned = true
   FugSchedulerRuntime.refreshBackupControls(message)
+  FugSchedulerRuntime.scheduleBackupFileRefresh("Backup files refreshed after Saved Configuration update")
   return true
 end
 
@@ -5446,6 +5460,7 @@ function FugSchedulerRuntime.loadBackup(envelope)
   if not validated._schedulersById[selectedId] then selectedId = validated.schedulers[1].id end
   FugSchedulerRuntime.installValidatedSchedule(validated, warnings, selectedId, "Restored")
   FugSchedulerRuntime.refreshBackupControls("Loaded configuration " .. envelope.name .. " at revision " .. validated.revision)
+  FugSchedulerRuntime.scheduleBackupFileRefresh("Backup files refreshed after configuration load")
   return true
 end
 
@@ -5535,6 +5550,7 @@ function FugSchedulerRuntime.exportSelectedBackup()
   end
   FugSchedulerRuntime.setText("ConfigurationBackupTransfer", serialized)
   FugSchedulerRuntime.refreshBackupControls("Exported selected Saved Configuration to the JSON clipboard")
+  FugSchedulerRuntime.scheduleBackupFileRefresh("Backup files refreshed after configuration export")
   return true
 end
 
@@ -5591,21 +5607,37 @@ function FugSchedulerRuntime.importBackupTransfer()
   )
 end
 
--- Convert an operator name to a conservative filename segment.
-function FugSchedulerRuntime.backupNameSlug(name)
-  local slug = string.lower(tostring(name or ""))
-  slug = string.gsub(slug, "[^%w]+", "-")
-  slug = string.gsub(slug, "^-+", "")
-  slug = string.gsub(slug, "-+$", "")
-  slug = string.sub(slug, 1, 48)
-  return slug ~= "" and slug or "backup"
+-- Convert an operator configuration name to a readable, filesystem-safe filename label.
+function FugSchedulerRuntime.backupFileLabel(name)
+  local label = tostring(name or "")
+  label = string.gsub(label, "[%c/\\:*?\"<>|]", " ")
+  label = string.gsub(label, "%s+", " ")
+  label = string.match(label, "^%s*(.-)%s*$") or ""
+  label = string.gsub(label, "^%.+", "")
+  label = string.gsub(label, "%.*$", "")
+  label = string.sub(label, 1, 80)
+  label = string.match(label, "^%s*(.-)%s*$") or ""
+  return label ~= "" and label or "Configuration Backup"
 end
 
--- Build one collision-resistant immutable backup filename.
+-- Build one readable immutable filename such as "Build Backup 1 2026-11-11_140700.json".
 function FugSchedulerRuntime.backupFileName(envelope)
-  local stamp = string.gsub(tostring(envelope.savedAt or os.date("%Y-%m-%dT%H:%M:%S")), "[^%d]", "")
-  stamp = string.sub(stamp .. "00000000000000", 1, 14)
-  return string.format("%s__%s__%s.json", stamp, FugSchedulerRuntime.backupNameSlug(envelope.name), envelope.id)
+  local savedAt = tostring(envelope.savedAt or "")
+  local datePart, hour, minute, second = string.match(
+    savedAt,
+    "^(%d%d%d%d%-%d%d%-%d%d)T(%d%d):(%d%d):(%d%d)"
+  )
+  if not datePart then
+    datePart, hour, minute, second = os.date("%Y-%m-%d"), os.date("%H"), os.date("%M"), os.date("%S")
+  end
+  return string.format(
+    "%s %s_%s%s%s.json",
+    FugSchedulerRuntime.backupFileLabel(envelope.name),
+    datePart,
+    hour,
+    minute,
+    second
+  )
 end
 
 -- Return one listed physical backup file by filename ID.

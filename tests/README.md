@@ -63,7 +63,7 @@ python3 tests/unit/test_backup_runtime_contract.py
 python3 tests/unit/test_one_shot_ledger_contract.py
 ```
 
-The backup contract test rejects duplicate implementations and checks that essential startup does not synchronously decode the catalogue, automatic metadata refresh is deferred, selection does not parse schedules, file refresh is filename-only, selected-file validation precedes catalogue persistence and confirmed-load arming, physical file import bypasses the clipboard and direct live installation, and clipboard import cannot change live `ScheduleData`.
+The backup contract test rejects duplicate implementations and checks that essential startup does not synchronously decode the catalogue, catalogue and filename-browser refreshes are deferred, successful configuration actions schedule file refreshes, readable export filenames omit UUIDs and sanitise unsafe characters, selection does not parse schedules, file refresh is filename-only, selected-file validation precedes catalogue persistence and confirmed-load arming, physical file import bypasses the clipboard and direct live installation, and clipboard import cannot change live `ScheduleData`.
 
 The one-shot ledger contract test reproduces the malformed physical-Core JSON fixture, checks legacy-key migration, and prevents control-character separators from returning to persisted receipt identities.
 

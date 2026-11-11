@@ -680,6 +680,20 @@ Implemented in source; Designer/Core restart acceptance remains pending:
 - [ ] Confirm the Designer Control Pins tree shows one parent per counted Slot control and zero-padded Slot children.
 - [ ] Confirm existing exposed-pin wiring is reviewed after the design-time control-pin contract changes.
 
+## Automatic physical backup-file browser refresh
+
+Implemented after production use showed the filename browser remained stale until **Refresh Files** was pressed:
+
+- [x] Refresh the physical filename-only browser in a deferred slice after the deferred startup catalogue refresh.
+- [x] Refresh after successful Saved Configuration save, overwrite, delete, clipboard import, file import, confirmed load, and JSON clipboard export paths.
+- [x] Keep physical file scanning out of essential startup and configuration transaction callbacks by using a generation-checked deferred helper.
+- [x] Retain filename-only scanning; automatic refresh does not open or validate any backup file.
+- [x] Replace UUID-heavy new export filenames with readable `<Saved Configuration name> YYYY-MM-DD_HHMMSS.json` names; sanitise filesystem-unsafe characters and cap the label at 80 characters.
+- [x] Leave existing backup files untouched and importable; the naming change applies only to new exports.
+- [x] Extend the offline backup runtime contract test for startup, deferred execution, configuration-action refresh, and readable filename coverage.
+- [x] Move the complete physical file-browser block down 12 pixels to create a clear 16-pixel separation below the JSON import/export buttons while retaining bottom padding inside the existing Admin group.
+- [ ] Validate automatic startup/post-action refresh, readable new export filenames, and the revised Admin spacing on a physical Core with existing backup files.
+
 ## Physical-Core one-shot ledger JSON compatibility
 
 Investigated read-only against production Core `172.16.11.15`, design `hpww26_v1.0-dev27`, running build `0.1.0.43`:

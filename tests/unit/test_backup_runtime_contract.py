@@ -35,6 +35,14 @@ def main() -> None:
         raise AssertionError("Admin initialisation must automatically schedule catalogue metadata refresh")
     if "Timer.CallAfter" not in deferred_refresh or "refreshBackupList" not in deferred_refresh:
         raise AssertionError("automatic catalogue refresh must run in its own deferred execution slice")
+    if "refreshBackupFileList" in administration:
+        raise AssertionError("startup file scanning must not run synchronously during Admin initialisation")
+    file_refresh_schedule = function_body(source, "scheduleBackupFileRefresh")
+    if "Timer.CallAfter" not in file_refresh_schedule or "refreshBackupFileList" not in file_refresh_schedule:
+        raise AssertionError("automatic file refresh must run in its own deferred execution slice")
+    backup_refresh = function_body(source, "refreshBackupList")
+    if "scheduleBackupFileRefresh" not in backup_refresh:
+        raise AssertionError("startup and catalogue refresh must automatically refresh the file browser")
 
     selection = function_body(source, "inspectSelectedBackup")
     if "json.decode" in selection or "validateSchedule" in selection or "loadBackupEnvelope" in selection:
@@ -43,6 +51,23 @@ def main() -> None:
     file_refresh = function_body(source, "refreshBackupFileList")
     if "json.load" in file_refresh or "readBackupFile" in file_refresh or "validateBackupEnvelope" in file_refresh:
         raise AssertionError("file refresh must list filenames without opening backup files")
+    file_label = function_body(source, "backupFileLabel")
+    file_name = function_body(source, "backupFileName")
+    if '"[%c/\\\\:*?\\\"<>|]"' not in file_label or "string.sub(label, 1, 80)" not in file_label:
+        raise AssertionError("backup filenames must sanitise unsafe characters and cap the readable label")
+    if "envelope.id" in file_name or '"%s %s_%s%s%s.json"' not in file_name:
+        raise AssertionError("backup filenames must use the readable name-plus-timestamp format without UUIDs")
+
+    catalogue_persist = function_body(source, "persistControlBackupCatalogue")
+    load_backup = function_body(source, "loadBackup")
+    export_backup = function_body(source, "exportSelectedBackup")
+    for action, body in (
+        ("Saved Configuration update", catalogue_persist),
+        ("configuration load", load_backup),
+        ("configuration export", export_backup),
+    ):
+        if "scheduleBackupFileRefresh" not in body:
+            raise AssertionError(f"{action} must automatically refresh the file browser")
 
     file_import = function_body(source, "importSelectedBackupFile")
     validate_at = file_import.index("validateBackupEnvelope")
