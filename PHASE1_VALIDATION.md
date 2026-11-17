@@ -390,6 +390,30 @@ Implemented in source; design reload and QRC acceptance remain pending:
 - [x] Publish manual-advance state in aggregate Slot status and add `tests/qrc/validate_advance_next_event.py`.
 - [x] Deploy the changed design-time plugin while emulation is stopped, restart Designer, and run the new QRC acceptance test.
 
+## Restore Schedule State implementation
+
+Implemented in source; design reload and QRC acceptance remain pending:
+
+- [x] Added an Inspector Restore Schedule button plus stable counted `SchedulerSlotRestoreSchedule` input pins.
+- [x] Make Restore an idempotent no-op when no manual advance is active.
+- [x] Clear the persisted advance marker and re-anchor Previous/Current/Next around current Core-local time.
+- [x] Reapply only startup-enabled stateful Actions when execution is allowed, restart eligible repeats, and retain one-shot receipts to prevent duplicate physical operations.
+- [x] Extended `tests/qrc/validate_advance_next_event.py` to cover Inspector and stable-pin restore behavior.
+- [x] Deploy the changed design-time plugin while emulation is stopped, restart Designer, and run the expanded QRC acceptance test.
+
+### QRC findings — Restore Schedule State
+
+Validated in development build `0.1.0.46` against the active `fugscheduler2000_test` emulator:
+
+- The generated and deployed `.qplug` SHA-256 matched: `0a5e861df7df4f6937daab39d75b49c2ed69ee96906fecc53083b82fc4059de8`.
+- The reloaded component fingerprint is `1c28d21ee7a28e90700f5f366a84a778`; `InspectorRestoreSchedule` and stable `SchedulerSlotRestoreSchedule 1` controls were present.
+- Restore was idempotent without an active advance, cleared the persisted marker after an Inspector advance, re-anchored Current/Next to wall-clock state, and reapplied the real Current Event's startup-enabled stateful Action.
+- One-shot receipts remained authoritative: Restore did not replay the advanced one-shot, re-advancing through the stable Slot pin did not duplicate it, and the original scheduled edge remained suppressed.
+- The stable Restore Slot pin re-anchored the schedule after an Inspector advance to the following Event.
+- `tests/qrc/validate_advance_next_event.py` completed 22 assertions with byte-for-byte ScheduleData, one-shot ledger, preference, clock-offset, and Action Provider restoration.
+- Regressions passed with restoration confirmed: Scheduler Slots/Inspector `29`, Pause Modes `17`, Logging `18`, and guarded execution `76` assertions.
+- Final state: Master Enable off, all tested momentary transport controls false, and plugin, runtime provider, and Action Provider `OK` with zero errors.
+
 ### QRC findings — Advance to Next Event
 
 Validated in development build `0.1.0.28` against the active `fugscheduler2000_test` emulator:

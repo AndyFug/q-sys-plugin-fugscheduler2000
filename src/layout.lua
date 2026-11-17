@@ -32,6 +32,7 @@ function GetControlLayout(props)
       for _, controlName in ipairs({
         "SchedulerSlotAssignedId",
         "SchedulerSlotAdvance",
+        "SchedulerSlotRestoreSchedule",
         "SchedulerSlotPauseMode",
         "SchedulerSlotPauseDurationMinutes",
         "SchedulerSlotPauseUntilTime",
@@ -87,13 +88,16 @@ function GetControlLayout(props)
     })
     ui:label("Use Core-local YYYY-MM-DD HH:MM. Editing an active pause re-arms it immediately.",
       ui:rect(28, 264, 274, 46), {Color = ui:color("mutedText"), WordWrap = true, VTextAlign = "Top"})
-    ui:button("InspectorAdvanceNextEvent", ui:rect(28, 326, 274, 30), {
-      ButtonStyle = "Momentary", Legend = "Advance to Next Event", Color = ui:color("schedule")
+    ui:button("InspectorAdvanceNextEvent", ui:rect(28, 318, 132, 30), {
+      ButtonStyle = "Momentary", Legend = "Advance Next", Color = ui:color("schedule")
     })
-    ui:textControl("InspectorAdvanceStatus", ui:rect(28, 364, 274, 54), {
+    ui:button("InspectorRestoreSchedule", ui:rect(170, 318, 132, 30), {
+      ButtonStyle = "Momentary", Legend = "Restore Schedule", Color = ui:color("ok")
+    })
+    ui:textControl("InspectorAdvanceStatus", ui:rect(28, 356, 274, 62), {
       IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Center", VTextAlign = "Top",
       WordWrap = true, TextColor = ui:color("mutedText"), FontSize = 9,
-      PrettyName = "Slot Inspector~Advance Status"
+      PrettyName = "Slot Inspector~Transport Status"
     })
 
     ui:group("Live Status", ui:rect(350, 44, 540, 400))

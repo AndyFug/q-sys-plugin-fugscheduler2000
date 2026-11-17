@@ -54,7 +54,7 @@ Initial boilerplate includes:
 - unassigned-by-default creation and duplication of Scheduler Definitions, plus disabled-by-default Overrides, so configuration can be completed before activation
 - compiled per-Scheduler execution plans with phase-staggered retained timers, cached rolling Previous/Current/Next occurrence cursors, ordered edge execution, startup/resume state restoration, a global 0-14,400-second late one-shot tolerance, persistent at-most-once one-shot receipts, repeat deadlines, callback isolation, performance diagnostics, and clock-discontinuity handling behind the master execution guard
 - persistent Scheduler Slot pause transport with Manual, Next Event, Duration, Until Time, and Through Day modes; immediate active-intent re-arming; schedule-edit target updates; dynamic mode legends; stable per-Slot pins; and a side-by-side Slot Inspector with ordered Scheduler/enable-gate/resolution/pause status, grouped bold Current/Next Events, scrollable typed Action lists, and live countdowns
-- Advance to Next Event transport through the Slot Inspector and stable per-Slot input pins; it requires Master Enable and an enabled Slot, clears an active pause, executes the next occurrence once, persists the consumed occurrence across restart, and suppresses its later scheduled edge
+- Advance to Next Event and Restore Schedule State transport through the Slot Inspector and stable per-Slot input pins; Advance executes and persists the next occurrence early, while Restore clears an active advance, re-anchors to wall-clock Current/Next state, and safely reapplies startup-enabled stateful Actions
 - an Admin page with up to ten persistent control-backed Saved Configurations whose schedules remain opaque JSON strings until confirmed load, plus a Node-RED-style JSON clipboard and a separate physical-Core backup-file list that refreshes after startup and successful configuration actions, uses readable name-and-timestamp filenames, exports the selected Saved Configuration, and imports validated files into Saved Configurations before confirmed load
 - centralized severity-based logging to the bounded DiagnosticLog, filtered Debug Output, and filtered Q-SYS Event Log, with edge executions at Info and repeats at Debug
 
@@ -92,6 +92,8 @@ python3 tests/qrc/validate_execution.py
 python3 tests/qrc/validate_clock_discontinuities.py
 python3 tests/qrc/validate_logging.py
 python3 tests/unit/test_backup_runtime_contract.py
+python3 tests/unit/test_one_shot_ledger_contract.py
+python3 tests/unit/test_restore_schedule_contract.py
 ```
 
 These tests require the expected active Designer emulator design and restore the original `ScheduleData` byte-for-byte. See `tests/README.md` and `PHASE1_VALIDATION.md`.

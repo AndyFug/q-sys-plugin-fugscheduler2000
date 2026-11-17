@@ -462,6 +462,8 @@ Exit criterion: multiple Schedulers can resolve concurrently and one selected Sc
 - [x] Complete Designer/QRC acceptance for all pause modes, restart persistence, target updates, automatic expiry, and execution-budget health.
 - [x] Add Advance to Next Event as an explicit runtime transition that executes the next occurrence once, makes it current, clears an active pause, persists the consumed occurrence, and suppresses its later scheduled edge.
 - [x] Complete Designer/QRC acceptance for Advance to Next Event pause clearing, persisted occurrence identity, scheduled-edge suppression, and stable per-Slot transport; physical-Core restart persistence remains part of live-Core validation.
+- [x] Add Restore Schedule State through Inspector and stable per-Slot triggers; clear only active manual advances, re-anchor to wall-clock state, reapply startup-enabled stateful Actions, and retain one-shot receipts.
+- [x] Complete Designer/QRC acceptance for Restore Schedule State idempotence, wall-clock re-anchoring, startup-state restoration, and stable per-Slot transport.
 - [x] Add a global one-shot late tolerance in seconds, defaulting to zero and capped at four hours.
 - [x] Add a bounded persistent at-most-once receipt ledger for ordinary edges, late recovery, runtime reloads, and repeated edges after backward clock movement.
 - [ ] Complete emulator clock-discontinuity acceptance using the emulator-only offset seam and complete physical-Core restart validation.

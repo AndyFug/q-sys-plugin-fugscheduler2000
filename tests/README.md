@@ -5,7 +5,7 @@ Repeatable verification belongs under `tests/`; build and deployment utilities r
 ## Test categories
 
 - `qrc/` — live Q-SYS Designer emulator integration and acceptance tests using QRC.
-- Future offline/unit tests should use a separate directory such as `unit/` and must not require Designer or a Core.
+- `unit/` — offline contract tests that do not require Designer or a Core.
 
 ## QRC acceptance tests
 
@@ -50,7 +50,7 @@ The execution test also inspects runtime-plan diagnostics in `GlobalSchedulerSlo
 
 `validate_pause_modes.py` keeps Master Enable off while validating Manual, Duration, Until Time, Next Event, and Through Day configuration; immediate active-intent re-arming; persisted target snapshots; schedule-edit retargeting; stable per-Slot controls; aggregate pause status; reload persistence; and byte-for-byte restoration.
 
-`validate_advance_next_event.py` temporarily installs safe Action callbacks, advances a paused enabled Slot through both Inspector and stable per-Slot controls, verifies pause clearing and persisted occurrence identity, waits through the original scheduled edge to prove one-shot suppression, and restores ScheduleData plus Action Provider source byte-for-byte.
+`validate_advance_next_event.py` temporarily installs safe Action callbacks; validates idempotent Restore Schedule State; advances and restores an enabled Slot through both Inspector and stable per-Slot controls; verifies wall-clock re-anchoring, startup-enabled state restoration, retained one-shot receipts, pause clearing, persisted occurrence identity, and scheduled-edge suppression; then restores ScheduleData plus Action Provider source byte-for-byte.
 
 `validate_admin_backups.py` validates persistent schema-v2 Saved Configurations, opaque `scheduleJson`, metadata-only selection, automatic post-startup list restoration, overwrite confirmation/cancellation, complete clipboard validation and isolation, guarded confirmed load, deletion, the ten-entry limit, disabled Emulator file actions, and byte-for-byte restoration.
 
@@ -61,11 +61,14 @@ Offline backup-contract coverage is directly runnable with:
 ```bash
 python3 tests/unit/test_backup_runtime_contract.py
 python3 tests/unit/test_one_shot_ledger_contract.py
+python3 tests/unit/test_restore_schedule_contract.py
 ```
 
 The backup contract test rejects duplicate implementations and checks that essential startup does not synchronously decode the catalogue, catalogue and filename-browser refreshes are deferred, successful configuration actions schedule file refreshes, readable export filenames omit UUIDs and sanitise unsafe characters, selection does not parse schedules, file refresh is filename-only, selected-file validation precedes catalogue persistence and confirmed-load arming, physical file import bypasses the clipboard and direct live installation, and clipboard import cannot change live `ScheduleData`.
 
 The one-shot ledger contract test reproduces the malformed physical-Core JSON fixture, checks legacy-key migration, and prevents control-character separators from returning to persisted receipt identities.
+
+The Restore Schedule contract test checks the Inspector and stable per-Slot controls, idempotent advance-marker clearing, wall-clock cursor re-anchoring, startup-enabled state restoration, one-shot suppression, and both event-handler paths.
 
 `validate_backup_file_isolation.py` is a physical-Core-only regression for a pre-provisioned corrupt `.json` fixture. It refuses to run without explicit `QSYS_HOST`, `QSYS_DESIGN_NAME`, and `FUGSCHEDULER_CORRUPT_BACKUP_FILE` environment variables, requires Master Enable off, and verifies that importing the selected corrupt file changes neither live `ScheduleData`, the catalogue, nor the clipboard. Run it only on a safe non-production physical-Core test design; it does not deploy plugin code or create/delete files.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate manual Advance to Next Event, pause clearing, and scheduled-edge suppression."""
+"""Validate Advance to Next Event, Restore Schedule State, and scheduled-edge suppression."""
 
 from __future__ import annotations
 
@@ -71,13 +71,15 @@ def main() -> None:
     ensure_design()
     required = [
         "ScheduleData", "AutomaticExecutionEnabled", "InspectorSlotSelect", "InspectorSlotPaused",
-        "InspectorAdvanceNextEvent", "InspectorAdvanceStatus", "SchedulerSlotAdvance 1",
+        "InspectorAdvanceNextEvent", "InspectorRestoreSchedule", "InspectorAdvanceStatus",
+        "SchedulerSlotAdvance 1", "SchedulerSlotRestoreSchedule 1",
         "CurrentEvent", "NextEvent", "ExecutionStatus", "DiagnosticLog", "GlobalSchedulerSlotStatus",
         "ActionSource", "OneShotLateToleranceSeconds", "OneShotExecutionLedger",
         "ExecutionTestClockOffsetSeconds", "script.status", "script.error.count",
     ]
     initial = controls(*required)
-    check(all(name in initial for name in required), "Inspector and stable per-Slot advance controls exist")
+    check(all(name in initial for name in required),
+          "Inspector and stable per-Slot advance/restore controls exist")
     check(initial["AutomaticExecutionEnabled"]["Value"] < 0.5, "Master Enable is off before advance testing")
     check(initial["ExecutionTestClockOffsetSeconds"]["Value"] == 0, "execution test clock is zero before testing")
     provider_initial = controls("code", "script.status", "script.error.count", component=ACTION_PROVIDER)
@@ -108,7 +110,8 @@ def main() -> None:
             "dayPatterns": [{
                 "id": "advance-day", "label": "Advance Day", "events": [
                     {"id": "advance-current", "label": "Current State", "time": current.strftime("%H:%M"),
-                     "actions": [{"actionId": "AdvanceCurrent", "enabled": True, "oneShot": False}]},
+                     "actions": [{"actionId": "AdvanceCurrent", "enabled": True, "oneShot": False,
+                                  "fireOnStartup": True}]},
                     {"id": "advance-target", "label": "Advanced State", "time": target.strftime("%H:%M"),
                      "actions": [{"actionId": "AdvanceTarget", "enabled": True, "oneShot": True}]},
                     {"id": "advance-following", "label": "Following State", "time": following.strftime("%H:%M"),
@@ -130,7 +133,17 @@ def main() -> None:
         set_value("ScheduleData", json.dumps(fixture, separators=(",", ":")), 1.4)
         set_value("InspectorSlotSelect", json.dumps({"Text": "Slot 1 — Advance Test", "Id": 1}, separators=(",", ":")))
         set_value("AutomaticExecutionEnabled", True, 1.2)
+
+        # Restore is deliberately idempotent when no manual advance is active.
+        before_noop = controls("ScheduleData")["ScheduleData"]["String"]
+        press("InspectorRestoreSchedule", 0.8)
+        noop_state = controls("ScheduleData", "InspectorAdvanceStatus")
+        check(noop_state["ScheduleData"]["String"] == before_noop and
+              "no manual advance" in noop_state["InspectorAdvanceStatus"]["String"].lower(),
+              "restore is a no-op when the Slot is not manually advanced")
+
         before_log = controls("DiagnosticLog")["DiagnosticLog"]["String"]
+        current_count_before_restore = before_log.count('Action "Advance Current"')
         press("InspectorAdvanceNextEvent", 1.2)
 
         state = controls("ScheduleData", "CurrentEvent", "NextEvent", "ExecutionStatus", "InspectorAdvanceStatus",
@@ -153,6 +166,31 @@ def main() -> None:
         check(manual_count == before_log.count('Action "Advance Target"') + 1,
               "the target one-shot executes exactly once at manual advance")
 
+        press("InspectorRestoreSchedule", 1.2)
+        restored_state = controls("ScheduleData", "CurrentEvent", "NextEvent", "ExecutionStatus", "DiagnosticLog")
+        restored_model = json.loads(restored_state["ScheduleData"]["String"])
+        check("advancedOccurrence" not in restored_model["schedulerSlots"][0],
+              "Inspector Restore Schedule clears the persisted manual-advance marker")
+        check("Current State" in restored_state["CurrentEvent"]["String"] and
+              "Advanced State" in restored_state["NextEvent"]["String"],
+              "restore re-anchors Current and Next to wall-clock schedule state")
+        check("schedule state" in restored_state["ExecutionStatus"]["String"].lower() and
+              restored_state["DiagnosticLog"]["String"].count('Action "Advance Current"') ==
+              current_count_before_restore + 1,
+              "restore applies startup-enabled stateful Actions for the real Current Event")
+        check(restored_state["DiagnosticLog"]["String"].count('Action "Advance Target"') == manual_count,
+              "restore does not replay or reverse one-shot Actions")
+
+        # Re-advance through the stable public pin; its existing one-shot receipt prevents duplication.
+        press("SchedulerSlotAdvance 1", 1.2)
+        pin_advance = controls("ScheduleData", "CurrentEvent", "InspectorAdvanceStatus", "DiagnosticLog")
+        check("Advanced State" in pin_advance["CurrentEvent"]["String"] and
+              "advanced" in pin_advance["InspectorAdvanceStatus"]["String"].lower() and
+              "advancedOccurrence" in json.loads(pin_advance["ScheduleData"]["String"])["schedulerSlots"][0],
+              "stable per-Slot Advance pin performs the same transition")
+        check(pin_advance["DiagnosticLog"]["String"].count('Action "Advance Target"') == manual_count,
+              "re-advance retains the one-shot at-most-once receipt")
+
         wait_seconds = max(0, target_stamp - int(time.time()) + 3)
         print(f"Waiting {wait_seconds}s through the original scheduled edge...")
         time.sleep(wait_seconds)
@@ -166,12 +204,15 @@ def main() -> None:
               "Following State" in after_edge["NextEvent"]["String"],
               "the cursor remains correctly positioned after the suppressed edge")
 
-        # Exercise the stable external transport pin as well as the Inspector button.
-        press("SchedulerSlotAdvance 1", 1.2)
-        pin_state = controls("CurrentEvent", "ExecutionStatus")
-        check("Following State" in pin_state["CurrentEvent"]["String"] and
-              "manual advance" in pin_state["ExecutionStatus"]["String"].lower(),
-              "stable per-Slot Advance pin performs the same transition")
+        # Exercise Restore through its stable external pin after advancing to the following Event.
+        press("InspectorAdvanceNextEvent", 1.0)
+        press("SchedulerSlotRestoreSchedule 1", 1.2)
+        pin_restore = controls("ScheduleData", "CurrentEvent", "NextEvent", "ExecutionStatus")
+        check("advancedOccurrence" not in json.loads(pin_restore["ScheduleData"]["String"])["schedulerSlots"][0] and
+              "Advanced State" in pin_restore["CurrentEvent"]["String"] and
+              "Following State" in pin_restore["NextEvent"]["String"] and
+              "schedule state" in pin_restore["ExecutionStatus"]["String"].lower(),
+              "stable per-Slot Restore Schedule pin re-anchors the live schedule")
     finally:
         set_value("AutomaticExecutionEnabled", False, 0.3)
         set_value("ScheduleData", original_schedule, 1.2)
@@ -180,7 +221,8 @@ def main() -> None:
         set_value("ExecutionTestClockOffsetSeconds", 0, 0.2)
         set_value("code", original_provider, 1.0, component=ACTION_PROVIDER)
         set_value("ActionSource", original_action_source, 0.8)
-        for control in ["InspectorAdvanceNextEvent", "SchedulerSlotAdvance 1"]:
+        for control in ["InspectorAdvanceNextEvent", "InspectorRestoreSchedule",
+                        "SchedulerSlotAdvance 1", "SchedulerSlotRestoreSchedule 1"]:
             set_value(control, False, 0.1)
         final = controls(
             "ScheduleData", "AutomaticExecutionEnabled", "OneShotExecutionLedger",
@@ -203,7 +245,7 @@ def main() -> None:
     check(all(item["script.status"]["String"] == "OK" and item["script.error.count"]["Value"] == 0
               for item in [plugin_health, runtime_health, provider_health]),
           "plugin, runtime provider, and Action provider finish healthy")
-    print(f"SUCCESS: {len(assertions)} Advance to Next Event assertions passed")
+    print(f"SUCCESS: {len(assertions)} scheduler transport assertions passed")
 
 
 if __name__ == "__main__":

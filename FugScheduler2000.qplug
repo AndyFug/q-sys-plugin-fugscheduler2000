@@ -11,9 +11,9 @@
 PluginInfo = {
   Name = "AndyFug~FugScheduler 2000",
   Version = "0.1.0",
-  BuildVersion = "0.1.0.45",
-  BuildDate = "2026-11-11T14:11:03Z",
-  BuildTimestamp = 1794406263,
+  BuildVersion = "0.1.0.46",
+  BuildDate = "2026-11-17T09:31:31Z",
+  BuildTimestamp = 1794907891,
   Id = "1da6035f-30fd-41ca-8cff-828ea21c1dee",
   Author = "FugScheduler 2000 Contributors",
   Description = "UI-driven Q-SYS scheduler with actions loaded from trusted Lua source."
@@ -1543,6 +1543,7 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "SchedulerSlotEnabled", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Both", Count = slotCount})
   table.insert(ctrls, {Name = "SchedulerSlotPaused", ControlType = "Button", ButtonType = "Toggle", UserPin = true, PinStyle = "Both", Count = slotCount})
   table.insert(ctrls, {Name = "SchedulerSlotAdvance", ControlType = "Button", ButtonType = "Momentary", UserPin = true, PinStyle = "Input", Count = slotCount})
+  table.insert(ctrls, {Name = "SchedulerSlotRestoreSchedule", ControlType = "Button", ButtonType = "Momentary", UserPin = true, PinStyle = "Input", Count = slotCount})
   table.insert(ctrls, {Name = "SchedulerSlotPauseMode", ControlType = "Text", UserPin = true, PinStyle = "Both", Count = slotCount})
   table.insert(ctrls, {Name = "SchedulerSlotPauseDurationMinutes", ControlType = "Text", UserPin = true, PinStyle = "Both", Count = slotCount})
   table.insert(ctrls, {Name = "SchedulerSlotPauseUntilTime", ControlType = "Text", UserPin = true, PinStyle = "Both", Count = slotCount})
@@ -1571,6 +1572,7 @@ function GetControls(_props)
   table.insert(ctrls, {Name = "InspectorPauseTarget", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "InspectorPauseRemaining", ControlType = "Text", Count = 1})
   table.insert(ctrls, {Name = "InspectorAdvanceNextEvent", ControlType = "Button", ButtonType = "Momentary", Count = 1})
+  table.insert(ctrls, {Name = "InspectorRestoreSchedule", ControlType = "Button", ButtonType = "Momentary", Count = 1})
   table.insert(ctrls, {Name = "InspectorAdvanceStatus", ControlType = "Text", Count = 1})
 
   -- Edit Scheduler Definitions through the runtime's validated transaction layer.
@@ -1779,6 +1781,7 @@ function GetControlLayout(props)
       for _, controlName in ipairs({
         "SchedulerSlotAssignedId",
         "SchedulerSlotAdvance",
+        "SchedulerSlotRestoreSchedule",
         "SchedulerSlotPauseMode",
         "SchedulerSlotPauseDurationMinutes",
         "SchedulerSlotPauseUntilTime",
@@ -1834,13 +1837,16 @@ function GetControlLayout(props)
     })
     ui:label("Use Core-local YYYY-MM-DD HH:MM. Editing an active pause re-arms it immediately.",
       ui:rect(28, 264, 274, 46), {Color = ui:color("mutedText"), WordWrap = true, VTextAlign = "Top"})
-    ui:button("InspectorAdvanceNextEvent", ui:rect(28, 326, 274, 30), {
-      ButtonStyle = "Momentary", Legend = "Advance to Next Event", Color = ui:color("schedule")
+    ui:button("InspectorAdvanceNextEvent", ui:rect(28, 318, 132, 30), {
+      ButtonStyle = "Momentary", Legend = "Advance Next", Color = ui:color("schedule")
     })
-    ui:textControl("InspectorAdvanceStatus", ui:rect(28, 364, 274, 54), {
+    ui:button("InspectorRestoreSchedule", ui:rect(170, 318, 132, 30), {
+      ButtonStyle = "Momentary", Legend = "Restore Schedule", Color = ui:color("ok")
+    })
+    ui:textControl("InspectorAdvanceStatus", ui:rect(28, 356, 274, 62), {
       IsReadOnly = true, TextBoxStyle = "NoBackground", HTextAlign = "Center", VTextAlign = "Top",
       WordWrap = true, TextColor = ui:color("mutedText"), FontSize = 9,
-      PrettyName = "Slot Inspector~Advance Status"
+      PrettyName = "Slot Inspector~Transport Status"
     })
 
     ui:group("Live Status", ui:rect(350, 44, 540, 400))
@@ -2401,8 +2407,8 @@ if Controls then
   -- Keep hot-deployed runtime code self-contained when it runs in SchedulerRuntimeProvider.
   -- Use bundled PluginInfo when available, with matching metadata for raw runtime hot deployment.
   local FugSchedulerPluginInfo = PluginInfo or {
-    BuildDate = "2026-11-11T14:11:03Z",
-    BuildTimestamp = 1794406263
+    BuildDate = "2026-11-17T09:31:31Z",
+    BuildTimestamp = 1794907891
   }
 
   FugSchedulerWeekdays = FugSchedulerWeekdays or {
@@ -4320,7 +4326,9 @@ if Controls then
     local plan = scheduler and FugSchedulerRuntime.runtimePlans[scheduler.id] or nil
     local canAdvance = scheduler ~= nil and slot.enabled == true and FugSchedulerRuntime.automaticExecutionEnabled() and
       plan ~= nil and plan.nextOccurrence ~= nil
+    local canRestore = scheduler ~= nil and plan ~= nil and slot.advancedOccurrence ~= nil
     if Controls.InspectorAdvanceNextEvent then Controls.InspectorAdvanceNextEvent.IsDisabled = not canAdvance end
+    if Controls.InspectorRestoreSchedule then Controls.InspectorRestoreSchedule.IsDisabled = not canRestore end
     if slot and slot.advancedOccurrence then
       FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Advanced early; scheduled edge will be suppressed until " ..
         FugSchedulerRuntime.formatPauseTimestamp(slot.advancedOccurrence.timestamp))
@@ -4333,7 +4341,8 @@ if Controls then
     elseif not plan or not plan.nextOccurrence then
       FugSchedulerRuntime.setText("InspectorAdvanceStatus", "No next Event is available")
     else
-      FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Ready to advance to " .. FugSchedulerRuntime.formatEvent(plan.nextOccurrence))
+      FugSchedulerRuntime.setText("InspectorAdvanceStatus", "No manual advance is active. Ready to advance to " ..
+        FugSchedulerRuntime.formatEvent(plan.nextOccurrence))
     end
     local result = scheduler and FugSchedulerRuntime.resolutionResultsById[scheduler.id] or nil
     if scheduler and result then
@@ -6694,6 +6703,65 @@ if Controls then
     return true
   end
 
+  -- Clear a manual advance and re-anchor the Slot to the Event that is current at wall-clock time.
+  function FugSchedulerRuntime.restoreSlotScheduleState(slotNumber)
+    local slot, scheduler = FugSchedulerRuntime.slotAssignment(slotNumber)
+    if not slot or not scheduler then
+      FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Restore rejected: Scheduler Slot is unassigned")
+      return false
+    end
+    if not slot.advancedOccurrence then
+      FugSchedulerRuntime.setText("InspectorAdvanceStatus", "No manual advance is active; schedule state is already current")
+      return true
+    end
+
+    local plan = FugSchedulerRuntime.runtimePlans[scheduler.id]
+    if not plan then
+      FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Restore rejected: runtime plan is unavailable")
+      return false
+    end
+
+    FugSchedulerRuntime.clearDiagnosticTestTime("Restore Schedule State", true)
+    local persisted = FugSchedulerRuntime.updateSlotOperationalState(
+      slotNumber,
+      "Scheduler Slot " .. slotNumber .. " schedule state restored",
+      function(activeSlot) activeSlot.advancedOccurrence = nil end,
+      true
+    )
+    if not persisted then
+      FugSchedulerRuntime.setText("InspectorAdvanceStatus", "Restore rejected: transport state could not be persisted")
+      return false
+    end
+
+    local now = FugSchedulerRuntime.executionNow()
+    FugSchedulerRuntime.positionPlanCursor(plan, now)
+    plan.initialized = true
+    plan.lastObservedTimestamp = now
+    local allowed = FugSchedulerRuntime.automaticExecutionEnabled() and slot.enabled == true and slot.paused ~= true
+    if allowed then
+      FugSchedulerRuntime.restoreCurrentOccurrence(
+        scheduler, plan, plan.currentOccurrence, "fireOnStartup", "schedule state restore", now)
+    else
+      plan.activeOccurrence = plan.currentOccurrence
+      plan.activeOccurrenceKey = FugSchedulerRuntime.occurrenceKey(plan.currentOccurrence)
+      plan.lastTransitionReason = "Schedule state restored while execution blocked"
+      FugSchedulerRuntime.clearRepeats(plan)
+    end
+    plan.lastEnabled = slot.enabled == true
+    plan.lastPaused = slot.paused == true
+    plan.lastAutomaticEnabled = FugSchedulerRuntime.automaticExecutionEnabled()
+
+    local message = "Restored schedule state to " .. FugSchedulerRuntime.formatEvent(plan.currentOccurrence)
+    FugSchedulerRuntime.setExecutionMessage(message, LogLevel.INFO, {
+      schedulerLabel = scheduler.label,
+      schedulerId = scheduler.id,
+      reason = "schedule state restore"
+    })
+    FugSchedulerRuntime.setText("InspectorAdvanceStatus", message)
+    FugSchedulerRuntime.publishLiveRuntimeStatus()
+    return true
+  end
+
   -- Run due repeats once and reschedule from now so delayed polls never create callback bursts.
   function FugSchedulerRuntime.processRepeats(scheduler, state, currentOccurrence, now)
     if not currentOccurrence or state.activeOccurrenceKey ~= FugSchedulerRuntime.occurrenceKey(currentOccurrence) then return end
@@ -8388,6 +8456,12 @@ if Controls then
           if control.Boolean then FugSchedulerRuntime.advanceSlotToNextEvent(capturedSlotNumber) end
         end
       end
+      local restoreControl = countedControl("SchedulerSlotRestoreSchedule", capturedSlotNumber)
+      if restoreControl then
+        restoreControl.EventHandler = function(control)
+          if control.Boolean then FugSchedulerRuntime.restoreSlotScheduleState(capturedSlotNumber) end
+        end
+      end
       local pauseModeControl = countedControl("SchedulerSlotPauseMode", capturedSlotNumber)
       if pauseModeControl then
         pauseModeControl.EventHandler = function(control)
@@ -8460,6 +8534,11 @@ if Controls then
     if Controls.InspectorAdvanceNextEvent then
       Controls.InspectorAdvanceNextEvent.EventHandler = function(control)
         if control.Boolean then FugSchedulerRuntime.advanceSlotToNextEvent(FugSchedulerRuntime.selectedSlotNumber) end
+      end
+    end
+    if Controls.InspectorRestoreSchedule then
+      Controls.InspectorRestoreSchedule.EventHandler = function(control)
+        if control.Boolean then FugSchedulerRuntime.restoreSlotScheduleState(FugSchedulerRuntime.selectedSlotNumber) end
       end
     end
 

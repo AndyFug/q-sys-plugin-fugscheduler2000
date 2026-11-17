@@ -305,6 +305,21 @@ An assigned, enabled Scheduler Slot may be advanced manually while the plugin-wi
 
 The command is rejected when the Slot is unassigned or disabled, Master Enable is off, the runtime plan is unavailable, or no Next occurrence can be resolved. Both stateful and one-shot Event Actions execute during the manual transition; callback isolation and normal Action ordering still apply.
 
+## Restore Schedule State
+
+An assigned Scheduler Slot with an active manual-advance marker may be restored to wall-clock schedule state. Restore Schedule State:
+
+1. clears the persisted manual-advance marker
+2. repositions Previous, Current, and Next around the current Core-local time
+3. applies the real Current Event's enabled stateful Actions whose `fireOnStartup` option is enabled when Master Enable is on and the Slot is enabled and unpaused
+4. restarts eligible repeat intervals from the restore time
+5. does not recreate a pause that Advance to Next Event previously cleared
+6. does not replay or attempt to reverse one-shot Actions
+
+The one-shot receipts created by the original manual advance are retained. This prevents a physical or momentary Action from executing twice if the same occurrence is advanced again or its original scheduled edge is later reached. When no manual advance is active, Restore Schedule State is an idempotent no-op and does not change `ScheduleData` or its revision.
+
+The Slot Inspector exposes both transport commands. Stable counted `SchedulerSlotAdvance` and `SchedulerSlotRestoreSchedule` momentary input pins provide the same operations to external Q-SYS control logic.
+
 ## Named configuration backups
 
 Each named backup snapshots the complete persisted `ScheduleData` root, including Scheduler Definitions, Scheduler Slot assignment and operational configuration, pause intents, and any active manual-advance marker. It deliberately excludes callback functions, Action Registry state, editor selections, diagnostics, and presentation/logging preferences.
